@@ -1,0 +1,382 @@
+
+
+==============================
+FILE: E:\My Projects\chrona-ai\chrona-ai-backend\src\api\assistant.routes.ts
+==============================
+
+import { Router } from 'express';
+import { runAssistant } from '../assistant/runAssistant.js';
+
+export const assistantRouter: Router = Router();
+
+assistantRouter.post('/message', async (req, res) => {
+  if (!req.session.userId) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  const reply = await runAssistant({
+    message: req.body.message,
+    userId: req.session.userId,
+  });
+
+  res.json(reply);
+});
+
+
+==============================
+FILE: E:\My Projects\chrona-ai\chrona-ai-backend\src\api\auth.routes.ts
+==============================
+
+import { Router } from 'express';
+import { randomUUID } from 'crypto';
+
+export const authRouter: Router = Router();
+
+authRouter.get('/status', (req, res) => {
+  res.json({
+    authenticated: Boolean(req.session.userId),
+    user: req.session.user || null,
+  });
+});
+
+authRouter.post('/login', (req, res) => {
+  const userId = randomUUID();
+
+  req.session.userId = userId;
+  req.session.user = {
+    name: 'Demo User',
+    email: 'demo@example.com',
+  };
+
+  res.json({ success: true });
+});
+
+authRouter.post('/logout', (req, res) => {
+  req.session.destroy(() => {
+    res.json({ success: true });
+  });
+});
+
+
+==============================
+FILE: E:\My Projects\chrona-ai\chrona-ai-backend\src\api\calendar.routes.ts
+==============================
+
+import { Router } from 'express';
+import { requireAuth } from '../middleware/requireAuth.js';
+import crypto from 'crypto';
+
+const store = new Map<string, any[]>();
+export const calendarRouter: Router = Router();
+
+calendarRouter.use(requireAuth);
+
+calendarRouter.get('/events', (req, res) => {
+  const userId = req.session.userId!; // now safe
+  const events = store.get(userId) ?? [];
+  res.json(events);
+});
+
+calendarRouter.post('/events', (req, res) => {
+  const userId = req.session.userId!;
+  const events = store.get(userId) ?? [];
+
+  const event = { id: crypto.randomUUID(), ...req.body };
+  store.set(userId, [...events, event]);
+
+  res.json(event);
+});
+
+calendarRouter.patch('/events/:id', (req, res) => {
+  const userId = req.session.userId!;
+  const events = store.get(userId) ?? [];
+
+  const updated = events.map((e) =>
+    e.id === req.params.id ? { ...e, ...req.body } : e,
+  );
+
+  store.set(userId, updated);
+  res.json({ success: true });
+});
+
+calendarRouter.delete('/events/:id', (req, res) => {
+  const userId = req.session.userId!;
+  const events = store.get(userId) ?? [];
+
+  store.set(
+    userId,
+    events.filter((e) => e.id !== req.params.id),
+  );
+
+  res.json({ success: true });
+});
+
+
+==============================
+FILE: E:\My Projects\chrona-ai\chrona-ai-backend\src\assistant\graph.ts
+==============================
+
+import { ChatGroq } from '@langchain/groq';
+import {
+  END,
+  MemorySaver,
+  MessagesAnnotation,
+  StateGraph,
+} from '@langchain/langgraph';
+import { ToolNode } from '@langchain/langgraph/prebuilt';
+import { createEventTool } from '../tools/createEvent.tool.js';
+import { getEventsTool } from '../tools/getEvents.tool.js';
+import type { AIMessage } from '@langchain/core/messages';
+
+const tools = [createEventTool, getEventsTool];
+
+
+
+const model = new ChatGroq({
+  model: 'openai/gpt-oss-120b',
+  temperature: 0,
+}).bindTools(tools);
+
+async function assistantNode(state: typeof MessagesAnnotation.State) {
+  const response = await model.invoke(state.messages);
+  return { messages: [response] };
+}
+
+function shouldContinue(state: typeof MessagesAnnotation.State) {
+  const last = state.messages[state.messages.length - 1] as AIMessage;
+  return last.tool_calls?.length ? 'tools' : '__end__';
+}
+
+const graph = new StateGraph(MessagesAnnotation)
+  .addNode('assistant', assistantNode)
+  .addNode('tools', new ToolNode(tools))
+  .addEdge('__start__', 'assistant')
+  .addEdge('tools', 'assistant')
+  .addConditionalEdges('assistant', shouldContinue, {
+    tools: 'tools',
+    __end__: END,
+  });
+
+export const assistantApp = graph.compile({
+  checkpointer: new MemorySaver(),
+});
+
+
+==============================
+FILE: E:\My Projects\chrona-ai\chrona-ai-backend\src\assistant\runAssistant.ts
+==============================
+
+import { assistantApp } from './graph.js';
+
+export async function runAssistant({
+  message,
+  userId,
+}: {
+  message: string;
+  userId: string;
+}) {
+  const now = new Date().toISOString();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  const result = await assistantApp.invoke(
+    {
+      messages: [
+        {
+          role: 'system',
+          content: `
+You are a personal calendar assistant.
+Current datetime: ${now}
+Timezone: ${tz}
+        `,
+        },
+        { role: 'user', content: message },
+      ],
+    },
+    {
+      configurable: {
+        thread_id: userId, // 🔥 THIS IS THE KEY
+      },
+    },
+  );
+
+  return {
+    type: 'text',
+    content: result.messages.at(-1)?.content,
+  };
+}
+
+
+==============================
+FILE: E:\My Projects\chrona-ai\chrona-ai-backend\src\auth\googleClient.ts
+==============================
+
+import { google } from 'googleapis';
+import fs from 'fs';
+
+const TOKEN_PATH = 'tokens.json';
+
+export function getOAuthClient(): InstanceType<typeof google.auth.OAuth2> {
+  return new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URL,
+  );
+}
+
+export function saveTokens(tokens: any) {
+  fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2));
+}
+
+export function loadCalendarClient() {
+  if (!fs.existsSync(TOKEN_PATH)) {
+    throw new Error('No tokens found. Please authenticate first.');
+  }
+
+  const tokens = JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf-8'));
+  const client = getOAuthClient();
+  client.setCredentials(tokens);
+
+  return google.calendar({ version: 'v3', auth: client });
+}
+
+==============================
+FILE: E:\My Projects\chrona-ai\chrona-ai-backend\src\index.ts
+==============================
+
+import 'dotenv/config';
+import express from 'express';
+import session from 'express-session';
+import { assistantRouter } from './api/assistant.routes.js';
+import { authRouter } from './api/auth.routes.js';
+import { calendarRouter } from './api/calendar.routes.js';
+
+
+const app = express();
+app.use(express.json());
+
+app.use(
+  session({
+    secret: 'dev-secret',
+    resave: false,
+    saveUninitialized: false,
+  }),
+);
+
+app.use('/api/auth', authRouter);
+app.use('/api/assistant', assistantRouter);
+app.use('/api/calendar', calendarRouter);
+
+app.listen(8080, () =>
+  console.log('🚀 Server running on http://localhost:8080'),
+);
+
+
+==============================
+FILE: E:\My Projects\chrona-ai\chrona-ai-backend\src\middleware\requireAuth.ts
+==============================
+
+import type { Request, Response, NextFunction } from 'express';
+
+export function requireAuth(req: Request, res: Response, next: NextFunction) {
+  if (!req.session.userId) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  next();
+}
+
+
+==============================
+FILE: E:\My Projects\chrona-ai\chrona-ai-backend\src\tools\createEvent.tool.ts
+==============================
+
+import { tool } from '@langchain/core/tools';
+import z from 'zod';
+import { loadCalendarClient } from '../auth/googleClient.js';
+
+export const createEventTool = tool(
+  async ({ summary, start, end, attendees }) => {
+    const calendar = loadCalendarClient();
+
+    await calendar.events.insert({
+      calendarId: 'primary',
+      sendUpdates: 'all',
+      requestBody: {
+        summary,
+        start,
+        end,
+        attendees,
+      },
+    });
+
+    return 'Meeting created successfully.';
+  },
+  {
+    name: 'create-event',
+    description: 'Create a Google Calendar event',
+    schema: z.object({
+      summary: z.string(),
+      start: z.object({
+        dateTime: z.string(),
+        timeZone: z.string(),
+      }),
+      end: z.object({
+        dateTime: z.string(),
+        timeZone: z.string(),
+      }),
+      attendees: z.array(
+        z.object({
+          email: z.string(),
+        }),
+      ),
+    }),
+  },
+);
+
+
+==============================
+FILE: E:\My Projects\chrona-ai\chrona-ai-backend\src\tools\getEvents.tool.ts
+==============================
+
+import { tool } from '@langchain/core/tools';
+import z from 'zod';
+import { loadCalendarClient } from '../auth/googleClient.js';
+
+export const getEventsTool = tool(
+  async ({ timeMin, timeMax }) => {
+    const calendar = loadCalendarClient();
+
+    const res = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin,
+      timeMax,
+    });
+
+    return JSON.stringify(res.data.items ?? []);
+  },
+  {
+    name: 'get-events',
+    description: 'Get events from Google Calendar',
+    schema: z.object({
+      timeMin: z.string(),
+      timeMax: z.string(),
+    }),
+  },
+);
+
+
+==============================
+FILE: E:\My Projects\chrona-ai\chrona-ai-backend\src\types\express-session.d.ts
+==============================
+
+import 'express-session';
+
+declare module 'express-session' {
+  interface SessionData {
+    userId?: string;
+    user?: {
+      name: string;
+      email: string;
+    };
+  }
+}
