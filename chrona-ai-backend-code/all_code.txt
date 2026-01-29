@@ -44,8 +44,8 @@ authRouter.post('/login', (req, res) => {
 
   req.session.userId = userId;
   req.session.user = {
-    name: 'Demo User',
-    email: 'demo@example.com',
+    name: 'Swarup Das',
+    email: 'swarupdas.1299@gmail.com',
   };
 
   res.json({ success: true });
@@ -65,50 +65,137 @@ FILE: E:\My Projects\chrona-ai\chrona-ai-backend\src\api\calendar.routes.ts
 import { Router } from 'express';
 import { requireAuth } from '../middleware/requireAuth.js';
 import crypto from 'crypto';
+import { loadCalendarClient } from '../auth/googleClient.js';
 
 const store = new Map<string, any[]>();
 export const calendarRouter: Router = Router();
 
 calendarRouter.use(requireAuth);
 
-calendarRouter.get('/events', (req, res) => {
-  const userId = req.session.userId!; // now safe
-  const events = store.get(userId) ?? [];
-  res.json(events);
+calendarRouter.get('/events', async (req, res) => {
+  try {
+    const calendar = loadCalendarClient();
+
+    // Get time range from query params or default to next 30 days
+    const timeMin = (req.query.timeMin as string) || new Date().toISOString();
+    const timeMax =
+      (req.query.timeMax as string) ||
+      new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    const response = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin,
+      timeMax,
+      maxResults: 100,
+      singleEvents: true,
+      orderBy: 'startTime',
+    });
+
+    const events = response.data.items || [];
+
+    res.json(events);
+  } catch (error: any) {
+    console.error('Error fetching Google Calendar events:', error);
+    res.status(500).json({
+      error: 'Failed to fetch events from Google Calendar',
+      details: error.message,
+    });
+  }
 });
 
-calendarRouter.post('/events', (req, res) => {
-  const userId = req.session.userId!;
-  const events = store.get(userId) ?? [];
+calendarRouter.post('/events', async (req, res) => {
+  try {
+    const calendar = loadCalendarClient();
 
-  const event = { id: crypto.randomUUID(), ...req.body };
-  store.set(userId, [...events, event]);
+    const event = await calendar.events.insert({
+      calendarId: 'primary',
+      sendUpdates: 'none',
+      requestBody: {
+        summary: req.body.summary,
+        description: req.body.description,
+        start: {
+          dateTime: req.body.start,
+          timeZone:
+            req.body.timeZone ||
+            Intl.DateTimeFormat().resolvedOptions().timeZone,
+        },
+        end: {
+          dateTime: req.body.end,
+          timeZone:
+            req.body.timeZone ||
+            Intl.DateTimeFormat().resolvedOptions().timeZone,
+        },
+        attendees: req.body.attendees,
+      },
+    });
 
-  res.json(event);
+    res.json(event.data);
+  } catch (error: any) {
+    console.error('Error creating Google Calendar event:', error);
+    res.status(500).json({
+      error: 'Failed to create event in Google Calendar',
+      details: error.message,
+    });
+  }
 });
 
-calendarRouter.patch('/events/:id', (req, res) => {
-  const userId = req.session.userId!;
-  const events = store.get(userId) ?? [];
+calendarRouter.patch('/events/:id', async (req, res) => {
+  try {
+    const calendar = loadCalendarClient();
 
-  const updated = events.map((e) =>
-    e.id === req.params.id ? { ...e, ...req.body } : e,
-  );
+    const updateData: any = {};
 
-  store.set(userId, updated);
-  res.json({ success: true });
+    if (req.body.summary) updateData.summary = req.body.summary;
+    if (req.body.description) updateData.description = req.body.description;
+    if (req.body.start) {
+      updateData.start = {
+        dateTime: req.body.start,
+        timeZone:
+          req.body.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+      };
+    }
+    if (req.body.end) {
+      updateData.end = {
+        dateTime: req.body.end,
+        timeZone:
+          req.body.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+      };
+    }
+
+    const event = await calendar.events.patch({
+      calendarId: 'primary',
+      eventId: req.params.id,
+      requestBody: updateData,
+    });
+
+    res.json(event.data);
+  } catch (error: any) {
+    console.error('Error updating Google Calendar event:', error);
+    res.status(500).json({
+      error: 'Failed to update event in Google Calendar',
+      details: error.message,
+    });
+  }
 });
 
-calendarRouter.delete('/events/:id', (req, res) => {
-  const userId = req.session.userId!;
-  const events = store.get(userId) ?? [];
+calendarRouter.delete('/events/:id', async (req, res) => {
+  try {
+    const calendar = loadCalendarClient();
 
-  store.set(
-    userId,
-    events.filter((e) => e.id !== req.params.id),
-  );
+    await calendar.events.delete({
+      calendarId: 'primary',
+      eventId: req.params.id,
+      sendUpdates: 'none',
+    });
 
-  res.json({ success: true });
+    res.json({ success: true, message: 'Event deleted successfully' });
+  } catch (error: any) {
+    console.error('Error deleting Google Calendar event:', error);
+    res.status(500).json({
+      error: 'Failed to delete event from Google Calendar',
+      details: error.message,
+    });
+  }
 });
 
 
@@ -194,7 +281,7 @@ Timezone: ${tz}
     },
     {
       configurable: {
-        thread_id: userId, // 🔥 THIS IS THE KEY
+        thread_id: userId, 
       },
     },
   );
@@ -246,13 +333,51 @@ FILE: E:\My Projects\chrona-ai\chrona-ai-backend\src\index.ts
 import 'dotenv/config';
 import express from 'express';
 import session from 'express-session';
+import cors from 'cors';
 import { assistantRouter } from './api/assistant.routes.js';
 import { authRouter } from './api/auth.routes.js';
 import { calendarRouter } from './api/calendar.routes.js';
 
 
 const app = express();
+
+app.set('trust proxy', 1);
+
 app.use(express.json());
+
+const FRONTEND_ORIGINS = process.env.FRONTEND_ORIGINS;
+
+if (!FRONTEND_ORIGINS) {
+  throw new Error('FRONTEND_ORIGINS is not defined');
+}
+
+const allowedOrigins = FRONTEND_ORIGINS.split(',').map((o) => o.trim());
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow non-browser requests (Postman, curl)
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  }),
+);
+
+if (
+  !process.env.GOOGLE_CLIENT_ID ||
+  !process.env.GOOGLE_CLIENT_SECRET ||
+  !process.env.GOOGLE_REDIRECT_URL
+) {
+  throw new Error('❌ Google OAuth env vars are missing');
+}
 
 app.use(
   session({
@@ -262,12 +387,14 @@ app.use(
   }),
 );
 
+app.use('/api/health', (req, res) => res.send('OK'));
+
 app.use('/api/auth', authRouter);
 app.use('/api/assistant', assistantRouter);
 app.use('/api/calendar', calendarRouter);
 
-app.listen(8080, () =>
-  console.log('🚀 Server running on http://localhost:8080'),
+app.listen(process.env.PORT || 8080, () =>
+  console.log(`🚀 Server running on http://localhost:${process.env.PORT}`),
 );
 
 
