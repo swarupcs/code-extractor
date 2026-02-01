@@ -14,10 +14,12 @@ const path = require('path');
 // =========================
 
 // 👇 Source folder (absolute or relative)
-const TARGET_FOLDER = 'E:/My Projects/chrona-ai/chrona-ai-backend/src';
+// const TARGET_FOLDER = 'E:/My Projects/chrona-ai/chrona-ai-backend/src';
+const TARGET_FOLDER =
+  'E:/My Projects/AI-Interview-Coach/aI-interview-coach-backend/src';
 
 // 👇 HARD-CODED output folder name
-const OUTPUT_FOLDER_NAME = 'chrona-ai-backend-code';
+const OUTPUT_FOLDER_NAME = 'aI-interview-coach-backend';
 
 // 👇 Output file
 const OUTPUT_FILE_NAME = 'all_code.txt';

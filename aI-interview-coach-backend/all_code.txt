@@ -1,0 +1,5378 @@
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\agents\base-agent.ts
+==============================
+
+/**
+ * Base Agent Class
+ * All agents inherit from this class
+ */
+
+import {
+  IAgent,
+  AgentType,
+  BaseAgentInput,
+  BaseAgentOutput,
+  LLMMessage,
+} from '../types';
+import { ILLMProvider } from '../services/llm/base-provider';
+import { MemoryManager } from '../memory/memory-manager';
+
+export abstract class BaseAgent implements IAgent {
+  abstract type: AgentType;
+  abstract name: string;
+  abstract description: string;
+
+  constructor(
+    protected llmProvider: ILLMProvider,
+    protected memoryManager: MemoryManager
+  ) {}
+
+  /**
+   * Main processing method - must be implemented by each agent
+   */
+  abstract process(input: BaseAgentInput): Promise<BaseAgentOutput>;
+
+  /**
+   * Check if this agent can handle the input
+   * Default implementation - can be overridden
+   */
+  async canHandle(input: BaseAgentInput): Promise<boolean> {
+    // Default: use keyword matching
+    const keywords = this.getKeywords();
+    const queryLower = input.query.toLowerCase();
+    
+    return keywords.some((keyword) => queryLower.includes(keyword));
+  }
+
+  /**
+   * Get keywords this agent responds to
+   * Override in child classes
+   */
+  protected getKeywords(): string[] {
+    return [];
+  }
+
+  /**
+   * Build system prompt for this agent
+   */
+  protected abstract buildSystemPrompt(): string;
+
+  /**
+   * Get conversation context from memory
+   */
+  protected async getConversationContext(
+    sessionId: string,
+    maxTurns: number = 5
+  ): Promise<LLMMessage[]> {
+    const turns = await this.memoryManager.getConversationContext(
+      sessionId,
+      maxTurns
+    );
+
+    return turns.map((turn) => ({
+      role: turn.role,
+      content: turn.content,
+    }));
+  }
+
+  /**
+   * Save conversation turn to memory
+   */
+  protected async saveToMemory(
+    sessionId: string,
+    role: 'user' | 'assistant',
+    content: string
+  ): Promise<void> {
+    await this.memoryManager.addTurn(sessionId, {
+      role,
+      content,
+      timestamp: new Date(),
+      agentType: this.type,
+    });
+  }
+
+  /**
+   * Generate response using LLM
+   */
+  protected async generateResponse(
+    systemPrompt: string,
+    userMessage: string,
+    conversationHistory?: LLMMessage[],
+    temperature: number = 0.7
+  ): Promise<string> {
+    const messages: LLMMessage[] = [
+      { role: 'system', content: systemPrompt },
+    ];
+
+    if (conversationHistory && conversationHistory.length > 0) {
+      messages.push(...conversationHistory);
+    }
+
+    messages.push({ role: 'user', content: userMessage });
+
+    const response = await this.llmProvider.generateCompletion({
+      messages,
+      temperature,
+      maxTokens: 2000,
+    });
+
+    return response.content;
+  }
+
+  /**
+   * Extract structured data from LLM response
+   */
+  protected async generateStructuredResponse<T>(
+    systemPrompt: string,
+    userMessage: string,
+    schema: Record<string, unknown>,
+    temperature: number = 0.3
+  ): Promise<T> {
+    const messages: LLMMessage[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage },
+    ];
+
+    return await this.llmProvider.generateStructuredOutput<T>(
+      {
+        messages,
+        temperature,
+        maxTokens: 2000,
+      },
+      schema
+    );
+  }
+
+  /**
+   * Calculate confidence score based on response quality
+   * Override in child classes for custom logic
+   */
+  protected calculateConfidence(response: string, input: BaseAgentInput): number {
+    // Simple heuristic: longer, more detailed responses = higher confidence
+    const wordCount = response.split(/\s+/).length;
+    const hasStructure = /\n-|\n\d+\.|\n\*/.test(response);
+    
+    let confidence = 0.6; // Base confidence
+
+    if (wordCount > 100) confidence += 0.1;
+    if (wordCount > 200) confidence += 0.1;
+    if (hasStructure) confidence += 0.1;
+    if (response.includes('example') || response.includes('specifically')) confidence += 0.1;
+
+    return Math.min(confidence, 1.0);
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\agents\behavioral-learning-agents.ts
+==============================
+
+/**
+ * HR Behavioral Agent
+ * Handles behavioral interview questions using STAR method
+ */
+
+import { BaseAgent } from './base-agent';
+import { AgentType, BaseAgentInput, BaseAgentOutput } from '../types';
+
+export class HRBehavioralAgent extends BaseAgent {
+  type = AgentType.HR_BEHAVIORAL;
+  name = 'HR Behavioral Agent';
+  description = 'Conducts behavioral interviews using STAR method';
+
+  protected getKeywords(): string[] {
+    return [
+      'behavioral',
+      'tell me about a time',
+      'describe a situation',
+      'star method',
+      'teamwork',
+      'conflict',
+      'leadership',
+      'challenge',
+      'failure',
+      'success',
+      'motivation',
+      'weakness',
+      'strength',
+    ];
+  }
+
+  protected buildSystemPrompt(): string {
+    return `You are an expert HR interviewer specializing in behavioral interviews.
+
+Your responsibilities:
+1. Ask behavioral questions using the STAR method
+2. Evaluate answers for completeness (Situation, Task, Action, Result)
+3. Probe for specific details and outcomes
+4. Assess soft skills: communication, teamwork, leadership, problem-solving
+5. Provide constructive feedback
+
+When asking questions:
+- Use "Tell me about a time..." format
+- Focus on real experiences, not hypotheticals
+- Ask follow-up questions for clarity
+
+When evaluating answers:
+- Check for complete STAR structure
+- Look for specific examples with measurable results
+- Assess authenticity and reflection
+- Identify areas for improvement
+
+Be supportive and help candidates tell their best stories.`;
+  }
+
+  async process(input: BaseAgentInput): Promise<BaseAgentOutput> {
+    await this.saveToMemory(input.sessionId, 'user', input.query);
+
+    const systemPrompt = this.buildSystemPrompt();
+    const conversationHistory = await this.getConversationContext(input.sessionId);
+
+    const response = await this.generateResponse(
+      systemPrompt,
+      input.query,
+      conversationHistory,
+      0.7
+    );
+
+    await this.saveToMemory(input.sessionId, 'assistant', response);
+
+    // Evaluate if the response is a STAR-structured answer
+    const isSTARAnswer = await this.isSTARAnswer(input.query);
+
+    const suggestedFollowUps = isSTARAnswer
+      ? [
+          'Can you elaborate on the result?',
+          'What would you do differently?',
+          'Ask me another behavioral question',
+        ]
+      : [
+          'Can you give me an example using STAR method?',
+          'What is the STAR method?',
+          'Give me a behavioral question to practice',
+        ];
+
+    return {
+      response,
+      confidence: 0.85,
+      metadata: { isSTARAnswer },
+      suggestedFollowUps,
+    };
+  }
+
+  /**
+   * Check if the query contains a STAR-formatted answer
+   */
+  private async isSTARAnswer(query: string): Promise<boolean> {
+    const indicators = [
+      'situation',
+      'task',
+      'action',
+      'result',
+      'when I',
+      'at my previous',
+      'during my time',
+    ];
+
+    const queryLower = query.toLowerCase();
+    return indicators.some((indicator) => queryLower.includes(indicator));
+  }
+}
+
+/**
+ * Learning Support Agent
+ * Tracks progress and suggests personalized improvements
+ */
+export class LearningSupportAgent extends BaseAgent {
+  type = AgentType.LEARNING_SUPPORT;
+  name = 'Learning Support Agent';
+  description = 'Provides personalized learning recommendations';
+
+  protected getKeywords(): string[] {
+    return [
+      'progress',
+      'improvement',
+      'learning',
+      'weak',
+      'struggling',
+      'practice',
+      'roadmap',
+      'study plan',
+      'resources',
+      'tips',
+    ];
+  }
+
+  protected buildSystemPrompt(): string {
+    return `You are a learning coach helping candidates improve their interview skills.
+
+Your responsibilities:
+1. Analyze performance across all interview types
+2. Identify weak areas and skill gaps
+3. Create personalized improvement plans
+4. Suggest relevant resources and practice problems
+5. Track progress and celebrate milestones
+
+When providing recommendations:
+- Be specific and actionable
+- Prioritize high-impact improvements
+- Suggest concrete resources (courses, books, practice sites)
+- Set realistic timelines and milestones
+- Encourage consistent practice
+
+Be motivating, supportive, and data-driven.`;
+  }
+
+  async process(input: BaseAgentInput): Promise<BaseAgentOutput> {
+    await this.saveToMemory(input.sessionId, 'user', input.query);
+
+    // Get user's progress and weak areas
+    const userSummary = await this.memoryManager.getUserSummary(input.userId);
+
+    // Build context with user's data
+    const userContext = `
+User's Learning Profile:
+- Total interviews: ${userSummary.progress.totalInterviews}
+- Current level: ${userSummary.progress.currentLevel}
+- Goal level: ${userSummary.progress.goalLevel}
+- Weak areas: ${userSummary.weakAreas.map((wa) => `${wa.topic} (${wa.failureCount} times)`).join(', ')}
+- Recent topics: ${userSummary.recentTopics.join(', ')}
+`;
+
+    const systemPrompt = this.buildSystemPrompt() + '\n\n' + userContext;
+    const conversationHistory = await this.getConversationContext(input.sessionId);
+
+    const response = await this.generateResponse(
+      systemPrompt,
+      input.query,
+      conversationHistory,
+      0.7
+    );
+
+    await this.saveToMemory(input.sessionId, 'assistant', response);
+
+    return {
+      response,
+      confidence: 0.9,
+      metadata: { userSummary },
+      suggestedFollowUps: [
+        'What should I focus on next?',
+        'Give me practice problems for my weak areas',
+        'Show me my progress',
+      ],
+    };
+  }
+
+  /**
+   * Generate a personalized learning plan
+   */
+  async generateLearningPlan(userId: string): Promise<string> {
+    const userSummary = await this.memoryManager.getUserSummary(userId);
+
+    const prompt = `Create a personalized 4-week learning plan based on this profile:
+
+${JSON.stringify(userSummary, null, 2)}
+
+Include:
+1. Weekly focus areas
+2. Daily practice goals
+3. Specific resources
+4. Progress milestones
+
+Make it actionable and motivating.`;
+
+    return await this.generateResponse(
+      this.buildSystemPrompt(),
+      prompt,
+      [],
+      0.6
+    );
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\agents\dsa-agent.ts
+==============================
+
+/**
+ * DSA Interview Agent
+ * Handles data structures and algorithms interview questions
+ */
+
+import { BaseAgent } from './base-agent';
+import { AgentType, BaseAgentInput, BaseAgentOutput } from '../types';
+import { ILLMProvider } from '../services/llm/base-provider';
+import { MemoryManager } from '../memory/memory-manager';
+import { IVectorDatabase } from '../services/vector-db/base-vector-db';
+
+interface DSAQuestion {
+  question: string;
+  difficulty: 'easy' | 'medium' | 'hard';
+  topics: string[];
+  hints: string[];
+}
+
+interface DSAEvaluation {
+  score: number; // 0-100
+  strengths: string[];
+  weaknesses: string[];
+  suggestions: string[];
+  correctness: 'correct' | 'partially_correct' | 'incorrect';
+}
+
+export class DSAInterviewAgent extends BaseAgent {
+  type = AgentType.DSA_INTERVIEW;
+  name = 'DSA Interview Agent';
+  description = 'Conducts data structures and algorithms interviews';
+
+  constructor(
+    llmProvider: ILLMProvider,
+    memoryManager: MemoryManager,
+    private vectorDb?: IVectorDatabase
+  ) {
+    super(llmProvider, memoryManager);
+  }
+
+  protected getKeywords(): string[] {
+    return [
+      'algorithm',
+      'data structure',
+      'leetcode',
+      'coding',
+      'array',
+      'linked list',
+      'tree',
+      'graph',
+      'dynamic programming',
+      'recursion',
+      'sorting',
+      'searching',
+      'hash',
+      'stack',
+      'queue',
+      'binary search',
+      'dfs',
+      'bfs',
+      'time complexity',
+      'space complexity',
+      'big o',
+    ];
+  }
+
+  protected buildSystemPrompt(): string {
+    return `You are an expert DSA (Data Structures & Algorithms) interviewer with deep knowledge of computer science fundamentals.
+
+Your responsibilities:
+1. Ask appropriate DSA questions based on difficulty level
+2. Evaluate coding solutions for correctness, efficiency, and code quality
+3. Provide detailed feedback on time/space complexity
+4. Suggest optimizations and alternative approaches
+5. Track weak areas for improvement
+
+When asking questions:
+- Start with problem statement
+- Clarify constraints and edge cases
+- Provide hints if requested
+- Adjust difficulty based on performance
+
+When evaluating answers:
+- Check correctness of logic
+- Analyze time and space complexity
+- Review code quality and style
+- Identify edge cases handled/missed
+- Suggest optimizations
+
+Be encouraging but honest. Focus on learning and improvement.`;
+  }
+
+  async process(input: BaseAgentInput): Promise<BaseAgentOutput> {
+    // Save user query to memory
+    await this.saveToMemory(input.sessionId, 'user', input.query);
+
+    // Determine if this is a question request or answer submission
+    const isAnswerSubmission = this.isAnswerSubmission(input.query);
+
+    let response: string;
+    let metadata: Record<string, unknown> = {};
+    let suggestedFollowUps: string[] = [];
+
+    if (isAnswerSubmission) {
+      // Evaluate the submitted code/solution
+      response = await this.evaluateAnswer(input);
+      metadata = { type: 'evaluation' };
+      suggestedFollowUps = [
+        'Can you optimize this solution?',
+        'What about edge cases?',
+        'Give me another problem',
+      ];
+    } else {
+      // Generate a DSA question or explanation
+      response = await this.handleQuery(input);
+      metadata = { type: 'question_or_explanation' };
+      suggestedFollowUps = [
+        'Can you give me a hint?',
+        'What is the optimal approach?',
+        'Show me a solution',
+      ];
+    }
+
+    // Save agent response to memory
+    await this.saveToMemory(input.sessionId, 'assistant', response);
+
+    const confidence = this.calculateConfidence(response, input);
+
+    return {
+      response,
+      confidence,
+      metadata,
+      suggestedFollowUps,
+      requiresRAG: false,
+    };
+  }
+
+  /**
+   * Check if the query is an answer submission
+   */
+  private isAnswerSubmission(query: string): boolean {
+    const answerIndicators = [
+      'my solution',
+      'here is my code',
+      'def ',
+      'function ',
+      'class Solution',
+      '{',
+      'public ',
+      'private ',
+    ];
+
+    const queryLower = query.toLowerCase();
+    return answerIndicators.some((indicator) => queryLower.includes(indicator)) ||
+           query.includes('{') || query.match(/def\s+\w+/) !== null;
+  }
+
+  /**
+   * Handle general DSA queries (questions, explanations)
+   */
+  private async handleQuery(input: BaseAgentInput): Promise<string> {
+    const systemPrompt = this.buildSystemPrompt();
+    
+    // Get user's weak areas to personalize questions
+    const weakAreas = await this.memoryManager.getWeakAreas(input.userId);
+    const weakAreaContext = weakAreas.length > 0
+      ? `\n\nUser's weak areas: ${weakAreas.map((wa) => wa.topic).join(', ')}`
+      : '';
+
+    // Get conversation context
+    const conversationHistory = await this.getConversationContext(input.sessionId);
+
+    // Try RAG if vector db is available
+    let ragContext = '';
+    if (this.vectorDb) {
+      try {
+        const results = await this.vectorDb.search(input.query, 3, {
+          category: 'dsa',
+        });
+        
+        if (results.length > 0) {
+          ragContext = '\n\nRelevant DSA problems and concepts:\n' +
+            results.map((r, i) => `${i + 1}. ${r.document.content}`).join('\n');
+        }
+      } catch (error) {
+        console.warn('RAG search failed:', error);
+      }
+    }
+
+    const enhancedPrompt = systemPrompt + weakAreaContext + ragContext;
+
+    return await this.generateResponse(
+      enhancedPrompt,
+      input.query,
+      conversationHistory,
+      0.7
+    );
+  }
+
+  /**
+   * Evaluate a submitted code solution
+   */
+  private async evaluateAnswer(input: BaseAgentInput): Promise<string> {
+    const evaluationPrompt = `You are evaluating a DSA coding solution. Analyze the code for:
+
+1. Correctness: Does it solve the problem?
+2. Time Complexity: Big O analysis
+3. Space Complexity: Big O analysis  
+4. Code Quality: Readability, style, edge cases
+5. Optimizations: Better approaches
+
+Provide structured feedback with:
+- Score (0-100)
+- What they did well
+- What needs improvement
+- Specific suggestions
+
+Be constructive and educational.`;
+
+    const conversationHistory = await this.getConversationContext(input.sessionId);
+
+    const evaluation = await this.generateResponse(
+      evaluationPrompt,
+      input.query,
+      conversationHistory,
+      0.5 // Lower temperature for consistent evaluation
+    );
+
+    // Extract weak areas from evaluation and record them
+    await this.recordWeakAreasFromEvaluation(input.userId, evaluation);
+
+    return evaluation;
+  }
+
+  /**
+   * Extract and record weak areas from evaluation
+   */
+  private async recordWeakAreasFromEvaluation(
+    userId: string,
+    evaluation: string
+  ): Promise<void> {
+    // Simple heuristic: look for common weak area indicators
+    const weakAreaPatterns = [
+      /time complexity/i,
+      /space complexity/i,
+      /edge case/i,
+      /optimization/i,
+      /bug/i,
+      /incorrect/i,
+    ];
+
+    for (const pattern of weakAreaPatterns) {
+      if (pattern.test(evaluation)) {
+        const topic = pattern.source.replace(/\\/g, '').replace(/i$/, '');
+        await this.memoryManager.recordWeakArea(
+          userId,
+          topic,
+          'DSA',
+          ['Review the evaluation feedback']
+        );
+      }
+    }
+  }
+
+  /**
+   * Generate a DSA question based on difficulty
+   */
+  async generateQuestion(
+    difficulty: 'easy' | 'medium' | 'hard',
+    topic?: string
+  ): Promise<DSAQuestion> {
+    const prompt = `Generate a ${difficulty} level DSA coding problem${topic ? ` on ${topic}` : ''}.
+
+Include:
+1. Clear problem statement
+2. Input/output examples
+3. Constraints
+4. Expected complexity`;
+
+    const schema = {
+      question: 'string',
+      difficulty: 'string',
+      topics: 'array of strings',
+      hints: 'array of strings',
+    };
+
+    return await this.generateStructuredResponse<DSAQuestion>(
+      'You are a DSA question generator.',
+      prompt,
+      schema
+    );
+  }
+
+  /**
+   * Calculate custom confidence for DSA responses
+   */
+  protected calculateConfidence(response: string, input: BaseAgentInput): number {
+    let confidence = super.calculateConfidence(response, input);
+
+    // Boost confidence if response includes complexity analysis
+    if (response.includes('O(') || response.includes('time complexity')) {
+      confidence = Math.min(confidence + 0.1, 1.0);
+    }
+
+    // Boost confidence if code is present
+    if (response.includes('```') || response.match(/def\s+\w+/)) {
+      confidence = Math.min(confidence + 0.1, 1.0);
+    }
+
+    return confidence;
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\agents\resume-agent.ts
+==============================
+
+/**
+ * Resume Review Agent
+ * Analyzes and provides feedback on resumes
+ */
+
+import { BaseAgent } from './base-agent';
+import { AgentType, BaseAgentInput, BaseAgentOutput } from '../types';
+import { ILLMProvider } from '../services/llm/base-provider';
+import { MemoryManager } from '../memory/memory-manager';
+
+interface ResumeAnalysis {
+  overallScore: number;
+  strengths: string[];
+  weaknesses: string[];
+  suggestions: string[];
+  formattingIssues: string[];
+  contentGaps: string[];
+  atsCompatibility: number;
+}
+
+export class ResumeReviewAgent extends BaseAgent {
+  type = AgentType.RESUME_REVIEW;
+  name = 'Resume Review Agent';
+  description = 'Analyzes and provides feedback on resumes';
+
+  protected getKeywords(): string[] {
+    return [
+      'resume',
+      'cv',
+      'curriculum vitae',
+      'review my resume',
+      'check my cv',
+      'improve resume',
+      'ats',
+      'applicant tracking',
+    ];
+  }
+
+  protected buildSystemPrompt(): string {
+    return `You are an expert resume reviewer with extensive experience in tech recruiting and ATS (Applicant Tracking Systems).
+
+Your responsibilities:
+1. Analyze resume content, structure, and formatting
+2. Evaluate ATS compatibility
+3. Identify missing or weak sections
+4. Suggest improvements for impact and clarity
+5. Tailor feedback to target role and companies
+
+Evaluation criteria:
+- Content: Impact statements, quantifiable achievements, relevant skills
+- Structure: Clear sections, logical flow, appropriate length
+- Formatting: Clean layout, consistent style, ATS-friendly
+- Keywords: Industry-relevant terms, role-specific skills
+- Experience: Progression, relevance, depth
+
+Provide actionable, specific feedback that helps candidates stand out.`;
+  }
+
+  async process(input: BaseAgentInput): Promise<BaseAgentOutput> {
+    await this.saveToMemory(input.sessionId, 'user', input.query);
+
+    // Extract resume text and target info from context
+    const resumeText = input.context?.resumeText as string;
+    const targetRole = input.context?.targetRole as string;
+    const targetCompanies = input.context?.targetCompanies as string[];
+
+    if (!resumeText) {
+      const response = 'Please provide your resume text for review. You can paste it directly or upload a file.';
+      await this.saveToMemory(input.sessionId, 'assistant', response);
+      
+      return {
+        response,
+        confidence: 1.0,
+        suggestedFollowUps: [
+          'What should I include in my resume?',
+          'How do I make my resume ATS-friendly?',
+        ],
+      };
+    }
+
+    // Perform detailed analysis
+    const analysis = await this.analyzeResume(resumeText, targetRole, targetCompanies);
+
+    // Generate human-readable response
+    const response = this.formatAnalysis(analysis);
+
+    await this.saveToMemory(input.sessionId, 'assistant', response);
+
+    return {
+      response,
+      confidence: 0.9,
+      metadata: { analysis },
+      suggestedFollowUps: [
+        'Can you help me rewrite a specific section?',
+        'What keywords should I add?',
+        'How can I improve my impact statements?',
+      ],
+    };
+  }
+
+  /**
+   * Perform comprehensive resume analysis
+   */
+  private async analyzeResume(
+    resumeText: string,
+    targetRole?: string,
+    targetCompanies?: string[]
+  ): Promise<ResumeAnalysis> {
+    const targetContext = targetRole
+      ? `Target role: ${targetRole}${targetCompanies ? `, Target companies: ${targetCompanies.join(', ')}` : ''}`
+      : '';
+
+    const analysisPrompt = `Analyze this resume comprehensively:
+
+${resumeText}
+
+${targetContext}
+
+Provide detailed analysis including:
+1. Overall score (0-100)
+2. Key strengths (3-5 points)
+3. Main weaknesses (3-5 points)
+4. Specific improvement suggestions
+5. Formatting/structure issues
+6. Content gaps (missing sections or details)
+7. ATS compatibility score (0-100)
+
+Be specific and actionable.`;
+
+    const schema = {
+      overallScore: 'number (0-100)',
+      strengths: 'array of strings',
+      weaknesses: 'array of strings',
+      suggestions: 'array of strings',
+      formattingIssues: 'array of strings',
+      contentGaps: 'array of strings',
+      atsCompatibility: 'number (0-100)',
+    };
+
+    return await this.generateStructuredResponse<ResumeAnalysis>(
+      this.buildSystemPrompt(),
+      analysisPrompt,
+      schema,
+      0.3
+    );
+  }
+
+  /**
+   * Format analysis into readable response
+   */
+  private formatAnalysis(analysis: ResumeAnalysis): string {
+    let response = `# Resume Analysis\n\n`;
+    response += `**Overall Score: ${analysis.overallScore}/100**\n`;
+    response += `**ATS Compatibility: ${analysis.atsCompatibility}/100**\n\n`;
+
+    response += `## ✅ Strengths\n`;
+    analysis.strengths.forEach((s, i) => {
+      response += `${i + 1}. ${s}\n`;
+    });
+
+    response += `\n## ⚠️ Areas for Improvement\n`;
+    analysis.weaknesses.forEach((w, i) => {
+      response += `${i + 1}. ${w}\n`;
+    });
+
+    response += `\n## 💡 Specific Suggestions\n`;
+    analysis.suggestions.forEach((s, i) => {
+      response += `${i + 1}. ${s}\n`;
+    });
+
+    if (analysis.formattingIssues.length > 0) {
+      response += `\n## 📐 Formatting Issues\n`;
+      analysis.formattingIssues.forEach((f, i) => {
+        response += `${i + 1}. ${f}\n`;
+      });
+    }
+
+    if (analysis.contentGaps.length > 0) {
+      response += `\n## 📝 Content Gaps\n`;
+      analysis.contentGaps.forEach((c, i) => {
+        response += `${i + 1}. ${c}\n`;
+      });
+    }
+
+    return response;
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\agents\system-design-agent.ts
+==============================
+
+/**
+ * System Design Agent
+ * Handles system design interview questions with CRAG/Self-RAG verification
+ */
+
+import { BaseAgent } from './base-agent';
+import {
+  AgentType,
+  BaseAgentInput,
+  BaseAgentOutput,
+  CRAGDecision,
+  CRAGEvaluation,
+  VerificationResult,
+} from '../types';
+import { ILLMProvider } from '../services/llm/base-provider';
+import { MemoryManager } from '../memory/memory-manager';
+import { IVectorDatabase } from '../services/vector-db/base-vector-db';
+
+export class SystemDesignAgent extends BaseAgent {
+  type = AgentType.SYSTEM_DESIGN;
+  name = 'System Design Agent';
+  description = 'Conducts system design interviews with verification';
+
+  constructor(
+    llmProvider: ILLMProvider,
+    memoryManager: MemoryManager,
+    private vectorDb?: IVectorDatabase
+  ) {
+    super(llmProvider, memoryManager);
+  }
+
+  protected getKeywords(): string[] {
+    return [
+      'system design',
+      'architecture',
+      'scalability',
+      'design',
+      'distributed',
+      'microservice',
+      'database',
+      'caching',
+      'load balancer',
+      'api',
+      'rest',
+      'graphql',
+      'kafka',
+      'redis',
+      'mongodb',
+      'postgresql',
+      'aws',
+      'azure',
+      'scaling',
+      'high availability',
+      'fault tolerance',
+      'cap theorem',
+      'consistency',
+      'partition',
+    ];
+  }
+
+  protected buildSystemPrompt(): string {
+    return `You are an expert system design interviewer with extensive experience in large-scale distributed systems.
+
+Your responsibilities:
+1. Guide candidates through system design problems
+2. Ask clarifying questions about requirements
+3. Evaluate design decisions and trade-offs
+4. Verify answers against best practices and real-world examples
+5. Identify potential bottlenecks and failure points
+
+When conducting interviews:
+- Start with requirements gathering (functional & non-functional)
+- Discuss capacity estimation and constraints
+- Evaluate component design and data models
+- Review API design and protocols
+- Analyze scalability, reliability, and performance
+- Discuss trade-offs and alternatives
+
+When evaluating designs:
+- Check if requirements are met
+- Verify scalability approaches
+- Assess data consistency strategies
+- Review failure handling
+- Validate technology choices
+
+Be thorough, ask probing questions, and verify claims against industry standards.`;
+  }
+
+  async process(input: BaseAgentInput): Promise<BaseAgentOutput> {
+    await this.saveToMemory(input.sessionId, 'user', input.query);
+
+    // Step 1: Generate initial response
+    const initialResponse = await this.generateInitialResponse(input);
+
+    // Step 2: If vector DB is available, apply CRAG (Corrective RAG)
+    let finalResponse = initialResponse;
+    let verificationResult: VerificationResult | null = null;
+    let requiresRAG = false;
+
+    if (this.vectorDb) {
+      const cragResult = await this.applyCRAG(input.query, initialResponse);
+      
+      if (cragResult.shouldRequery) {
+        // Re-generate with better context
+        finalResponse = await this.regenerateWithCorrection(
+          input,
+          cragResult
+        );
+        requiresRAG = true;
+      }
+
+      // Step 3: Apply Self-RAG for final verification
+      verificationResult = await this.applySelfRAG(input.query, finalResponse);
+    }
+
+    await this.saveToMemory(input.sessionId, 'assistant', finalResponse);
+
+    // Build metadata with verification info
+    const metadata: Record<string, unknown> = {
+      type: 'system_design',
+      verified: verificationResult?.verified ?? false,
+      cragApplied: requiresRAG,
+    };
+
+    if (verificationResult && !verificationResult.verified) {
+      metadata.verificationWarning = 'Response may contain unverified information';
+      metadata.supportingDocs = verificationResult.supportingDocs.length;
+      metadata.contradictingDocs = verificationResult.contradictingDocs.length;
+    }
+
+    const confidence = this.calculateSystemDesignConfidence(
+      finalResponse,
+      input,
+      verificationResult
+    );
+
+    return {
+      response: finalResponse,
+      confidence,
+      metadata,
+      suggestedFollowUps: [
+        'How would you handle scaling to 1M users?',
+        'What are the failure points?',
+        'How would you ensure data consistency?',
+      ],
+      requiresRAG,
+    };
+  }
+
+  /**
+   * Generate initial response
+   */
+  private async generateInitialResponse(input: BaseAgentInput): Promise<string> {
+    const systemPrompt = this.buildSystemPrompt();
+    const conversationHistory = await this.getConversationContext(input.sessionId);
+
+    return await this.generateResponse(
+      systemPrompt,
+      input.query,
+      conversationHistory,
+      0.7
+    );
+  }
+
+  /**
+   * Apply CRAG (Corrective RAG)
+   * Evaluates if retrieved documents support the generated answer
+   */
+  private async applyCRAG(
+    query: string,
+    generatedAnswer: string
+  ): Promise<CRAGEvaluation> {
+    if (!this.vectorDb) {
+      return {
+        decision: CRAGDecision.AMBIGUOUS,
+        confidence: 0.5,
+        reasoning: 'No vector database available',
+        shouldRequery: false,
+      };
+    }
+
+    try {
+      // Retrieve relevant documents
+      const results = await this.vectorDb.search(query, 5, {
+        category: 'system_design',
+      });
+
+      if (results.length === 0) {
+        return {
+          decision: CRAGDecision.AMBIGUOUS,
+          confidence: 0.5,
+          reasoning: 'No relevant documents found',
+          shouldRequery: false,
+        };
+      }
+
+      // Use LLM to evaluate if retrieved docs support the answer
+      const evaluationPrompt = `Evaluate if the following generated answer is supported by the retrieved documents.
+
+Generated Answer:
+${generatedAnswer}
+
+Retrieved Documents:
+${results.map((r, i) => `Document ${i + 1}:\n${r.document.content}`).join('\n\n')}
+
+Determine:
+1. Does the answer align with the documents? (CORRECT/INCORRECT/AMBIGUOUS)
+2. Confidence level (0-1)
+3. Should we re-query for better context? (true/false)
+4. If re-querying, what query would be better?
+
+Respond in JSON format.`;
+
+      const schema = {
+        decision: 'string (CORRECT, INCORRECT, or AMBIGUOUS)',
+        confidence: 'number (0-1)',
+        reasoning: 'string',
+        shouldRequery: 'boolean',
+        alternativeQuery: 'string (optional)',
+      };
+
+      const evaluation = await this.generateStructuredResponse<CRAGEvaluation>(
+        'You are a fact-checker evaluating system design answers against documentation.',
+        evaluationPrompt,
+        schema,
+        0.3
+      );
+
+      return evaluation;
+    } catch (error) {
+      console.error('CRAG evaluation failed:', error);
+      return {
+        decision: CRAGDecision.AMBIGUOUS,
+        confidence: 0.5,
+        reasoning: 'Evaluation failed',
+        shouldRequery: false,
+      };
+    }
+  }
+
+  /**
+   * Regenerate response with corrected context
+   */
+  private async regenerateWithCorrection(
+    input: BaseAgentInput,
+    cragResult: CRAGEvaluation
+  ): Promise<string> {
+    if (!this.vectorDb) {
+      return await this.generateInitialResponse(input);
+    }
+
+    // Use alternative query if provided, otherwise use original
+    const searchQuery = cragResult.alternativeQuery || input.query;
+    
+    const results = await this.vectorDb.search(searchQuery, 5, {
+      category: 'system_design',
+    });
+
+    const ragContext = results.length > 0
+      ? '\n\nRelevant system design documentation:\n' +
+        results.map((r, i) => `${i + 1}. ${r.document.content}`).join('\n\n')
+      : '';
+
+    const enhancedPrompt = this.buildSystemPrompt() + 
+      '\n\nIMPORTANT: Base your answer on the following verified documentation:' +
+      ragContext;
+
+    const conversationHistory = await this.getConversationContext(input.sessionId);
+
+    return await this.generateResponse(
+      enhancedPrompt,
+      input.query,
+      conversationHistory,
+      0.6 // Slightly lower temperature for accuracy
+    );
+  }
+
+  /**
+   * Apply Self-RAG for verification
+   * Checks if the final answer is factually grounded
+   */
+  private async applySelfRAG(
+    query: string,
+    generatedAnswer: string
+  ): Promise<VerificationResult> {
+    if (!this.vectorDb) {
+      return {
+        verified: false,
+        confidence: 0.5,
+        supportingDocs: [],
+        contradictingDocs: [],
+        needsRefinement: false,
+      };
+    }
+
+    try {
+      // Extract key claims from the answer
+      const claims = await this.extractClaims(generatedAnswer);
+
+      const supportingDocs: any[] = [];
+      const contradictingDocs: any[] = [];
+
+      // Verify each claim
+      for (const claim of claims) {
+        const results = await this.vectorDb.search(claim, 3, {
+          category: 'system_design',
+        });
+
+        for (const result of results) {
+          const supports = await this.checkIfSupports(
+            claim,
+            result.document.content
+          );
+
+          if (supports) {
+            supportingDocs.push(result.document);
+          } else if (result.relevance > 0.7) {
+            // High relevance but doesn't support - might contradict
+            contradictingDocs.push(result.document);
+          }
+        }
+      }
+
+      const verified = supportingDocs.length > contradictingDocs.length;
+      const confidence = supportingDocs.length / (supportingDocs.length + contradictingDocs.length + 1);
+      const needsRefinement = contradictingDocs.length > 0;
+
+      return {
+        verified,
+        confidence,
+        supportingDocs,
+        contradictingDocs,
+        needsRefinement,
+        refinementSuggestion: needsRefinement
+          ? 'Some claims may not be fully supported. Consider reviewing contradicting sources.'
+          : undefined,
+      };
+    } catch (error) {
+      console.error('Self-RAG verification failed:', error);
+      return {
+        verified: false,
+        confidence: 0.5,
+        supportingDocs: [],
+        contradictingDocs: [],
+        needsRefinement: false,
+      };
+    }
+  }
+
+  /**
+   * Extract key claims from the generated answer
+   */
+  private async extractClaims(answer: string): Promise<string[]> {
+    const prompt = `Extract the key factual claims from this system design answer. 
+List only concrete, verifiable statements (not opinions or general advice).
+
+Answer:
+${answer}
+
+Return as a JSON array of claim strings.`;
+
+    try {
+      const result = await this.generateStructuredResponse<{ claims: string[] }>(
+        'You extract factual claims from text.',
+        prompt,
+        { claims: 'array of strings' },
+        0.3
+      );
+
+      return result.claims;
+    } catch {
+      // Fallback: split by sentences
+      return answer
+        .split(/[.!?]+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 20)
+        .slice(0, 5);
+    }
+  }
+
+  /**
+   * Check if a document supports a claim
+   */
+  private async checkIfSupports(claim: string, document: string): Promise<boolean> {
+    const prompt = `Does the following document support this claim?
+
+Claim: ${claim}
+
+Document: ${document}
+
+Answer only 'yes' or 'no'.`;
+
+    try {
+      const response = await this.generateResponse(
+        'You verify if documents support claims.',
+        prompt,
+        [],
+        0.1
+      );
+
+      return response.toLowerCase().includes('yes');
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Calculate confidence with verification results
+   */
+  private calculateSystemDesignConfidence(
+    response: string,
+    input: BaseAgentInput,
+    verification: VerificationResult | null
+  ): number {
+    let confidence = super.calculateConfidence(response, input);
+
+    // Adjust based on verification
+    if (verification) {
+      if (verification.verified) {
+        confidence = Math.min(confidence + 0.2, 1.0);
+      } else if (verification.contradictingDocs.length > 0) {
+        confidence = Math.max(confidence - 0.2, 0.3);
+      }
+    }
+
+    // Boost if response includes diagrams or specific numbers
+    if (response.includes('```') || /\d+\s*(users|requests|MB|GB)/i.test(response)) {
+      confidence = Math.min(confidence + 0.1, 1.0);
+    }
+
+    return confidence;
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\app.ts
+==============================
+
+/**
+ * Express Application Setup
+ * Configures middleware, routes, and error handling
+ */
+
+import express, { Application, Request, Response, NextFunction } from 'express';
+import cors from 'cors';
+import { createRoutes } from './routes/api-routes';
+import { QueryController } from './controllers/query-controller';
+import { InterviewController } from './controllers/interview-controller';
+import {
+  ResumeController,
+  ProgressController,
+} from './controllers/resume-progress-controllers';
+import { AgentRouter } from './router/agent-router';
+import { MemoryManager } from './memory/memory-manager';
+import { InterviewSessionManager } from './services/interview-session-manager';
+import { ILLMProvider } from './services/llm/base-provider';
+import { IVectorDatabase } from './services/vector-db/base-vector-db';
+import { DSAInterviewAgent } from './agents/dsa-agent';
+import { SystemDesignAgent } from './agents/system-design-agent';
+import { ResumeReviewAgent } from './agents/resume-agent';
+import {
+  HRBehavioralAgent,
+  LearningSupportAgent,
+} from './agents/behavioral-learning-agents';
+import { RouterStrategy } from './types';
+
+export interface AppConfig {
+  llmProvider: ILLMProvider;
+  vectorDb?: IVectorDatabase;
+  routingStrategy?: RouterStrategy;
+}
+
+/**
+ * Create and configure Express application
+ */
+export function createApp(config: AppConfig): Application {
+  const app = express();
+
+  // ============================================================================
+  // Middleware
+  // ============================================================================
+
+  // Parse JSON bodies
+  app.use(express.json({ limit: '10mb' }));
+
+  // Parse URL-encoded bodies
+  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+  // Enable CORS
+  app.use(
+    cors({
+      origin: process.env.CORS_ORIGIN || '*',
+      credentials: true,
+    })
+  );
+
+  // Request logging
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+    next();
+  });
+
+  // ============================================================================
+  // Initialize Core Services
+  // ============================================================================
+
+  const memoryManager = new MemoryManager();
+  const agentRouter = new AgentRouter(
+    config.llmProvider,
+    config.routingStrategy || RouterStrategy.HYBRID
+  );
+
+  // ============================================================================
+  // Register Agents
+  // ============================================================================
+
+  // DSA Interview Agent
+  const dsaAgent = new DSAInterviewAgent(
+    config.llmProvider,
+    memoryManager,
+    config.vectorDb
+  );
+  agentRouter.registerAgent(dsaAgent);
+
+  // System Design Agent
+  const systemDesignAgent = new SystemDesignAgent(
+    config.llmProvider,
+    memoryManager,
+    config.vectorDb
+  );
+  agentRouter.registerAgent(systemDesignAgent);
+
+  // Resume Review Agent
+  const resumeAgent = new ResumeReviewAgent(config.llmProvider, memoryManager);
+  agentRouter.registerAgent(resumeAgent);
+
+  // HR Behavioral Agent
+  const behavioralAgent = new HRBehavioralAgent(
+    config.llmProvider,
+    memoryManager
+  );
+  agentRouter.registerAgent(behavioralAgent);
+
+  // Learning Support Agent
+  const learningAgent = new LearningSupportAgent(
+    config.llmProvider,
+    memoryManager
+  );
+  agentRouter.registerAgent(learningAgent);
+
+  console.log(`Registered ${agentRouter.getAgents().length} agents`);
+
+  // ============================================================================
+  // Initialize Controllers
+  // ============================================================================
+
+  const queryController = new QueryController(agentRouter, memoryManager);
+  
+  const sessionManager = new InterviewSessionManager(
+    config.llmProvider,
+    memoryManager,
+    config.vectorDb
+  );
+  const interviewController = new InterviewController(sessionManager);
+  
+  const resumeController = new ResumeController(agentRouter, memoryManager);
+  const progressController = new ProgressController(memoryManager);
+
+  // ============================================================================
+  // Routes
+  // ============================================================================
+
+  // API routes
+  const apiRoutes = createRoutes(
+    queryController,
+    interviewController,
+    resumeController,
+    progressController
+  );
+  app.use('/api', apiRoutes);
+
+  // Root route
+  app.get('/', (req: Request, res: Response) => {
+    res.json({
+      name: 'AI Interview Coach API',
+      version: '1.0.0',
+      status: 'running',
+      endpoints: {
+        health: '/api/health',
+        query: '/api/query',
+        interview: {
+          start: '/api/interview/start',
+          answer: '/api/interview/answer',
+          status: '/api/interview/:sessionId',
+        },
+        resume: '/api/resume/review',
+        progress: '/api/progress/:userId',
+      },
+    });
+  });
+
+  // ============================================================================
+  // Error Handling
+  // ============================================================================
+
+  // 404 handler
+  app.use((req: Request, res: Response) => {
+    res.status(404).json({
+      success: false,
+      error: {
+        code: 'NOT_FOUND',
+        message: `Route ${req.method} ${req.path} not found`,
+      },
+    });
+  });
+
+  // Global error handler
+  app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+    console.error('Global error handler:', err);
+    
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'An unexpected error occurred',
+        details: process.env.NODE_ENV === 'development' ? err.message : undefined,
+      },
+    });
+  });
+
+  // ============================================================================
+  // Cleanup on Shutdown
+  // ============================================================================
+
+  process.on('SIGTERM', async () => {
+    console.log('SIGTERM received, cleaning up...');
+    
+    // Cleanup expired sessions
+    await memoryManager.cleanup(30);
+    
+    // Close vector DB if configured
+    if (config.vectorDb) {
+      await config.vectorDb.close();
+    }
+    
+    process.exit(0);
+  });
+
+  return app;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\controllers\interview-controller.ts
+==============================
+
+/**
+ * Interview Controller
+ * Handles mock interview session endpoints
+ */
+
+import { Request, Response } from 'express';
+import { InterviewSessionManager } from '../services/interview-session-manager';
+import { APIResponse, StartInterviewRequest, AnswerRequest } from '../types';
+
+export class InterviewController {
+  constructor(private sessionManager: InterviewSessionManager) {}
+
+  /**
+   * Start a new interview session
+   */
+  async startInterview(req: Request, res: Response): Promise<void> {
+    try {
+      const requestData = req.body as StartInterviewRequest;
+
+      // Validate request
+      if (!requestData.userId || !requestData.type) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'userId and type are required',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      const session = await this.sessionManager.startSession(
+        requestData.userId,
+        requestData.type,
+        requestData.difficulty || 'medium',
+        requestData.duration,
+        requestData.focusAreas
+      );
+
+      // Get first question
+      const firstQuestion = this.sessionManager.getCurrentQuestion(session.id);
+
+      res.json({
+        success: true,
+        data: {
+          sessionId: session.id,
+          type: session.type,
+          status: session.status,
+          totalQuestions: session.questions.length,
+          currentQuestion: firstQuestion,
+          currentQuestionIndex: session.currentQuestionIndex + 1,
+        },
+        metadata: {
+          timestamp: new Date(),
+        },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Start interview error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'START_ERROR',
+          message: 'Failed to start interview session',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Submit answer to current question
+   */
+  async submitAnswer(req: Request, res: Response): Promise<void> {
+    try {
+      const requestData = req.body as AnswerRequest;
+
+      // Validate request
+      if (!requestData.sessionId || !requestData.userId || !requestData.answer) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'sessionId, userId, and answer are required',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      const result = await this.sessionManager.submitAnswer(
+        requestData.sessionId,
+        requestData.answer,
+        requestData.timeSpent
+      );
+
+      res.json({
+        success: true,
+        data: {
+          feedback: result.feedback,
+          score: result.score,
+          nextQuestion: result.nextQuestion,
+          sessionCompleted: result.sessionCompleted,
+        },
+        metadata: {
+          timestamp: new Date(),
+        },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Submit answer error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'SUBMIT_ERROR',
+          message: 'Failed to submit answer',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Request a hint for current question
+   */
+  async requestHint(req: Request, res: Response): Promise<void> {
+    try {
+      const { sessionId } = req.params;
+
+      if (!sessionId) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'sessionId is required',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      const hint = this.sessionManager.requestHint(sessionId);
+
+      if (!hint) {
+        res.status(404).json({
+          success: false,
+          error: {
+            code: 'NO_HINTS',
+            message: 'No more hints available',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: { hint },
+        metadata: {
+          timestamp: new Date(),
+        },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Request hint error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'HINT_ERROR',
+          message: 'Failed to get hint',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Get interview session status
+   */
+  async getSessionStatus(req: Request, res: Response): Promise<void> {
+    try {
+      const { sessionId } = req.params;
+
+      if (!sessionId) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'sessionId is required',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      const session = this.sessionManager.getSession(sessionId);
+
+      if (!session) {
+        res.status(404).json({
+          success: false,
+          error: {
+            code: 'SESSION_NOT_FOUND',
+            message: 'Interview session not found',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: {
+          sessionId: session.id,
+          status: session.status,
+          type: session.type,
+          currentQuestionIndex: session.currentQuestionIndex + 1,
+          totalQuestions: session.questions.length,
+          score: session.score,
+          startTime: session.startTime,
+          endTime: session.endTime,
+        },
+        metadata: {
+          timestamp: new Date(),
+        },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get session status error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'STATUS_ERROR',
+          message: 'Failed to get session status',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Pause interview session
+   */
+  async pauseSession(req: Request, res: Response): Promise<void> {
+    try {
+      const { sessionId } = req.params;
+
+      if (!sessionId) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'sessionId is required',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      this.sessionManager.pauseSession(sessionId);
+
+      res.json({
+        success: true,
+        data: { message: 'Session paused successfully' },
+        metadata: {
+          timestamp: new Date(),
+        },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Pause session error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'PAUSE_ERROR',
+          message: 'Failed to pause session',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Resume interview session
+   */
+  async resumeSession(req: Request, res: Response): Promise<void> {
+    try {
+      const { sessionId } = req.params;
+
+      if (!sessionId) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'sessionId is required',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      this.sessionManager.resumeSession(sessionId);
+
+      res.json({
+        success: true,
+        data: { message: 'Session resumed successfully' },
+        metadata: {
+          timestamp: new Date(),
+        },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Resume session error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'RESUME_ERROR',
+          message: 'Failed to resume session',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      } as APIResponse);
+    }
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\controllers\query-controller.ts
+==============================
+
+/**
+ * Query Controller
+ * Handles general query processing through the agent system
+ */
+
+import { Request, Response } from 'express';
+import { AgentRouter } from '../router/agent-router';
+import { MemoryManager } from '../memory/memory-manager';
+import { APIResponse, QueryRequest, QueryResponse } from '../types';
+import { v4 as uuidv4 } from 'uuid';
+
+export class QueryController {
+  constructor(
+    private router: AgentRouter,
+    private memoryManager: MemoryManager
+  ) {}
+
+  /**
+   * Process a user query
+   */
+  async processQuery(req: Request, res: Response): Promise<void> {
+    try {
+      const requestData = req.body as QueryRequest;
+
+      // Validate request
+      if (!requestData.query || !requestData.userId) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'Query and userId are required',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      // Generate session ID if not provided
+      const sessionId = requestData.sessionId || uuidv4();
+
+      // Create session in memory
+      await this.memoryManager.createSession(requestData.userId, sessionId);
+
+      // Route query to appropriate agent
+      const { agent, decision } = await this.router.routeAndGetAgent({
+        query: requestData.query,
+        userId: requestData.userId,
+        sessionId,
+        context: requestData.context,
+      });
+
+      console.log(
+        `Routing decision: ${decision.agentType} (confidence: ${decision.confidence})`
+      );
+
+      // Process with the selected agent
+      const result = await agent.process({
+        query: requestData.query,
+        userId: requestData.userId,
+        sessionId,
+        context: requestData.context,
+      });
+
+      const response: QueryResponse = {
+        response: result.response,
+        agentType: agent.type,
+        confidence: result.confidence,
+        suggestedFollowUps: result.suggestedFollowUps,
+        retrievedContext: requestData.useRAG ? [] : undefined, // Would be populated by RAG
+      };
+
+      res.json({
+        success: true,
+        data: response,
+        metadata: {
+          timestamp: new Date(),
+          requestId: uuidv4(),
+        },
+      } as APIResponse<QueryResponse>);
+    } catch (error) {
+      console.error('Query processing error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'PROCESSING_ERROR',
+          message: 'Failed to process query',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Get conversation history for a session
+   */
+  async getHistory(req: Request, res: Response): Promise<void> {
+    try {
+      const { sessionId } = req.params;
+
+      if (!sessionId) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'Session ID is required',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      const history = await this.memoryManager.getConversationContext(
+        sessionId,
+        100 // Get full history
+      );
+
+      res.json({
+        success: true,
+        data: history,
+        metadata: {
+          timestamp: new Date(),
+        },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get history error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'FETCH_ERROR',
+          message: 'Failed to fetch conversation history',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      } as APIResponse);
+    }
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\controllers\resume-progress-controllers.ts
+==============================
+
+/**
+ * Resume Controller
+ * Handles resume review requests
+ */
+
+import { Request, Response } from 'express';
+import { AgentRouter } from '../router/agent-router';
+import { MemoryManager } from '../memory/memory-manager';
+import { APIResponse, ResumeReviewRequest, AgentType } from '../types';
+import { v4 as uuidv4 } from 'uuid';
+
+export class ResumeController {
+  constructor(
+    private router: AgentRouter,
+    private memoryManager: MemoryManager
+  ) {}
+
+  /**
+   * Review a resume
+   */
+  async reviewResume(req: Request, res: Response): Promise<void> {
+    try {
+      const requestData = req.body as ResumeReviewRequest;
+
+      // Validate request
+      if (!requestData.userId || !requestData.resumeText) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'userId and resumeText are required',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      const sessionId = uuidv4();
+      await this.memoryManager.createSession(requestData.userId, sessionId);
+
+      // Get resume review agent
+      const agent = this.router.getAgent(AgentType.RESUME_REVIEW);
+      if (!agent) {
+        throw new Error('Resume review agent not available');
+      }
+
+      // Process resume review
+      const result = await agent.process({
+        query: 'Please review my resume',
+        userId: requestData.userId,
+        sessionId,
+        context: {
+          resumeText: requestData.resumeText,
+          targetRole: requestData.targetRole,
+          targetCompanies: requestData.targetCompanies,
+        },
+      });
+
+      res.json({
+        success: true,
+        data: {
+          review: result.response,
+          analysis: result.metadata?.analysis,
+          confidence: result.confidence,
+        },
+        metadata: {
+          timestamp: new Date(),
+        },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Resume review error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'REVIEW_ERROR',
+          message: 'Failed to review resume',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      } as APIResponse);
+    }
+  }
+}
+
+/**
+ * Progress Controller
+ * Handles user progress and learning tracking
+ */
+export class ProgressController {
+  constructor(private memoryManager: MemoryManager) {}
+
+  /**
+   * Get user progress summary
+   */
+  async getProgress(req: Request, res: Response): Promise<void> {
+    try {
+      const { userId } = req.params;
+
+      if (!userId) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'userId is required',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      const summary = await this.memoryManager.getUserSummary(userId);
+
+      res.json({
+        success: true,
+        data: {
+          weakAreas: summary.weakAreas,
+          learningProgress: summary.progress,
+          recentTopics: summary.recentTopics,
+        },
+        metadata: {
+          timestamp: new Date(),
+        },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get progress error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'PROGRESS_ERROR',
+          message: 'Failed to fetch user progress',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Get weak areas for focused practice
+   */
+  async getWeakAreas(req: Request, res: Response): Promise<void> {
+    try {
+      const { userId } = req.params;
+      const limit = parseInt(req.query.limit as string) || 5;
+
+      if (!userId) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'userId is required',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      const weakAreas = await this.memoryManager.getWeakAreas(userId, limit);
+
+      res.json({
+        success: true,
+        data: { weakAreas },
+        metadata: {
+          timestamp: new Date(),
+        },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get weak areas error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'WEAK_AREAS_ERROR',
+          message: 'Failed to fetch weak areas',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      } as APIResponse);
+    }
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\memory\memory-manager.ts
+==============================
+
+/**
+ * Memory System
+ * Handles both short-term (session) and long-term (user) memory
+ */
+
+import {
+  ShortTermMemory,
+  LongTermMemory,
+  ConversationTurn,
+  WeakArea,
+  LearningProgress,
+  SkillLevel,
+} from '../../types';
+
+/**
+ * Memory storage interface
+ */
+export interface IMemoryStore {
+  // Short-term memory operations
+  getShortTermMemory(sessionId: string): Promise<ShortTermMemory | null>;
+  setShortTermMemory(memory: ShortTermMemory): Promise<void>;
+  deleteShortTermMemory(sessionId: string): Promise<void>;
+  addConversationTurn(sessionId: string, turn: ConversationTurn): Promise<void>;
+
+  // Long-term memory operations
+  getLongTermMemory(userId: string): Promise<LongTermMemory | null>;
+  setLongTermMemory(memory: LongTermMemory): Promise<void>;
+  updateWeakAreas(userId: string, weakAreas: WeakArea[]): Promise<void>;
+  updateLearningProgress(userId: string, progress: Partial<LearningProgress>): Promise<void>;
+
+  // Cleanup operations
+  cleanupExpiredSessions(timeoutMinutes: number): Promise<number>;
+}
+
+/**
+ * In-memory implementation of memory store
+ * Can be swapped with Redis or database implementation
+ */
+export class InMemoryStore implements IMemoryStore {
+  private shortTermMemories: Map<string, ShortTermMemory> = new Map();
+  private longTermMemories: Map<string, LongTermMemory> = new Map();
+
+  async getShortTermMemory(sessionId: string): Promise<ShortTermMemory | null> {
+    return this.shortTermMemories.get(sessionId) || null;
+  }
+
+  async setShortTermMemory(memory: ShortTermMemory): Promise<void> {
+    this.shortTermMemories.set(memory.sessionId, memory);
+  }
+
+  async deleteShortTermMemory(sessionId: string): Promise<void> {
+    this.shortTermMemories.delete(sessionId);
+  }
+
+  async addConversationTurn(sessionId: string, turn: ConversationTurn): Promise<void> {
+    const memory = await this.getShortTermMemory(sessionId);
+    if (memory) {
+      memory.conversationHistory.push(turn);
+      memory.lastActivity = new Date();
+      await this.setShortTermMemory(memory);
+    }
+  }
+
+  async getLongTermMemory(userId: string): Promise<LongTermMemory | null> {
+    return this.longTermMemories.get(userId) || null;
+  }
+
+  async setLongTermMemory(memory: LongTermMemory): Promise<void> {
+    this.longTermMemories.set(memory.userId, memory);
+  }
+
+  async updateWeakAreas(userId: string, weakAreas: WeakArea[]): Promise<void> {
+    const memory = await this.getLongTermMemory(userId);
+    if (memory) {
+      memory.weakAreas = weakAreas;
+      await this.setLongTermMemory(memory);
+    }
+  }
+
+  async updateLearningProgress(
+    userId: string,
+    progress: Partial<LearningProgress>
+  ): Promise<void> {
+    const memory = await this.getLongTermMemory(userId);
+    if (memory) {
+      memory.learningProgress = {
+        ...memory.learningProgress,
+        ...progress,
+      };
+      await this.setLongTermMemory(memory);
+    }
+  }
+
+  async cleanupExpiredSessions(timeoutMinutes: number): Promise<number> {
+    const now = new Date();
+    const timeoutMs = timeoutMinutes * 60 * 1000;
+    let deletedCount = 0;
+
+    for (const [sessionId, memory] of this.shortTermMemories.entries()) {
+      const inactiveTime = now.getTime() - memory.lastActivity.getTime();
+      if (inactiveTime > timeoutMs) {
+        this.shortTermMemories.delete(sessionId);
+        deletedCount++;
+      }
+    }
+
+    return deletedCount;
+  }
+}
+
+/**
+ * Memory Manager
+ * High-level interface for memory operations
+ */
+export class MemoryManager {
+  private store: IMemoryStore;
+
+  constructor(store: IMemoryStore = new InMemoryStore()) {
+    this.store = store;
+  }
+
+  /**
+   * Create or get a short-term memory session
+   */
+  async createSession(userId: string, sessionId: string): Promise<ShortTermMemory> {
+    const existing = await this.store.getShortTermMemory(sessionId);
+    if (existing) {
+      return existing;
+    }
+
+    const memory: ShortTermMemory = {
+      sessionId,
+      userId,
+      conversationHistory: [],
+      startTime: new Date(),
+      lastActivity: new Date(),
+    };
+
+    await this.store.setShortTermMemory(memory);
+    return memory;
+  }
+
+  /**
+   * Get conversation context for an agent
+   */
+  async getConversationContext(
+    sessionId: string,
+    maxTurns: number = 10
+  ): Promise<ConversationTurn[]> {
+    const memory = await this.store.getShortTermMemory(sessionId);
+    if (!memory) {
+      return [];
+    }
+
+    // Return last N turns
+    return memory.conversationHistory.slice(-maxTurns);
+  }
+
+  /**
+   * Add a conversation turn
+   */
+  async addTurn(sessionId: string, turn: ConversationTurn): Promise<void> {
+    await this.store.addConversationTurn(sessionId, turn);
+  }
+
+  /**
+   * Create or get long-term memory for a user
+   */
+  async createUserMemory(userId: string): Promise<LongTermMemory> {
+    const existing = await this.store.getLongTermMemory(userId);
+    if (existing) {
+      return existing;
+    }
+
+    const memory: LongTermMemory = {
+      userId,
+      weakAreas: [],
+      strengths: [],
+      interviewHistory: [],
+      learningProgress: {
+        totalInterviews: 0,
+        topicsCompleted: [],
+        currentLevel: SkillLevel.BEGINNER,
+        goalLevel: SkillLevel.ADVANCED,
+        milestones: [],
+      },
+    };
+
+    await this.store.setLongTermMemory(memory);
+    return memory;
+  }
+
+  /**
+   * Record a weak area
+   */
+  async recordWeakArea(
+    userId: string,
+    topic: string,
+    category: string,
+    suggestions: string[] = []
+  ): Promise<void> {
+    const memory = await this.createUserMemory(userId);
+    
+    // Find existing weak area or create new one
+    const existingIndex = memory.weakAreas.findIndex((wa) => wa.topic === topic);
+    
+    if (existingIndex !== -1) {
+      memory.weakAreas[existingIndex].failureCount++;
+      memory.weakAreas[existingIndex].lastEncountered = new Date();
+      memory.weakAreas[existingIndex].improvementSuggestions.push(...suggestions);
+    } else {
+      memory.weakAreas.push({
+        topic,
+        category,
+        failureCount: 1,
+        lastEncountered: new Date(),
+        improvementSuggestions: suggestions,
+      });
+    }
+
+    await this.store.setLongTermMemory(memory);
+  }
+
+  /**
+   * Get weak areas for a user
+   */
+  async getWeakAreas(userId: string, limit: number = 5): Promise<WeakArea[]> {
+    const memory = await this.store.getLongTermMemory(userId);
+    if (!memory) {
+      return [];
+    }
+
+    // Sort by failure count and recency
+    return memory.weakAreas
+      .sort((a, b) => {
+        if (a.failureCount !== b.failureCount) {
+          return b.failureCount - a.failureCount;
+        }
+        return b.lastEncountered.getTime() - a.lastEncountered.getTime();
+      })
+      .slice(0, limit);
+  }
+
+  /**
+   * Update learning progress
+   */
+  async updateProgress(
+    userId: string,
+    updates: Partial<LearningProgress>
+  ): Promise<void> {
+    await this.store.updateLearningProgress(userId, updates);
+  }
+
+  /**
+   * Get user's learning summary
+   */
+  async getUserSummary(userId: string): Promise<{
+    weakAreas: WeakArea[];
+    progress: LearningProgress;
+    recentTopics: string[];
+  }> {
+    const memory = await this.store.getLongTermMemory(userId);
+    if (!memory) {
+      return {
+        weakAreas: [],
+        progress: {
+          totalInterviews: 0,
+          topicsCompleted: [],
+          currentLevel: SkillLevel.BEGINNER,
+          goalLevel: SkillLevel.ADVANCED,
+          milestones: [],
+        },
+        recentTopics: [],
+      };
+    }
+
+    // Get recent topics from interview history
+    const recentTopics = memory.interviewHistory
+      .slice(-5)
+      .flatMap((session) => session.questions.map((q) => q.category))
+      .filter((topic, index, self) => self.indexOf(topic) === index);
+
+    return {
+      weakAreas: await this.getWeakAreas(userId),
+      progress: memory.learningProgress,
+      recentTopics,
+    };
+  }
+
+  /**
+   * Cleanup expired sessions
+   */
+  async cleanup(timeoutMinutes: number = 30): Promise<number> {
+    return await this.store.cleanupExpiredSessions(timeoutMinutes);
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\rag\rag-service.ts
+==============================
+
+/**
+ * RAG Service
+ * Orchestrates retrieval-augmented generation
+ */
+
+import { IVectorDatabase } from '../services/vector-db/base-vector-db';
+import { RAGContext, RetrievalResult, Document } from '../types';
+
+export interface RAGConfig {
+  topK?: number;
+  similarityThreshold?: number;
+  searchStrategy?: 'semantic' | 'hybrid' | 'keyword';
+}
+
+export class RAGService {
+  constructor(
+    private vectorDb: IVectorDatabase,
+    private config: RAGConfig = {}
+  ) {
+    this.config = {
+      topK: config.topK || 5,
+      similarityThreshold: config.similarityThreshold || 0.7,
+      searchStrategy: config.searchStrategy || 'semantic',
+    };
+  }
+
+  /**
+   * Retrieve relevant context for a query
+   */
+  async retrieveContext(
+    query: string,
+    filter?: Record<string, unknown>
+  ): Promise<RAGContext> {
+    const results = await this.vectorDb.search(
+      query,
+      this.config.topK,
+      filter
+    );
+
+    // Filter by similarity threshold
+    const filteredResults = results.filter(
+      (r) => r.relevance >= this.config.similarityThreshold!
+    );
+
+    return {
+      query,
+      retrievedDocs: filteredResults,
+      totalResults: results.length,
+      searchStrategy: this.config.searchStrategy!,
+    };
+  }
+
+  /**
+   * Index documents into the vector store
+   */
+  async indexDocuments(documents: Document[]): Promise<void> {
+    await this.vectorDb.addDocuments(documents);
+  }
+
+  /**
+   * Index a single document
+   */
+  async indexDocument(document: Document): Promise<void> {
+    await this.vectorDb.addDocument(document);
+  }
+
+  /**
+   * Delete documents by category
+   */
+  async deleteByCategory(category: string): Promise<void> {
+    // Note: This is a simplified implementation
+    // In production, you'd want to query by category first, then delete
+    console.warn('Delete by category not fully implemented');
+  }
+
+  /**
+   * Get statistics about indexed documents
+   */
+  async getStats(): Promise<{
+    totalDocuments: number;
+    categories: Record<string, number>;
+  }> {
+    // This would require additional implementation in the vector DB
+    return {
+      totalDocuments: 0,
+      categories: {},
+    };
+  }
+
+  /**
+   * Format retrieved context for prompt injection
+   */
+  formatContextForPrompt(context: RAGContext): string {
+    if (context.retrievedDocs.length === 0) {
+      return '';
+    }
+
+    let formatted = '\n\n--- Retrieved Context ---\n';
+    
+    context.retrievedDocs.forEach((result, index) => {
+      formatted += `\n[${index + 1}] (Relevance: ${(result.relevance * 100).toFixed(1)}%)\n`;
+      formatted += `Source: ${result.document.metadata.source}\n`;
+      formatted += `Content: ${result.document.content}\n`;
+      
+      if (result.document.metadata.company) {
+        formatted += `Company: ${result.document.metadata.company}\n`;
+      }
+      
+      if (result.document.metadata.difficulty) {
+        formatted += `Difficulty: ${result.document.metadata.difficulty}\n`;
+      }
+    });
+
+    formatted += '\n--- End of Context ---\n';
+    
+    return formatted;
+  }
+
+  /**
+   * Update RAG configuration
+   */
+  updateConfig(config: Partial<RAGConfig>): void {
+    this.config = { ...this.config, ...config };
+  }
+
+  /**
+   * Get current configuration
+   */
+  getConfig(): RAGConfig {
+    return { ...this.config };
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\router\agent-router.ts
+==============================
+
+/**
+ * Agent Router
+ * Routes queries to the appropriate agent using hybrid strategy
+ */
+
+import {
+  AgentType,
+  BaseAgentInput,
+  RoutingDecision,
+  RouterStrategy,
+  IAgent,
+} from '../types';
+import { ILLMProvider } from '../services/llm/base-provider';
+
+export class AgentRouter {
+  private agents: Map<AgentType, IAgent> = new Map();
+  private strategy: RouterStrategy;
+
+  constructor(
+    private llmProvider: ILLMProvider,
+    strategy: RouterStrategy = RouterStrategy.HYBRID
+  ) {
+    this.strategy = strategy;
+  }
+
+  /**
+   * Register an agent
+   */
+  registerAgent(agent: IAgent): void {
+    this.agents.set(agent.type, agent);
+  }
+
+  /**
+   * Get all registered agents
+   */
+  getAgents(): IAgent[] {
+    return Array.from(this.agents.values());
+  }
+
+  /**
+   * Route a query to the appropriate agent
+   */
+  async route(input: BaseAgentInput): Promise<RoutingDecision> {
+    switch (this.strategy) {
+      case RouterStrategy.RULE_BASED:
+        return await this.ruleBasedRouting(input);
+      case RouterStrategy.LLM_BASED:
+        return await this.llmBasedRouting(input);
+      case RouterStrategy.HYBRID:
+        return await this.hybridRouting(input);
+      default:
+        throw new Error(`Unsupported routing strategy: ${this.strategy}`);
+    }
+  }
+
+  /**
+   * Rule-based routing using keyword matching
+   * Fast but less flexible
+   */
+  private async ruleBasedRouting(input: BaseAgentInput): Promise<RoutingDecision> {
+    const queryLower = input.query.toLowerCase();
+
+    // Priority-based keyword matching
+    const rules: Array<{
+      agentType: AgentType;
+      keywords: string[];
+      weight: number;
+    }> = [
+      {
+        agentType: AgentType.RESUME_REVIEW,
+        keywords: ['resume', 'cv', 'curriculum vitae', 'review my resume'],
+        weight: 3,
+      },
+      {
+        agentType: AgentType.DSA_INTERVIEW,
+        keywords: [
+          'algorithm',
+          'leetcode',
+          'coding',
+          'data structure',
+          'array',
+          'tree',
+          'graph',
+          'sorting',
+          'complexity',
+        ],
+        weight: 2,
+      },
+      {
+        agentType: AgentType.SYSTEM_DESIGN,
+        keywords: [
+          'system design',
+          'architecture',
+          'scalability',
+          'distributed',
+          'design',
+          'microservice',
+          'load balancer',
+        ],
+        weight: 2,
+      },
+      {
+        agentType: AgentType.HR_BEHAVIORAL,
+        keywords: [
+          'tell me about',
+          'behavioral',
+          'star method',
+          'describe a time',
+          'teamwork',
+          'conflict',
+          'leadership',
+        ],
+        weight: 2,
+      },
+      {
+        agentType: AgentType.LEARNING_SUPPORT,
+        keywords: [
+          'progress',
+          'improvement',
+          'weak',
+          'practice',
+          'study plan',
+          'roadmap',
+          'learning',
+        ],
+        weight: 1,
+      },
+    ];
+
+    // Calculate scores for each agent
+    const scores = new Map<AgentType, number>();
+
+    for (const rule of rules) {
+      let score = 0;
+      for (const keyword of rule.keywords) {
+        if (queryLower.includes(keyword)) {
+          score += rule.weight;
+        }
+      }
+      if (score > 0) {
+        scores.set(rule.agentType, score);
+      }
+    }
+
+    if (scores.size === 0) {
+      // Default to DSA if no match
+      return {
+        agentType: AgentType.DSA_INTERVIEW,
+        confidence: 0.3,
+        reasoning: 'No clear match, defaulting to DSA Interview Agent',
+        fallbackAgents: [AgentType.LEARNING_SUPPORT],
+      };
+    }
+
+    // Get agent with highest score
+    const sortedScores = Array.from(scores.entries()).sort((a, b) => b[1] - a[1]);
+    const [topAgent, topScore] = sortedScores[0];
+
+    // Calculate confidence based on score difference
+    const totalScore = Array.from(scores.values()).reduce((a, b) => a + b, 0);
+    const confidence = topScore / totalScore;
+
+    return {
+      agentType: topAgent,
+      confidence: Math.min(confidence, 0.9), // Cap at 0.9 for rule-based
+      reasoning: `Keyword matching suggests ${topAgent}`,
+      fallbackAgents: sortedScores.slice(1, 3).map(([agent]) => agent),
+    };
+  }
+
+  /**
+   * LLM-based routing using intent classification
+   * More flexible but slower
+   */
+  private async llmBasedRouting(input: BaseAgentInput): Promise<RoutingDecision> {
+    const agentDescriptions = Array.from(this.agents.values())
+      .map(
+        (agent) => `- ${agent.type}: ${agent.description}`
+      )
+      .join('\n');
+
+    const routingPrompt = `You are a query router for an AI interview coach system.
+
+Available agents:
+${agentDescriptions}
+
+User query: "${input.query}"
+
+Determine which agent should handle this query. Consider:
+1. The primary intent of the query
+2. The type of help the user needs
+3. Context clues in the query
+
+Respond with JSON containing:
+- agentType: the agent type (exact string match from list above)
+- confidence: your confidence (0-1)
+- reasoning: brief explanation
+- fallbackAgents: array of alternative agents (optional)`;
+
+    const schema = {
+      agentType: 'string',
+      confidence: 'number (0-1)',
+      reasoning: 'string',
+      fallbackAgents: 'array of strings (optional)',
+    };
+
+    try {
+      const decision = await this.llmProvider.generateStructuredOutput<RoutingDecision>(
+        {
+          messages: [
+            {
+              role: 'system',
+              content: 'You are an expert at understanding user intent and routing queries.',
+            },
+            { role: 'user', content: routingPrompt },
+          ],
+          temperature: 0.3,
+          maxTokens: 500,
+        },
+        schema
+      );
+
+      return decision;
+    } catch (error) {
+      console.error('LLM routing failed, falling back to rules:', error);
+      return await this.ruleBasedRouting(input);
+    }
+  }
+
+  /**
+   * Hybrid routing: use rules first, LLM for ambiguous cases
+   * Best balance of speed and accuracy
+   */
+  private async hybridRouting(input: BaseAgentInput): Promise<RoutingDecision> {
+    // Try rule-based first
+    const ruleDecision = await this.ruleBasedRouting(input);
+
+    // If confidence is high enough, use rule-based result
+    if (ruleDecision.confidence >= 0.7) {
+      return {
+        ...ruleDecision,
+        reasoning: `Rule-based routing (high confidence): ${ruleDecision.reasoning}`,
+      };
+    }
+
+    // Otherwise, use LLM for better accuracy
+    console.log('Low confidence from rules, using LLM routing...');
+    const llmDecision = await this.llmBasedRouting(input);
+
+    return {
+      ...llmDecision,
+      reasoning: `Hybrid routing (LLM fallback): ${llmDecision.reasoning}`,
+    };
+  }
+
+  /**
+   * Get the agent for a given type
+   */
+  getAgent(agentType: AgentType): IAgent | undefined {
+    return this.agents.get(agentType);
+  }
+
+  /**
+   * Execute routing and get the appropriate agent
+   */
+  async routeAndGetAgent(input: BaseAgentInput): Promise<{
+    agent: IAgent;
+    decision: RoutingDecision;
+  }> {
+    const decision = await this.route(input);
+    const agent = this.getAgent(decision.agentType);
+
+    if (!agent) {
+      throw new Error(`No agent found for type: ${decision.agentType}`);
+    }
+
+    return { agent, decision };
+  }
+
+  /**
+   * Set routing strategy
+   */
+  setStrategy(strategy: RouterStrategy): void {
+    this.strategy = strategy;
+  }
+
+  /**
+   * Get current strategy
+   */
+  getStrategy(): RouterStrategy {
+    return this.strategy;
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\routes\api-routes.ts
+==============================
+
+/**
+ * API Routes
+ * Defines all REST API endpoints
+ */
+
+import express, { Router } from 'express';
+import { QueryController } from '../controllers/query-controller';
+import { InterviewController } from '../controllers/interview-controller';
+import {
+  ResumeController,
+  ProgressController,
+} from '../controllers/resume-progress-controllers';
+
+/**
+ * Create and configure all API routes
+ */
+export function createRoutes(
+  queryController: QueryController,
+  interviewController: InterviewController,
+  resumeController: ResumeController,
+  progressController: ProgressController
+): Router {
+  const router = express.Router();
+
+  // ============================================================================
+  // Query Routes
+  // ============================================================================
+
+  /**
+   * POST /api/query
+   * Process a general query through the agent system
+   */
+  router.post('/query', (req, res) => queryController.processQuery(req, res));
+
+  /**
+   * GET /api/query/history/:sessionId
+   * Get conversation history for a session
+   */
+  router.get('/query/history/:sessionId', (req, res) =>
+    queryController.getHistory(req, res)
+  );
+
+  // ============================================================================
+  // Interview Routes
+  // ============================================================================
+
+  /**
+   * POST /api/interview/start
+   * Start a new mock interview session
+   */
+  router.post('/interview/start', (req, res) =>
+    interviewController.startInterview(req, res)
+  );
+
+  /**
+   * POST /api/interview/answer
+   * Submit answer to current question
+   */
+  router.post('/interview/answer', (req, res) =>
+    interviewController.submitAnswer(req, res)
+  );
+
+  /**
+   * GET /api/interview/:sessionId/hint
+   * Request a hint for current question
+   */
+  router.get('/interview/:sessionId/hint', (req, res) =>
+    interviewController.requestHint(req, res)
+  );
+
+  /**
+   * GET /api/interview/:sessionId
+   * Get interview session status
+   */
+  router.get('/interview/:sessionId', (req, res) =>
+    interviewController.getSessionStatus(req, res)
+  );
+
+  /**
+   * POST /api/interview/:sessionId/pause
+   * Pause interview session
+   */
+  router.post('/interview/:sessionId/pause', (req, res) =>
+    interviewController.pauseSession(req, res)
+  );
+
+  /**
+   * POST /api/interview/:sessionId/resume
+   * Resume interview session
+   */
+  router.post('/interview/:sessionId/resume', (req, res) =>
+    interviewController.resumeSession(req, res)
+  );
+
+  // ============================================================================
+  // Resume Routes
+  // ============================================================================
+
+  /**
+   * POST /api/resume/review
+   * Submit resume for review
+   */
+  router.post('/resume/review', (req, res) =>
+    resumeController.reviewResume(req, res)
+  );
+
+  // ============================================================================
+  // Progress Routes
+  // ============================================================================
+
+  /**
+   * GET /api/progress/:userId
+   * Get user's overall progress
+   */
+  router.get('/progress/:userId', (req, res) =>
+    progressController.getProgress(req, res)
+  );
+
+  /**
+   * GET /api/progress/:userId/weak-areas
+   * Get user's weak areas
+   */
+  router.get('/progress/:userId/weak-areas', (req, res) =>
+    progressController.getWeakAreas(req, res)
+  );
+
+  // ============================================================================
+  // Health Check
+  // ============================================================================
+
+  /**
+   * GET /api/health
+   * Health check endpoint
+   */
+  router.get('/health', (req, res) => {
+    res.json({
+      success: true,
+      data: {
+        status: 'healthy',
+        timestamp: new Date(),
+        version: '1.0.0',
+      },
+    });
+  });
+
+  return router;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\server.ts
+==============================
+
+/**
+ * Server Entry Point
+ * Initializes and starts the Express server
+ */
+
+import dotenv from 'dotenv';
+import { createApp } from './app';
+import { LLMProviderFactory } from './services/llm/provider-factory';
+import { ChromaVectorDatabase } from './services/vector-db/chroma-db';
+import { RouterStrategy } from './types';
+
+// Load environment variables
+dotenv.config();
+
+/**
+ * Initialize server
+ */
+async function startServer() {
+  try {
+    console.log('🚀 Starting AI Interview Coach...');
+
+    // ============================================================================
+    // Initialize LLM Provider
+    // ============================================================================
+
+    console.log('Initializing LLM provider...');
+    const llmProvider = LLMProviderFactory.initializeFromEnv();
+    const isAvailable = await llmProvider.isAvailable();
+    
+    if (!isAvailable) {
+      throw new Error(`LLM provider ${llmProvider.name} is not available. Check your API key.`);
+    }
+    
+    console.log(`✅ LLM Provider: ${llmProvider.name}`);
+
+    // ============================================================================
+    // Initialize Vector Database (Optional)
+    // ============================================================================
+
+    let vectorDb;
+    const vectorDbProvider = process.env.VECTOR_DB_PROVIDER;
+
+    if (vectorDbProvider === 'chroma') {
+      console.log('Initializing ChromaDB...');
+      try {
+        const chromaHost = process.env.CHROMA_HOST || 'localhost';
+        const chromaPort = parseInt(process.env.CHROMA_PORT || '8000');
+        
+        vectorDb = new ChromaVectorDatabase(
+          { collectionName: 'interview_coach' },
+          chromaHost,
+          chromaPort
+        );
+        
+        await vectorDb.initialize({ collectionName: 'interview_coach' });
+        const isReady = await vectorDb.isReady();
+        
+        if (isReady) {
+          console.log('✅ Vector Database: ChromaDB');
+        } else {
+          console.warn('⚠️  ChromaDB initialized but not ready. RAG features may be limited.');
+        }
+      } catch (error) {
+        console.warn('⚠️  ChromaDB initialization failed. Continuing without vector search.');
+        console.warn('   Error:', error instanceof Error ? error.message : error);
+        console.warn('   Make sure ChromaDB is running: docker run -p 8000:8000 chromadb/chroma');
+        vectorDb = undefined;
+      }
+    } else {
+      console.log('⚠️  Vector database not configured. RAG features disabled.');
+      console.log('   Set VECTOR_DB_PROVIDER=chroma in .env to enable.');
+    }
+
+    // ============================================================================
+    // Create Application
+    // ============================================================================
+
+    console.log('Creating Express application...');
+    
+    const routingStrategy = (process.env.ROUTING_STRATEGY as RouterStrategy) || RouterStrategy.HYBRID;
+    
+    const app = createApp({
+      llmProvider,
+      vectorDb,
+      routingStrategy,
+    });
+
+    // ============================================================================
+    // Start Server
+    // ============================================================================
+
+    const PORT = parseInt(process.env.PORT || '3000');
+    
+    app.listen(PORT, () => {
+      console.log('');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('  🎯 AI Interview Coach API Server');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('');
+      console.log(`  ➜ Server:      http://localhost:${PORT}`);
+      console.log(`  ➜ Health:      http://localhost:${PORT}/api/health`);
+      console.log(`  ➜ Docs:        http://localhost:${PORT}/`);
+      console.log('');
+      console.log('  Configuration:');
+      console.log(`    • LLM:       ${llmProvider.name}`);
+      console.log(`    • Vector DB: ${vectorDb ? 'ChromaDB' : 'Disabled'}`);
+      console.log(`    • Routing:   ${routingStrategy}`);
+      console.log(`    • Env:       ${process.env.NODE_ENV || 'development'}`);
+      console.log('');
+      console.log('  Available Endpoints:');
+      console.log('    POST /api/query');
+      console.log('    POST /api/interview/start');
+      console.log('    POST /api/interview/answer');
+      console.log('    POST /api/resume/review');
+      console.log('    GET  /api/progress/:userId');
+      console.log('');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('');
+      console.log('  Press Ctrl+C to stop');
+      console.log('');
+    });
+
+    // ============================================================================
+    // Graceful Shutdown
+    // ============================================================================
+
+    process.on('SIGINT', async () => {
+      console.log('\n\n🛑 Shutting down gracefully...');
+      
+      if (vectorDb) {
+        console.log('Closing vector database...');
+        await vectorDb.close();
+      }
+      
+      console.log('✅ Goodbye!');
+      process.exit(0);
+    });
+
+  } catch (error) {
+    console.error('❌ Failed to start server:');
+    console.error(error);
+    process.exit(1);
+  }
+}
+
+// Start the server
+startServer();
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\embedding\embedding-service.ts
+==============================
+
+/**
+ * Embedding Service
+ * Generates vector embeddings for text using the configured LLM provider
+ */
+
+import OpenAI from 'openai';
+
+export class EmbeddingService {
+  private openaiClient: OpenAI | null = null;
+  private embeddingModel: string;
+
+  constructor(embeddingModel: string = 'text-embedding-3-small') {
+    this.embeddingModel = embeddingModel;
+    
+    // Initialize OpenAI client for embeddings
+    // Most providers use OpenAI-compatible embedding endpoints
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (apiKey) {
+      this.openaiClient = new OpenAI({ apiKey });
+    }
+  }
+
+  /**
+   * Generate embedding for a single text
+   */
+  async generateEmbedding(text: string): Promise<number[]> {
+    if (!this.openaiClient) {
+      // Fallback: return a random embedding for testing
+      console.warn('No OpenAI client available, using random embeddings');
+      return this.generateRandomEmbedding(1536);
+    }
+
+    try {
+      const response = await this.openaiClient.embeddings.create({
+        model: this.embeddingModel,
+        input: text,
+      });
+
+      return response.data[0].embedding;
+    } catch (error) {
+      console.error('Failed to generate embedding:', error);
+      // Fallback to random embedding
+      return this.generateRandomEmbedding(1536);
+    }
+  }
+
+  /**
+   * Generate embeddings for multiple texts
+   */
+  async generateEmbeddings(texts: string[]): Promise<number[][]> {
+    if (!this.openaiClient) {
+      console.warn('No OpenAI client available, using random embeddings');
+      return texts.map(() => this.generateRandomEmbedding(1536));
+    }
+
+    try {
+      const response = await this.openaiClient.embeddings.create({
+        model: this.embeddingModel,
+        input: texts,
+      });
+
+      return response.data.map((item) => item.embedding);
+    } catch (error) {
+      console.error('Failed to generate embeddings:', error);
+      return texts.map(() => this.generateRandomEmbedding(1536));
+    }
+  }
+
+  /**
+   * Generate a random embedding (for testing/fallback)
+   */
+  private generateRandomEmbedding(dimension: number): number[] {
+    const embedding = new Array(dimension);
+    for (let i = 0; i < dimension; i++) {
+      embedding[i] = Math.random() * 2 - 1; // Random values between -1 and 1
+    }
+    
+    // Normalize the vector
+    const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
+    return embedding.map((val) => val / magnitude);
+  }
+
+  /**
+   * Calculate cosine similarity between two embeddings
+   */
+  cosineSimilarity(embedding1: number[], embedding2: number[]): number {
+    if (embedding1.length !== embedding2.length) {
+      throw new Error('Embeddings must have the same dimension');
+    }
+
+    let dotProduct = 0;
+    let magnitude1 = 0;
+    let magnitude2 = 0;
+
+    for (let i = 0; i < embedding1.length; i++) {
+      dotProduct += embedding1[i] * embedding2[i];
+      magnitude1 += embedding1[i] * embedding1[i];
+      magnitude2 += embedding2[i] * embedding2[i];
+    }
+
+    magnitude1 = Math.sqrt(magnitude1);
+    magnitude2 = Math.sqrt(magnitude2);
+
+    if (magnitude1 === 0 || magnitude2 === 0) {
+      return 0;
+    }
+
+    return dotProduct / (magnitude1 * magnitude2);
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\interview-session-manager.ts
+==============================
+
+/**
+ * Interview Session Manager
+ * Manages mock interview sessions
+ */
+
+import { v4 as uuidv4 } from 'uuid';
+import {
+  InterviewSession,
+  InterviewQuestion,
+  AgentType,
+} from '../types';
+import { ILLMProvider } from '../services/llm/base-provider';
+import { MemoryManager } from '../memory/memory-manager';
+import { IVectorDatabase } from '../services/vector-db/base-vector-db';
+
+export class InterviewSessionManager {
+  private activeSessions: Map<string, InterviewSession> = new Map();
+
+  constructor(
+    private llmProvider: ILLMProvider,
+    private memoryManager: MemoryManager,
+    private vectorDb?: IVectorDatabase
+  ) {}
+
+  /**
+   * Start a new interview session
+   */
+  async startSession(
+    userId: string,
+    type: 'dsa' | 'system_design' | 'behavioral' | 'mixed',
+    difficulty: 'easy' | 'medium' | 'hard' = 'medium',
+    duration?: number,
+    focusAreas?: string[]
+  ): Promise<InterviewSession> {
+    const sessionId = uuidv4();
+
+    // Generate questions based on type and difficulty
+    const questions = await this.generateQuestions(
+      type,
+      difficulty,
+      focusAreas,
+      duration
+    );
+
+    const session: InterviewSession = {
+      id: sessionId,
+      userId,
+      type,
+      status: 'active',
+      startTime: new Date(),
+      questions,
+      currentQuestionIndex: 0,
+    };
+
+    this.activeSessions.set(sessionId, session);
+
+    // Create memory session
+    await this.memoryManager.createSession(userId, sessionId);
+
+    // Record in long-term memory
+    const userMemory = await this.memoryManager.createUserMemory(userId);
+    userMemory.interviewHistory.push(session);
+
+    return session;
+  }
+
+  /**
+   * Get current question
+   */
+  getCurrentQuestion(sessionId: string): InterviewQuestion | null {
+    const session = this.activeSessions.get(sessionId);
+    if (!session || session.currentQuestionIndex >= session.questions.length) {
+      return null;
+    }
+
+    return session.questions[session.currentQuestionIndex];
+  }
+
+  /**
+   * Submit answer to current question
+   */
+  async submitAnswer(
+    sessionId: string,
+    answer: string,
+    timeSpent?: number
+  ): Promise<{
+    feedback: string;
+    score: number;
+    nextQuestion: InterviewQuestion | null;
+    sessionCompleted: boolean;
+  }> {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    const currentQuestion = session.questions[session.currentQuestionIndex];
+    if (!currentQuestion) {
+      throw new Error('No current question');
+    }
+
+    // Evaluate the answer
+    const evaluation = await this.evaluateAnswer(
+      currentQuestion,
+      answer,
+      session.type
+    );
+
+    // Update question with answer and feedback
+    currentQuestion.userAnswer = answer;
+    currentQuestion.score = evaluation.score;
+    currentQuestion.feedback = evaluation.feedback;
+    currentQuestion.timeSpent = timeSpent;
+
+    // Record weak areas if score is low
+    if (evaluation.score < 60) {
+      await this.memoryManager.recordWeakArea(
+        session.userId,
+        currentQuestion.category,
+        session.type,
+        [evaluation.feedback]
+      );
+    }
+
+    // Move to next question
+    session.currentQuestionIndex++;
+    const nextQuestion =
+      session.currentQuestionIndex < session.questions.length
+        ? session.questions[session.currentQuestionIndex]
+        : null;
+
+    // Check if session is completed
+    const sessionCompleted = nextQuestion === null;
+    if (sessionCompleted) {
+      await this.completeSession(sessionId);
+    }
+
+    return {
+      feedback: evaluation.feedback,
+      score: evaluation.score,
+      nextQuestion,
+      sessionCompleted,
+    };
+  }
+
+  /**
+   * Request a hint for current question
+   */
+  requestHint(sessionId: string): string | null {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    const currentQuestion = session.questions[session.currentQuestionIndex];
+    if (!currentQuestion || !currentQuestion.hints) {
+      return null;
+    }
+
+    const hintsUsed = currentQuestion.hintsUsed || 0;
+    if (hintsUsed >= currentQuestion.hints.length) {
+      return null;
+    }
+
+    currentQuestion.hintsUsed = hintsUsed + 1;
+    return currentQuestion.hints[hintsUsed];
+  }
+
+  /**
+   * Complete a session
+   */
+  private async completeSession(sessionId: string): Promise<void> {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      return;
+    }
+
+    session.status = 'completed';
+    session.endTime = new Date();
+
+    // Calculate overall score
+    const totalScore = session.questions.reduce(
+      (sum, q) => sum + (q.score || 0),
+      0
+    );
+    session.score = totalScore / session.questions.length;
+
+    // Generate overall feedback
+    session.feedback = await this.generateSessionFeedback(session);
+
+    // Update learning progress
+    await this.memoryManager.updateProgress(session.userId, {
+      totalInterviews:
+        (
+          await this.memoryManager.getUserSummary(session.userId)
+        ).progress.totalInterviews + 1,
+    });
+  }
+
+  /**
+   * Get session by ID
+   */
+  getSession(sessionId: string): InterviewSession | null {
+    return this.activeSessions.get(sessionId) || null;
+  }
+
+  /**
+   * Pause a session
+   */
+  pauseSession(sessionId: string): void {
+    const session = this.activeSessions.get(sessionId);
+    if (session) {
+      session.status = 'paused';
+    }
+  }
+
+  /**
+   * Resume a session
+   */
+  resumeSession(sessionId: string): void {
+    const session = this.activeSessions.get(sessionId);
+    if (session) {
+      session.status = 'active';
+    }
+  }
+
+  /**
+   * Generate questions for a session
+   */
+  private async generateQuestions(
+    type: string,
+    difficulty: string,
+    focusAreas?: string[],
+    duration?: number
+  ): Promise<InterviewQuestion[]> {
+    // Calculate number of questions based on duration
+    const questionCount = duration ? Math.floor(duration / 15) : 5;
+
+    const questions: InterviewQuestion[] = [];
+
+    for (let i = 0; i < questionCount; i++) {
+      const question = await this.generateSingleQuestion(
+        type,
+        difficulty,
+        focusAreas
+      );
+      questions.push(question);
+    }
+
+    return questions;
+  }
+
+  /**
+   * Generate a single question
+   */
+  private async generateSingleQuestion(
+    type: string,
+    difficulty: string,
+    focusAreas?: string[]
+  ): Promise<InterviewQuestion> {
+    const focusContext = focusAreas
+      ? `Focus on these areas: ${focusAreas.join(', ')}`
+      : '';
+
+    const prompt = `Generate a ${difficulty} level ${type} interview question.
+${focusContext}
+
+Include:
+1. Clear question statement
+2. Any necessary context
+3. Expected complexity/depth
+4. 2-3 hints (progressive)
+
+Return as JSON.`;
+
+    const schema = {
+      question: 'string',
+      category: 'string',
+      hints: 'array of strings',
+    };
+
+    const generated = await this.llmProvider.generateStructuredOutput<{
+      question: string;
+      category: string;
+      hints: string[];
+    }>(
+      {
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an expert interview question generator.',
+          },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.8,
+        maxTokens: 1000,
+      },
+      schema
+    );
+
+    return {
+      id: uuidv4(),
+      question: generated.question,
+      difficulty: difficulty as 'easy' | 'medium' | 'hard',
+      category: generated.category,
+      hints: generated.hints,
+      hintsUsed: 0,
+    };
+  }
+
+  /**
+   * Evaluate an answer
+   */
+  private async evaluateAnswer(
+    question: InterviewQuestion,
+    answer: string,
+    sessionType: string
+  ): Promise<{ score: number; feedback: string }> {
+    const evaluationPrompt = `Evaluate this interview answer:
+
+Question: ${question.question}
+Category: ${question.category}
+Type: ${sessionType}
+Difficulty: ${question.difficulty}
+
+Answer: ${answer}
+
+Provide:
+1. Score (0-100)
+2. Detailed feedback
+3. What was done well
+4. What could be improved
+
+Return as JSON.`;
+
+    const schema = {
+      score: 'number (0-100)',
+      feedback: 'string',
+    };
+
+    return await this.llmProvider.generateStructuredOutput<{
+      score: number;
+      feedback: string;
+    }>(
+      {
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an expert interviewer evaluating candidate answers.',
+          },
+          { role: 'user', content: evaluationPrompt },
+        ],
+        temperature: 0.3,
+        maxTokens: 1000,
+      },
+      schema
+    );
+  }
+
+  /**
+   * Generate overall session feedback
+   */
+  private async generateSessionFeedback(
+    session: InterviewSession
+  ): Promise<string> {
+    const questionSummary = session.questions
+      .map(
+        (q, i) =>
+          `Q${i + 1}: ${q.question.substring(0, 100)}... Score: ${q.score || 0}/100`
+      )
+      .join('\n');
+
+    const prompt = `Generate overall feedback for this interview session:
+
+Type: ${session.type}
+Average Score: ${session.score}/100
+
+Questions and Scores:
+${questionSummary}
+
+Provide:
+1. Overall performance summary
+2. Key strengths
+3. Areas for improvement
+4. Next steps for preparation`;
+
+    const response = await this.llmProvider.generateCompletion({
+      messages: [
+        {
+          role: 'system',
+          content: 'You provide comprehensive interview feedback.',
+        },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.7,
+      maxTokens: 1000,
+    });
+
+    return response.content;
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\llm\anthropic-provider.ts
+==============================
+
+/**
+ * Anthropic Claude LLM Provider Implementation
+ */
+
+import Anthropic from '@anthropic-ai/sdk';
+import { BaseLLMProvider } from './base-provider';
+import { LLMRequest, LLMResponse, LLMMessage } from '../../types';
+
+export class AnthropicProvider extends BaseLLMProvider {
+  readonly name = 'Anthropic';
+  private client: Anthropic;
+
+  constructor(apiKey: string, defaultModel: string = 'claude-3-5-sonnet-20241022') {
+    super(apiKey, defaultModel);
+    this.client = new Anthropic({ apiKey });
+  }
+
+  async generateCompletion(request: LLMRequest): Promise<LLMResponse> {
+    try {
+      // Anthropic requires system message separate from messages array
+      const systemMessage = request.messages.find((m) => m.role === 'system');
+      const conversationMessages = request.messages.filter(
+        (m) => m.role !== 'system'
+      );
+
+      const response = await this.client.messages.create({
+        model: request.model || this.defaultModel,
+        max_tokens: request.maxTokens ?? 2000,
+        temperature: request.temperature ?? 0.7,
+        system: systemMessage?.content,
+        messages: conversationMessages.map((m) => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+        })),
+      });
+
+      const textContent = response.content.find((c) => c.type === 'text');
+      if (!textContent || textContent.type !== 'text') {
+        throw new Error('No text content in Anthropic response');
+      }
+
+      return {
+        content: textContent.text,
+        usage: {
+          promptTokens: response.usage.input_tokens,
+          completionTokens: response.usage.output_tokens,
+          totalTokens: response.usage.input_tokens + response.usage.output_tokens,
+        },
+        model: response.model,
+      };
+    } catch (error) {
+      console.error('Anthropic completion error:', error);
+      throw new Error(
+        `Anthropic provider error: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  async generateStructuredOutput<T>(
+    request: LLMRequest,
+    schema: Record<string, unknown>
+  ): Promise<T> {
+    // Enhance the system message to request JSON output
+    const enhancedMessages = [...request.messages];
+    const systemMessageIndex = enhancedMessages.findIndex((m) => m.role === 'system');
+
+    const jsonInstruction = `\n\nYou must respond with valid JSON matching this schema: ${JSON.stringify(schema)}\nDo not include any text before or after the JSON object.`;
+
+    if (systemMessageIndex !== -1) {
+      enhancedMessages[systemMessageIndex].content += jsonInstruction;
+    } else {
+      enhancedMessages.unshift({
+        role: 'system',
+        content: `Respond with valid JSON matching this schema: ${JSON.stringify(schema)}`,
+      });
+    }
+
+    const response = await this.generateCompletion({
+      ...request,
+      messages: enhancedMessages,
+      temperature: request.temperature ?? 0.3, // Lower temp for structured output
+    });
+
+    try {
+      const cleanedContent = this.extractJSON(response.content);
+      return JSON.parse(cleanedContent) as T;
+    } catch (error) {
+      console.error('Failed to parse JSON response:', response.content);
+      throw new Error('Failed to parse structured output from Anthropic');
+    }
+  }
+
+  async isAvailable(): Promise<boolean> {
+    try {
+      // Simple check - try to make a minimal request
+      await this.client.messages.create({
+        model: this.defaultModel,
+        max_tokens: 10,
+        messages: [{ role: 'user', content: 'test' }],
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\llm\base-provider.ts
+==============================
+
+/**
+ * Abstract LLM Provider Interface
+ * This abstraction allows swapping between OpenAI, Anthropic, or other providers
+ */
+
+import { LLMRequest, LLMResponse, LLMMessage } from '../types';
+
+/**
+ * Base interface all LLM providers must implement
+ */
+export interface ILLMProvider {
+  /**
+   * Provider name
+   */
+  readonly name: string;
+
+  /**
+   * Generate completion from messages
+   */
+  generateCompletion(request: LLMRequest): Promise<LLMResponse>;
+
+  /**
+   * Generate structured JSON output
+   */
+  generateStructuredOutput<T>(
+    request: LLMRequest,
+    schema: Record<string, unknown>
+  ): Promise<T>;
+
+  /**
+   * Check if provider is available/configured
+   */
+  isAvailable(): Promise<boolean>;
+}
+
+/**
+ * Base abstract class with common functionality
+ */
+export abstract class BaseLLMProvider implements ILLMProvider {
+  abstract readonly name: string;
+  protected apiKey: string;
+  protected defaultModel: string;
+
+  constructor(apiKey: string, defaultModel: string) {
+    this.apiKey = apiKey;
+    this.defaultModel = defaultModel;
+  }
+
+  abstract generateCompletion(request: LLMRequest): Promise<LLMResponse>;
+
+  abstract generateStructuredOutput<T>(
+    request: LLMRequest,
+    schema: Record<string, unknown>
+  ): Promise<T>;
+
+  async isAvailable(): Promise<boolean> {
+    return !!this.apiKey;
+  }
+
+  /**
+   * Helper to build messages with system prompt
+   */
+  protected buildMessages(
+    systemPrompt: string,
+    userMessage: string,
+    conversationHistory?: LLMMessage[]
+  ): LLMMessage[] {
+    const messages: LLMMessage[] = [
+      { role: 'system', content: systemPrompt },
+    ];
+
+    if (conversationHistory && conversationHistory.length > 0) {
+      messages.push(...conversationHistory);
+    }
+
+    messages.push({ role: 'user', content: userMessage });
+
+    return messages;
+  }
+
+  /**
+   * Helper to extract JSON from markdown code blocks
+   */
+  protected extractJSON(content: string): string {
+    // Remove markdown code blocks if present
+    const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (jsonMatch) {
+      return jsonMatch[1].trim();
+    }
+    return content.trim();
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\llm\groq-provider.ts
+==============================
+
+/**
+ * Groq LLM Provider Implementation
+ */
+
+import Groq from 'groq-sdk';
+import { BaseLLMProvider } from './base-provider';
+import { LLMRequest, LLMResponse } from '../../types';
+
+export class GroqProvider extends BaseLLMProvider {
+  readonly name = 'Groq';
+  private client: Groq;
+
+  constructor(
+    apiKey: string,
+    defaultModel: string = 'llama-3.3-70b-versatile',
+  ) {
+    super(apiKey, defaultModel);
+    this.client = new Groq({ apiKey });
+  }
+
+  async generateCompletion(request: LLMRequest): Promise<LLMResponse> {
+    try {
+      const completion = await this.client.chat.completions.create({
+        model: request.model || this.defaultModel,
+        messages: request.messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+        })),
+        temperature: request.temperature ?? 0.7,
+        max_tokens: request.maxTokens ?? 2000,
+        stream: false,
+      });
+
+      const choice = completion.choices[0];
+      if (!choice || !choice.message) {
+        throw new Error('No response from Groq');
+      }
+
+      return {
+        content: choice.message.content || '',
+        usage: completion.usage
+          ? {
+              promptTokens: completion.usage.prompt_tokens,
+              completionTokens: completion.usage.completion_tokens,
+              totalTokens: completion.usage.total_tokens,
+            }
+          : undefined,
+        model: completion.model,
+      };
+    } catch (error) {
+      console.error('Groq completion error:', error);
+      throw new Error(
+        `Groq provider error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  }
+
+  async generateStructuredOutput<T>(
+    request: LLMRequest,
+    schema: Record<string, unknown>,
+  ): Promise<T> {
+    // Enhance the system message to request JSON output
+    const enhancedMessages = [...request.messages];
+    const systemMessageIndex = enhancedMessages.findIndex(
+      (m) => m.role === 'system',
+    );
+
+    const jsonInstruction = `\n\nYou must respond with valid JSON matching this schema: ${JSON.stringify(schema)}\nDo not include any text before or after the JSON object. Do not use markdown code blocks.`;
+
+    if (systemMessageIndex !== -1) {
+      enhancedMessages[systemMessageIndex].content += jsonInstruction;
+    } else {
+      enhancedMessages.unshift({
+        role: 'system',
+        content: `Respond with valid JSON matching this schema: ${JSON.stringify(schema)}`,
+      });
+    }
+
+    const response = await this.generateCompletion({
+      ...request,
+      messages: enhancedMessages,
+      temperature: request.temperature ?? 0.3, // Lower temp for structured output
+    });
+
+    try {
+      const cleanedContent = this.extractJSON(response.content);
+      return JSON.parse(cleanedContent) as T;
+    } catch (error) {
+      console.error('Failed to parse JSON response:', response.content);
+      throw new Error('Failed to parse structured output from Groq');
+    }
+  }
+
+  async isAvailable(): Promise<boolean> {
+    try {
+      // Simple check - try to make a minimal request
+      await this.client.chat.completions.create({
+        model: this.defaultModel,
+        messages: [{ role: 'user', content: 'test' }],
+        max_tokens: 10,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\llm\openai-provider.ts
+==============================
+
+/**
+ * OpenAI LLM Provider Implementation
+ */
+
+import OpenAI from 'openai';
+import { BaseLLMProvider } from './base-provider';
+import { LLMRequest, LLMResponse } from '../../types';
+
+export class OpenAIProvider extends BaseLLMProvider {
+  readonly name = 'OpenAI';
+  private client: OpenAI;
+
+  constructor(apiKey: string, defaultModel: string = 'gpt-4-turbo-preview') {
+    super(apiKey, defaultModel);
+    this.client = new OpenAI({ apiKey });
+  }
+
+  async generateCompletion(request: LLMRequest): Promise<LLMResponse> {
+    try {
+      const completion = await this.client.chat.completions.create({
+        model: request.model || this.defaultModel,
+        messages: request.messages,
+        temperature: request.temperature ?? 0.7,
+        max_tokens: request.maxTokens ?? 2000,
+        stream: false,
+      });
+
+      const choice = completion.choices[0];
+      if (!choice || !choice.message) {
+        throw new Error('No response from OpenAI');
+      }
+
+      return {
+        content: choice.message.content || '',
+        usage: completion.usage
+          ? {
+              promptTokens: completion.usage.prompt_tokens,
+              completionTokens: completion.usage.completion_tokens,
+              totalTokens: completion.usage.total_tokens,
+            }
+          : undefined,
+        model: completion.model,
+      };
+    } catch (error) {
+      console.error('OpenAI completion error:', error);
+      throw new Error(
+        `OpenAI provider error: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  async generateStructuredOutput<T>(
+    request: LLMRequest,
+    schema: Record<string, unknown>
+  ): Promise<T> {
+    // Enhance the system message to request JSON output
+    const enhancedMessages = [...request.messages];
+    const systemMessage = enhancedMessages.find((m) => m.role === 'system');
+
+    if (systemMessage) {
+      systemMessage.content += `\n\nYou must respond with valid JSON matching this schema: ${JSON.stringify(schema)}`;
+    } else {
+      enhancedMessages.unshift({
+        role: 'system',
+        content: `Respond with valid JSON matching this schema: ${JSON.stringify(schema)}`,
+      });
+    }
+
+    const response = await this.generateCompletion({
+      ...request,
+      messages: enhancedMessages,
+      temperature: request.temperature ?? 0.3, // Lower temp for structured output
+    });
+
+    try {
+      const cleanedContent = this.extractJSON(response.content);
+      return JSON.parse(cleanedContent) as T;
+    } catch (error) {
+      console.error('Failed to parse JSON response:', response.content);
+      throw new Error('Failed to parse structured output from OpenAI');
+    }
+  }
+
+  async isAvailable(): Promise<boolean> {
+    try {
+      await this.client.models.list();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\llm\provider-factory.ts
+==============================
+
+/**
+ * LLM Provider Factory
+ * Central factory for creating LLM provider instances
+ * Updated to include Groq support
+ */
+
+import { ILLMProvider } from './base-provider';
+import { OpenAIProvider } from './openai-provider';
+import { AnthropicProvider } from './anthropic-provider';
+import { GroqProvider } from './groq-provider';
+import { LLMProvider } from '../../types';
+
+export class LLMProviderFactory {
+  private static instance: LLMProviderFactory;
+  private currentProvider: ILLMProvider | null = null;
+
+  private constructor() {}
+
+  static getInstance(): LLMProviderFactory {
+    if (!LLMProviderFactory.instance) {
+      LLMProviderFactory.instance = new LLMProviderFactory();
+    }
+    return LLMProviderFactory.instance;
+  }
+
+  /**
+   * Create and configure an LLM provider
+   */
+  createProvider(
+    providerType: LLMProvider,
+    apiKey: string,
+    defaultModel?: string,
+  ): ILLMProvider {
+    switch (providerType) {
+      case LLMProvider.OPENAI:
+        this.currentProvider = new OpenAIProvider(apiKey, defaultModel);
+        break;
+      case LLMProvider.ANTHROPIC:
+        this.currentProvider = new AnthropicProvider(apiKey, defaultModel);
+        break;
+      case LLMProvider.GROQ:
+        this.currentProvider = new GroqProvider(apiKey, defaultModel);
+        break;
+      default:
+        throw new Error(`Unsupported LLM provider: ${providerType}`);
+    }
+
+    return this.currentProvider;
+  }
+
+  /**
+   * Get the current provider instance
+   */
+  getCurrentProvider(): ILLMProvider {
+    if (!this.currentProvider) {
+      throw new Error(
+        'No LLM provider initialized. Call createProvider first.',
+      );
+    }
+    return this.currentProvider;
+  }
+
+  /**
+   * Initialize from environment variables
+   */
+  static initializeFromEnv(): ILLMProvider {
+    const factory = LLMProviderFactory.getInstance();
+
+    const providerType = (process.env.LLM_PROVIDER?.toLowerCase() ||
+      'openai') as LLMProvider;
+    const defaultModel = process.env.DEFAULT_MODEL;
+
+    let apiKey: string;
+
+    switch (providerType) {
+      case LLMProvider.OPENAI:
+        apiKey = process.env.OPENAI_API_KEY || '';
+        break;
+      case LLMProvider.ANTHROPIC:
+        apiKey = process.env.ANTHROPIC_API_KEY || '';
+        break;
+      case LLMProvider.GROQ:
+        apiKey = process.env.GROQ_API_KEY || '';
+        break;
+      default:
+        throw new Error(`Unsupported LLM provider in env: ${providerType}`);
+    }
+
+    if (!apiKey) {
+      throw new Error(`API key not found for provider: ${providerType}`);
+    }
+
+    return factory.createProvider(providerType, apiKey, defaultModel);
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\vector-db\base-vector-db.ts
+==============================
+
+/**
+ * Abstract Vector Database Interface
+ * This abstraction allows swapping between Chroma, Pinecone, Weaviate, etc.
+ */
+
+import { Document, RetrievalResult } from '../../types';
+
+/**
+ * Vector database configuration
+ */
+export interface VectorDBConfig {
+  collectionName?: string;
+  embeddingDimension?: number;
+  similarityMetric?: 'cosine' | 'euclidean' | 'dot_product';
+}
+
+/**
+ * Base interface all vector database providers must implement
+ */
+export interface IVectorDatabase {
+  /**
+   * Provider name
+   */
+  readonly name: string;
+
+  /**
+   * Initialize the database connection
+   */
+  initialize(config: VectorDBConfig): Promise<void>;
+
+  /**
+   * Add documents to the vector store
+   */
+  addDocuments(documents: Document[]): Promise<void>;
+
+  /**
+   * Add a single document
+   */
+  addDocument(document: Document): Promise<void>;
+
+  /**
+   * Search for similar documents
+   */
+  search(query: string, topK?: number, filter?: Record<string, unknown>): Promise<RetrievalResult[]>;
+
+  /**
+   * Search using a query embedding directly
+   */
+  searchByEmbedding(
+    embedding: number[],
+    topK?: number,
+    filter?: Record<string, unknown>
+  ): Promise<RetrievalResult[]>;
+
+  /**
+   * Delete documents by IDs
+   */
+  deleteDocuments(ids: string[]): Promise<void>;
+
+  /**
+   * Delete a single document
+   */
+  deleteDocument(id: string): Promise<void>;
+
+  /**
+   * Get document by ID
+   */
+  getDocument(id: string): Promise<Document | null>;
+
+  /**
+   * Update document
+   */
+  updateDocument(id: string, document: Partial<Document>): Promise<void>;
+
+  /**
+   * Clear all documents from collection
+   */
+  clear(): Promise<void>;
+
+  /**
+   * Check if database is ready
+   */
+  isReady(): Promise<boolean>;
+
+  /**
+   * Close connection
+   */
+  close(): Promise<void>;
+}
+
+/**
+ * Abstract base class with common functionality
+ */
+export abstract class BaseVectorDatabase implements IVectorDatabase {
+  abstract readonly name: string;
+  protected config: VectorDBConfig;
+  protected initialized: boolean = false;
+
+  constructor(config: VectorDBConfig = {}) {
+    this.config = {
+      collectionName: config.collectionName || 'interview_coach',
+      embeddingDimension: config.embeddingDimension || 1536, // OpenAI default
+      similarityMetric: config.similarityMetric || 'cosine',
+    };
+  }
+
+  abstract initialize(config: VectorDBConfig): Promise<void>;
+  abstract addDocuments(documents: Document[]): Promise<void>;
+  abstract search(query: string, topK?: number, filter?: Record<string, unknown>): Promise<RetrievalResult[]>;
+  abstract searchByEmbedding(
+    embedding: number[],
+    topK?: number,
+    filter?: Record<string, unknown>
+  ): Promise<RetrievalResult[]>;
+  abstract deleteDocuments(ids: string[]): Promise<void>;
+  abstract getDocument(id: string): Promise<Document | null>;
+  abstract updateDocument(id: string, document: Partial<Document>): Promise<void>;
+  abstract clear(): Promise<void>;
+  abstract close(): Promise<void>;
+
+  async addDocument(document: Document): Promise<void> {
+    await this.addDocuments([document]);
+  }
+
+  async deleteDocument(id: string): Promise<void> {
+    await this.deleteDocuments([id]);
+  }
+
+  async isReady(): Promise<boolean> {
+    return this.initialized;
+  }
+
+  protected ensureInitialized(): void {
+    if (!this.initialized) {
+      throw new Error(`${this.name} vector database not initialized. Call initialize() first.`);
+    }
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\vector-db\chroma-db.ts
+==============================
+
+/**
+ * ChromaDB Vector Database Implementation
+ */
+
+import { ChromaClient, Collection } from 'chromadb';
+import { BaseVectorDatabase, VectorDBConfig } from './base-vector-db';
+import { Document, RetrievalResult } from '../../types';
+import { EmbeddingService } from '../embedding/embedding-service';
+
+export class ChromaVectorDatabase extends BaseVectorDatabase {
+  readonly name = 'ChromaDB';
+  private client: ChromaClient | null = null;
+  private collection: Collection | null = null;
+  private embeddingService: EmbeddingService;
+
+  constructor(
+    config: VectorDBConfig = {},
+    private host: string = 'localhost',
+    private port: number = 8000
+  ) {
+    super(config);
+    this.embeddingService = new EmbeddingService();
+  }
+
+  async initialize(config: VectorDBConfig): Promise<void> {
+    try {
+      this.config = { ...this.config, ...config };
+      
+      // Initialize Chroma client
+      this.client = new ChromaClient({
+        path: `http://${this.host}:${this.port}`,
+      });
+
+      // Create or get collection
+      this.collection = await this.client.getOrCreateCollection({
+        name: this.config.collectionName!,
+        metadata: {
+          'hnsw:space': this.config.similarityMetric || 'cosine',
+        },
+      });
+
+      this.initialized = true;
+      console.log(`ChromaDB initialized with collection: ${this.config.collectionName}`);
+    } catch (error) {
+      console.error('Failed to initialize ChromaDB:', error);
+      throw new Error(
+        `ChromaDB initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  async addDocuments(documents: Document[]): Promise<void> {
+    this.ensureInitialized();
+    if (!this.collection) {
+      throw new Error('Collection not initialized');
+    }
+
+    if (documents.length === 0) {
+      return;
+    }
+
+    try {
+      // Generate embeddings for documents that don't have them
+      const documentsWithEmbeddings = await Promise.all(
+        documents.map(async (doc) => {
+          if (!doc.embedding) {
+            const embedding = await this.embeddingService.generateEmbedding(doc.content);
+            return { ...doc, embedding };
+          }
+          return doc;
+        })
+      );
+
+      // Prepare data for Chroma
+      const ids = documentsWithEmbeddings.map((doc) => doc.id);
+      const embeddings = documentsWithEmbeddings.map((doc) => doc.embedding!);
+      const metadatas = documentsWithEmbeddings.map((doc) => ({
+        ...doc.metadata,
+        content: doc.content, // Store content in metadata for retrieval
+      }));
+      const documents_text = documentsWithEmbeddings.map((doc) => doc.content);
+
+      await this.collection.add({
+        ids,
+        embeddings,
+        metadatas,
+        documents: documents_text,
+      });
+
+      console.log(`Added ${documents.length} documents to ChromaDB`);
+    } catch (error) {
+      console.error('Failed to add documents to ChromaDB:', error);
+      throw new Error(
+        `Failed to add documents: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  async search(
+    query: string,
+    topK: number = 5,
+    filter?: Record<string, unknown>
+  ): Promise<RetrievalResult[]> {
+    this.ensureInitialized();
+    if (!this.collection) {
+      throw new Error('Collection not initialized');
+    }
+
+    try {
+      // Generate embedding for query
+      const queryEmbedding = await this.embeddingService.generateEmbedding(query);
+      
+      return await this.searchByEmbedding(queryEmbedding, topK, filter);
+    } catch (error) {
+      console.error('Failed to search in ChromaDB:', error);
+      throw new Error(
+        `Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  async searchByEmbedding(
+    embedding: number[],
+    topK: number = 5,
+    filter?: Record<string, unknown>
+  ): Promise<RetrievalResult[]> {
+    this.ensureInitialized();
+    if (!this.collection) {
+      throw new Error('Collection not initialized');
+    }
+
+    try {
+      const results = await this.collection.query({
+        queryEmbeddings: [embedding],
+        nResults: topK,
+        where: filter,
+      });
+
+      // Transform Chroma results to our format
+      const retrievalResults: RetrievalResult[] = [];
+
+      if (results.ids && results.ids[0]) {
+        for (let i = 0; i < results.ids[0].length; i++) {
+          const id = results.ids[0][i];
+          const distance = results.distances?.[0]?.[i] ?? 0;
+          const metadata = results.metadatas?.[0]?.[i];
+          const documentText = results.documents?.[0]?.[i];
+
+          if (metadata && documentText) {
+            // Extract content from metadata
+            const { content, ...cleanMetadata } = metadata as any;
+
+            retrievalResults.push({
+              document: {
+                id,
+                content: content || documentText,
+                metadata: {
+                  ...cleanMetadata,
+                  dateAdded: cleanMetadata.dateAdded 
+                    ? new Date(cleanMetadata.dateAdded) 
+                    : new Date(),
+                },
+                embedding,
+              },
+              score: distance,
+              relevance: 1 - distance, // Convert distance to relevance (0-1)
+            });
+          }
+        }
+      }
+
+      return retrievalResults;
+    } catch (error) {
+      console.error('Failed to search by embedding in ChromaDB:', error);
+      throw new Error(
+        `Search by embedding failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  async deleteDocuments(ids: string[]): Promise<void> {
+    this.ensureInitialized();
+    if (!this.collection) {
+      throw new Error('Collection not initialized');
+    }
+
+    try {
+      await this.collection.delete({
+        ids,
+      });
+      console.log(`Deleted ${ids.length} documents from ChromaDB`);
+    } catch (error) {
+      console.error('Failed to delete documents from ChromaDB:', error);
+      throw new Error(
+        `Failed to delete documents: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  async getDocument(id: string): Promise<Document | null> {
+    this.ensureInitialized();
+    if (!this.collection) {
+      throw new Error('Collection not initialized');
+    }
+
+    try {
+      const results = await this.collection.get({
+        ids: [id],
+      });
+
+      if (results.ids.length === 0) {
+        return null;
+      }
+
+      const metadata = results.metadatas?.[0];
+      const documentText = results.documents?.[0];
+      const embedding = results.embeddings?.[0];
+
+      if (!metadata || !documentText) {
+        return null;
+      }
+
+      const { content, ...cleanMetadata } = metadata as any;
+
+      return {
+        id,
+        content: content || documentText,
+        metadata: {
+          ...cleanMetadata,
+          dateAdded: cleanMetadata.dateAdded 
+            ? new Date(cleanMetadata.dateAdded) 
+            : new Date(),
+        },
+        embedding: embedding || undefined,
+      };
+    } catch (error) {
+      console.error('Failed to get document from ChromaDB:', error);
+      return null;
+    }
+  }
+
+  async updateDocument(id: string, document: Partial<Document>): Promise<void> {
+    this.ensureInitialized();
+    if (!this.collection) {
+      throw new Error('Collection not initialized');
+    }
+
+    try {
+      // ChromaDB doesn't have direct update - need to delete and re-add
+      const existing = await this.getDocument(id);
+      if (!existing) {
+        throw new Error(`Document with id ${id} not found`);
+      }
+
+      const updated: Document = {
+        ...existing,
+        ...document,
+        id, // Ensure ID doesn't change
+      };
+
+      await this.deleteDocument(id);
+      await this.addDocument(updated);
+
+      console.log(`Updated document ${id} in ChromaDB`);
+    } catch (error) {
+      console.error('Failed to update document in ChromaDB:', error);
+      throw new Error(
+        `Failed to update document: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  async clear(): Promise<void> {
+    this.ensureInitialized();
+    if (!this.client || !this.collection) {
+      throw new Error('Client or collection not initialized');
+    }
+
+    try {
+      // Delete collection and recreate
+      await this.client.deleteCollection({
+        name: this.config.collectionName!,
+      });
+
+      this.collection = await this.client.createCollection({
+        name: this.config.collectionName!,
+        metadata: {
+          'hnsw:space': this.config.similarityMetric || 'cosine',
+        },
+      });
+
+      console.log('Cleared ChromaDB collection');
+    } catch (error) {
+      console.error('Failed to clear ChromaDB:', error);
+      throw new Error(
+        `Failed to clear collection: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  async close(): Promise<void> {
+    // ChromaDB client doesn't need explicit closing
+    this.initialized = false;
+    this.client = null;
+    this.collection = null;
+    console.log('ChromaDB connection closed');
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\types\index.ts
+==============================
+
+/**
+ * Core type definitions for AI Interview Coach
+ * These types form the contract between all system components
+ */
+
+// ============================================================================
+// Agent Types
+// ============================================================================
+
+/**
+ * Supported agent types in the system
+ */
+export enum AgentType {
+  RESUME_REVIEW = 'resume_review',
+  DSA_INTERVIEW = 'dsa_interview',
+  SYSTEM_DESIGN = 'system_design',
+  HR_BEHAVIORAL = 'hr_behavioral',
+  LEARNING_SUPPORT = 'learning_support',
+}
+
+/**
+ * Base input structure for all agents
+ */
+export interface BaseAgentInput {
+  query: string;
+  userId: string;
+  sessionId: string;
+  context?: Record<string, unknown>;
+}
+
+/**
+ * Base output structure for all agents
+ */
+export interface BaseAgentOutput {
+  response: string;
+  confidence: number; // 0-1 scale
+  metadata?: Record<string, unknown>;
+  suggestedFollowUps?: string[];
+  requiresRAG?: boolean;
+}
+
+/**
+ * Agent interface - all agents must implement this
+ */
+export interface IAgent {
+  type: AgentType;
+  name: string;
+  description: string;
+  
+  /**
+   * Process the input and generate a response
+   */
+  process(input: BaseAgentInput): Promise<BaseAgentOutput>;
+  
+  /**
+   * Validate if this agent can handle the given input
+   */
+  canHandle(input: BaseAgentInput): Promise<boolean>;
+}
+
+// ============================================================================
+// Router Types
+// ============================================================================
+
+/**
+ * Routing decision made by the router
+ */
+export interface RoutingDecision {
+  agentType: AgentType;
+  confidence: number;
+  reasoning: string;
+  fallbackAgents?: AgentType[];
+}
+
+/**
+ * Router strategy types
+ */
+export enum RouterStrategy {
+  RULE_BASED = 'rule_based',
+  LLM_BASED = 'llm_based',
+  HYBRID = 'hybrid',
+}
+
+// ============================================================================
+// Memory Types
+// ============================================================================
+
+/**
+ * Short-term memory for a session
+ */
+export interface ShortTermMemory {
+  sessionId: string;
+  userId: string;
+  conversationHistory: ConversationTurn[];
+  currentTopic?: string;
+  startTime: Date;
+  lastActivity: Date;
+}
+
+/**
+ * Long-term memory for a user
+ */
+export interface LongTermMemory {
+  userId: string;
+  weakAreas: WeakArea[];
+  strengths: string[];
+  interviewHistory: InterviewSession[];
+  learningProgress: LearningProgress;
+  preferences?: UserPreferences;
+}
+
+/**
+ * A single conversation turn
+ */
+export interface ConversationTurn {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+  agentType?: AgentType;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Weak area tracking
+ */
+export interface WeakArea {
+  topic: string;
+  category: string; // DSA, System Design, etc.
+  failureCount: number;
+  lastEncountered: Date;
+  improvementSuggestions: string[];
+}
+
+/**
+ * Learning progress tracking
+ */
+export interface LearningProgress {
+  totalInterviews: number;
+  topicsCompleted: string[];
+  currentLevel: SkillLevel;
+  goalLevel: SkillLevel;
+  milestones: Milestone[];
+}
+
+/**
+ * Skill level enum
+ */
+export enum SkillLevel {
+  BEGINNER = 'beginner',
+  INTERMEDIATE = 'intermediate',
+  ADVANCED = 'advanced',
+  EXPERT = 'expert',
+}
+
+/**
+ * Milestone tracking
+ */
+export interface Milestone {
+  id: string;
+  title: string;
+  description: string;
+  achieved: boolean;
+  achievedDate?: Date;
+}
+
+/**
+ * User preferences
+ */
+export interface UserPreferences {
+  difficulty: 'easy' | 'medium' | 'hard';
+  focusAreas: string[];
+  interviewType: 'frontend' | 'backend' | 'fullstack';
+  sessionDuration?: number; // in minutes
+}
+
+// ============================================================================
+// RAG Types
+// ============================================================================
+
+/**
+ * Document to be indexed
+ */
+export interface Document {
+  id: string;
+  content: string;
+  metadata: DocumentMetadata;
+  embedding?: number[];
+}
+
+/**
+ * Document metadata
+ */
+export interface DocumentMetadata {
+  source: string;
+  category: string;
+  tags: string[];
+  difficulty?: string;
+  company?: string;
+  dateAdded: Date;
+}
+
+/**
+ * Query result from vector search
+ */
+export interface RetrievalResult {
+  document: Document;
+  score: number;
+  relevance: number;
+}
+
+/**
+ * RAG context for agent processing
+ */
+export interface RAGContext {
+  query: string;
+  retrievedDocs: RetrievalResult[];
+  totalResults: number;
+  searchStrategy: 'semantic' | 'hybrid' | 'keyword';
+}
+
+// ============================================================================
+// LLM Provider Types
+// ============================================================================
+
+/**
+ * LLM provider types
+ */
+export enum LLMProvider {
+  OPENAI = 'openai',
+  ANTHROPIC = 'anthropic',
+  GROQ = 'groq',
+}
+
+/**
+ * Message structure for LLM
+ */
+export interface LLMMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+/**
+ * LLM request parameters
+ */
+export interface LLMRequest {
+  messages: LLMMessage[];
+  temperature?: number;
+  maxTokens?: number;
+  model?: string;
+  stream?: boolean;
+}
+
+/**
+ * LLM response
+ */
+export interface LLMResponse {
+  content: string;
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
+  model: string;
+}
+
+// ============================================================================
+// Interview Session Types
+// ============================================================================
+
+/**
+ * Interview session state
+ */
+export interface InterviewSession {
+  id: string;
+  userId: string;
+  type: 'dsa' | 'system_design' | 'behavioral' | 'mixed';
+  status: 'active' | 'paused' | 'completed';
+  startTime: Date;
+  endTime?: Date;
+  questions: InterviewQuestion[];
+  currentQuestionIndex: number;
+  score?: number;
+  feedback?: string;
+}
+
+/**
+ * Interview question
+ */
+export interface InterviewQuestion {
+  id: string;
+  question: string;
+  difficulty: 'easy' | 'medium' | 'hard';
+  category: string;
+  expectedAnswer?: string;
+  userAnswer?: string;
+  score?: number;
+  feedback?: string;
+  timeSpent?: number; // in seconds
+  hints?: string[];
+  hintsUsed?: number;
+}
+
+// ============================================================================
+// API Types
+// ============================================================================
+
+/**
+ * Standard API response wrapper
+ */
+export interface APIResponse<T = unknown> {
+  success: boolean;
+  data?: T;
+  error?: {
+    code: string;
+    message: string;
+    details?: unknown;
+  };
+  metadata?: {
+    timestamp: Date;
+    requestId?: string;
+  };
+}
+
+/**
+ * Query request
+ */
+export interface QueryRequest {
+  query: string;
+  userId: string;
+  sessionId?: string;
+  useRAG?: boolean;
+  context?: Record<string, unknown>;
+}
+
+/**
+ * Query response
+ */
+export interface QueryResponse {
+  response: string;
+  agentType: AgentType;
+  confidence: number;
+  suggestedFollowUps?: string[];
+  retrievedContext?: RetrievalResult[];
+}
+
+/**
+ * Start interview request
+ */
+export interface StartInterviewRequest {
+  userId: string;
+  type: 'dsa' | 'system_design' | 'behavioral' | 'mixed';
+  difficulty?: 'easy' | 'medium' | 'hard';
+  duration?: number;
+  focusAreas?: string[];
+}
+
+/**
+ * Answer interview question request
+ */
+export interface AnswerRequest {
+  sessionId: string;
+  userId: string;
+  answer: string;
+  timeSpent?: number;
+}
+
+/**
+ * Resume review request
+ */
+export interface ResumeReviewRequest {
+  userId: string;
+  resumeText: string;
+  targetRole?: string;
+  targetCompanies?: string[];
+}
+
+// ============================================================================
+// Validation & Verification Types (for CRAG/Self-RAG)
+// ============================================================================
+
+/**
+ * Verification result for self-RAG
+ */
+export interface VerificationResult {
+  verified: boolean;
+  confidence: number;
+  supportingDocs: Document[];
+  contradictingDocs: Document[];
+  needsRefinement: boolean;
+  refinementSuggestion?: string;
+}
+
+/**
+ * CRAG decision
+ */
+export enum CRAGDecision {
+  CORRECT = 'correct',      // Retrieved docs support the answer
+  INCORRECT = 'incorrect',  // Retrieved docs contradict the answer
+  AMBIGUOUS = 'ambiguous',  // Unclear, need more context
+}
+
+/**
+ * CRAG evaluation result
+ */
+export interface CRAGEvaluation {
+  decision: CRAGDecision;
+  confidence: number;
+  reasoning: string;
+  shouldRequery: boolean;
+  alternativeQuery?: string;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\utils\seed-database.ts
+==============================
+
+/**
+ * Sample Data Seeder
+ * Seeds the vector database with sample interview questions and content
+ */
+
+import dotenv from 'dotenv';
+import { v4 as uuidv4 } from 'uuid';
+import { ChromaVectorDatabase } from '../services/vector-db/chroma-db';
+import { Document } from '../types';
+
+dotenv.config();
+
+/**
+ * Sample DSA problems
+ */
+const dsaProblems: Partial<Document>[] = [
+  {
+    content: `Two Sum Problem: Given an array of integers and a target sum, find two numbers that add up to the target. 
+    Solution: Use a hash map to store complements. Time: O(n), Space: O(n).
+    Example: [2,7,11,15], target=9 → [0,1]`,
+    metadata: {
+      source: 'LeetCode',
+      category: 'dsa',
+      tags: ['array', 'hash-map', 'easy'],
+      difficulty: 'easy',
+    },
+  },
+  {
+    content: `Binary Tree Level Order Traversal: Return the level order traversal of a binary tree.
+    Solution: Use BFS with a queue. Track level size to separate levels.
+    Time: O(n), Space: O(n) for the queue.`,
+    metadata: {
+      source: 'LeetCode',
+      category: 'dsa',
+      tags: ['tree', 'bfs', 'medium'],
+      difficulty: 'medium',
+    },
+  },
+  {
+    content: `Longest Palindromic Substring: Find the longest palindromic substring in a string.
+    Solutions: (1) Expand around center O(n²), (2) Manacher's algorithm O(n), (3) DP O(n²).
+    Example: "babad" → "bab" or "aba"`,
+    metadata: {
+      source: 'LeetCode',
+      category: 'dsa',
+      tags: ['string', 'dynamic-programming', 'medium'],
+      difficulty: 'medium',
+    },
+  },
+  {
+    content: `Merge K Sorted Lists: Merge k sorted linked lists into one sorted list.
+    Solution: Use min-heap to track smallest elements. Time: O(N log k) where N is total nodes.
+    Alternative: Divide and conquer approach merging pairs.`,
+    metadata: {
+      source: 'LeetCode',
+      category: 'dsa',
+      tags: ['linked-list', 'heap', 'hard'],
+      difficulty: 'hard',
+    },
+  },
+];
+
+/**
+ * Sample system design content
+ */
+const systemDesignContent: Partial<Document>[] = [
+  {
+    content: `URL Shortener Design:
+    Requirements: Generate short URLs, redirect to original, track analytics.
+    Components: (1) API Gateway, (2) Short URL Generator (Base62 encoding), (3) Database (KV store like Redis + SQL), (4) Cache (Redis).
+    Scale: Hash-based partitioning, 100K writes/sec, 10M reads/sec.
+    Storage: ~1TB for 1B URLs. TTL for expiration.`,
+    metadata: {
+      source: 'System Design Interview',
+      category: 'system_design',
+      tags: ['url-shortener', 'scalability', 'caching'],
+    },
+  },
+  {
+    content: `Rate Limiter Design:
+    Algorithms: (1) Token Bucket, (2) Leaky Bucket, (3) Fixed Window, (4) Sliding Window.
+    Best: Token Bucket for burst handling.
+    Implementation: Redis with INCR + EXPIRE. Distributed: Use Redis cluster or sticky sessions.
+    Considerations: User ID vs IP-based, per-API limits.`,
+    metadata: {
+      source: 'System Design Interview',
+      category: 'system_design',
+      tags: ['rate-limiting', 'distributed-systems'],
+    },
+  },
+  {
+    content: `News Feed Design (Facebook/Twitter):
+    Pull model: User requests → Fetch from friends → Merge + sort. Slow for popular users.
+    Push model: Pre-compute feeds → Store in cache. Fast reads, expensive writes.
+    Hybrid: Push for most users, pull for celebrities.
+    Storage: User graph in graph DB, posts in NoSQL, feed cache in Redis.`,
+    metadata: {
+      source: 'System Design Interview',
+      category: 'system_design',
+      tags: ['news-feed', 'caching', 'scalability'],
+    },
+  },
+];
+
+/**
+ * Sample behavioral questions
+ */
+const behavioralContent: Partial<Document>[] = [
+  {
+    content: `STAR Method Framework:
+    Situation: Set the context (when, where, background)
+    Task: Describe your responsibility/challenge
+    Action: Explain what YOU did (be specific)
+    Result: Share outcomes with metrics if possible
+    
+    Example: "Tell me about a time you handled a conflict"
+    - Situation: Team disagreed on API design
+    - Task: Needed consensus before deadline
+    - Action: Organized technical review, gathered requirements, proposed compromise
+    - Result: Shipped on time, both approaches validated`,
+    metadata: {
+      source: 'Interview Guide',
+      category: 'behavioral',
+      tags: ['star-method', 'framework'],
+    },
+  },
+  {
+    content: `Common Behavioral Questions:
+    1. Tell me about a time you failed
+    2. Describe a conflict with a teammate
+    3. How do you handle tight deadlines?
+    4. Tell me about your greatest achievement
+    5. Why do you want to work here?
+    
+    Pro tips: Be honest, show growth, use specific examples, quantify results.`,
+    metadata: {
+      source: 'Interview Guide',
+      category: 'behavioral',
+      tags: ['common-questions', 'preparation'],
+    },
+  },
+];
+
+/**
+ * Seed the database
+ */
+async function seedDatabase() {
+  try {
+    console.log('🌱 Starting database seeding...\n');
+
+    // Initialize ChromaDB
+    const chromaHost = process.env.CHROMA_HOST || 'localhost';
+    const chromaPort = parseInt(process.env.CHROMA_PORT || '8000');
+
+    const vectorDb = new ChromaVectorDatabase(
+      { collectionName: 'interview_coach' },
+      chromaHost,
+      chromaPort
+    );
+
+    console.log('Connecting to ChromaDB...');
+    await vectorDb.initialize({ collectionName: 'interview_coach' });
+    console.log('✅ Connected to ChromaDB\n');
+
+    // Clear existing data
+    console.log('Clearing existing data...');
+    await vectorDb.clear();
+    console.log('✅ Database cleared\n');
+
+    // Prepare all documents
+    const allDocuments: Document[] = [
+      ...dsaProblems,
+      ...systemDesignContent,
+      ...behavioralContent,
+    ].map((doc) => ({
+      id: uuidv4(),
+      content: doc.content!,
+      metadata: {
+        ...doc.metadata!,
+        dateAdded: new Date(),
+      },
+    }));
+
+    // Seed documents
+    console.log(`Seeding ${allDocuments.length} documents...\n`);
+
+    for (const doc of allDocuments) {
+      console.log(`Adding: ${doc.content.substring(0, 60)}...`);
+      await vectorDb.addDocument(doc);
+    }
+
+    console.log('\n✅ Successfully seeded database!');
+    console.log(`\nSummary:`);
+    console.log(`  • DSA Problems: ${dsaProblems.length}`);
+    console.log(`  • System Design: ${systemDesignContent.length}`);
+    console.log(`  • Behavioral: ${behavioralContent.length}`);
+    console.log(`  • Total: ${allDocuments.length}`);
+
+    // Close connection
+    await vectorDb.close();
+    console.log('\n✅ Done!');
+  } catch (error) {
+    console.error('❌ Seeding failed:');
+    console.error(error);
+    process.exit(1);
+  }
+}
+
+// Run seeder
+seedDatabase();
