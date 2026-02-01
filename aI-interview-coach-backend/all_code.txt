@@ -1573,6 +1573,7 @@ FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\controlle
 import { Request, Response } from 'express';
 import { InterviewSessionManager } from '../services/interview-session-manager';
 import { APIResponse, StartInterviewRequest, AnswerRequest } from '../types';
+import { getStringParam } from '../utils/helpers';
 
 export class InterviewController {
   constructor(private sessionManager: InterviewSessionManager) {}
@@ -1689,7 +1690,7 @@ export class InterviewController {
    */
   async requestHint(req: Request, res: Response): Promise<void> {
     try {
-      const { sessionId } = req.params;
+     const sessionId = getStringParam(req.params.sessionId);
 
       if (!sessionId) {
         res.status(400).json({
@@ -1740,7 +1741,7 @@ export class InterviewController {
    */
   async getSessionStatus(req: Request, res: Response): Promise<void> {
     try {
-      const { sessionId } = req.params;
+      const sessionId = getStringParam(req.params.sessionId);
 
       if (!sessionId) {
         res.status(400).json({
@@ -1800,7 +1801,7 @@ export class InterviewController {
    */
   async pauseSession(req: Request, res: Response): Promise<void> {
     try {
-      const { sessionId } = req.params;
+     const sessionId = getStringParam(req.params.sessionId);
 
       if (!sessionId) {
         res.status(400).json({
@@ -1840,7 +1841,7 @@ export class InterviewController {
    */
   async resumeSession(req: Request, res: Response): Promise<void> {
     try {
-      const { sessionId } = req.params;
+      const sessionId = getStringParam(req.params.sessionId);
 
       if (!sessionId) {
         res.status(400).json({
@@ -1887,6 +1888,7 @@ FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\controlle
  */
 
 import { Request, Response } from 'express';
+import { getStringParam } from '../utils/helpers';
 import { AgentRouter } from '../router/agent-router';
 import { MemoryManager } from '../memory/memory-manager';
 import { APIResponse, QueryRequest, QueryResponse } from '../types';
@@ -1895,7 +1897,7 @@ import { v4 as uuidv4 } from 'uuid';
 export class QueryController {
   constructor(
     private router: AgentRouter,
-    private memoryManager: MemoryManager
+    private memoryManager: MemoryManager,
   ) {}
 
   /**
@@ -1932,7 +1934,7 @@ export class QueryController {
       });
 
       console.log(
-        `Routing decision: ${decision.agentType} (confidence: ${decision.confidence})`
+        `Routing decision: ${decision.agentType} (confidence: ${decision.confidence})`,
       );
 
       // Process with the selected agent
@@ -1977,7 +1979,9 @@ export class QueryController {
    */
   async getHistory(req: Request, res: Response): Promise<void> {
     try {
-      const { sessionId } = req.params;
+      // Fix: Handle string | string[] type from req.params
+      const sessionIdParam = req.params.sessionId;
+      const sessionId = getStringParam(req.params.sessionId);
 
       if (!sessionId) {
         res.status(400).json({
@@ -1992,7 +1996,7 @@ export class QueryController {
 
       const history = await this.memoryManager.getConversationContext(
         sessionId,
-        100 // Get full history
+        100, // Get full history
       );
 
       res.json({
@@ -2031,11 +2035,12 @@ import { AgentRouter } from '../router/agent-router';
 import { MemoryManager } from '../memory/memory-manager';
 import { APIResponse, ResumeReviewRequest, AgentType } from '../types';
 import { v4 as uuidv4 } from 'uuid';
+import { getStringParam, parseIntQuery } from '../utils/helpers';
 
 export class ResumeController {
   constructor(
     private router: AgentRouter,
-    private memoryManager: MemoryManager
+    private memoryManager: MemoryManager,
   ) {}
 
   /**
@@ -2115,7 +2120,7 @@ export class ProgressController {
    */
   async getProgress(req: Request, res: Response): Promise<void> {
     try {
-      const { userId } = req.params;
+      const userId = getStringParam(req.params.userId);
 
       if (!userId) {
         res.status(400).json({
@@ -2159,8 +2164,8 @@ export class ProgressController {
    */
   async getWeakAreas(req: Request, res: Response): Promise<void> {
     try {
-      const { userId } = req.params;
-      const limit = parseInt(req.query.limit as string) || 5;
+      const userId = getStringParam(req.params.userId);
+      const limit = parseIntQuery(req.query.limit, 5); // ✅ Use parseIntQuery for query params
 
       if (!userId) {
         res.status(400).json({
@@ -2173,7 +2178,10 @@ export class ProgressController {
         return;
       }
 
-      const weakAreas = await this.memoryManager.getWeakAreas(userId, limit);
+      const weakAreas = await this.memoryManager.getWeakAreas(
+        userId,
+        limit || 5,
+      );
 
       res.json({
         success: true,
@@ -3102,6 +3110,7 @@ import dotenv from 'dotenv';
 import { createApp } from './app';
 import { LLMProviderFactory } from './services/llm/provider-factory';
 import { ChromaVectorDatabase } from './services/vector-db/chroma-db';
+import { IVectorDatabase } from './services/vector-db/base-vector-db';
 import { RouterStrategy } from './types';
 
 // Load environment variables
@@ -3121,18 +3130,20 @@ async function startServer() {
     console.log('Initializing LLM provider...');
     const llmProvider = LLMProviderFactory.initializeFromEnv();
     const isAvailable = await llmProvider.isAvailable();
-    
+
     if (!isAvailable) {
-      throw new Error(`LLM provider ${llmProvider.name} is not available. Check your API key.`);
+      throw new Error(
+        `LLM provider ${llmProvider.name} is not available. Check your API key.`,
+      );
     }
-    
+
     console.log(`✅ LLM Provider: ${llmProvider.name}`);
 
     // ============================================================================
     // Initialize Vector Database (Optional)
     // ============================================================================
 
-    let vectorDb;
+    let vectorDb: IVectorDatabase | undefined = undefined;
     const vectorDbProvider = process.env.VECTOR_DB_PROVIDER;
 
     if (vectorDbProvider === 'chroma') {
@@ -3140,25 +3151,34 @@ async function startServer() {
       try {
         const chromaHost = process.env.CHROMA_HOST || 'localhost';
         const chromaPort = parseInt(process.env.CHROMA_PORT || '8000');
-        
+
         vectorDb = new ChromaVectorDatabase(
           { collectionName: 'interview_coach' },
           chromaHost,
-          chromaPort
+          chromaPort,
         );
-        
+
         await vectorDb.initialize({ collectionName: 'interview_coach' });
         const isReady = await vectorDb.isReady();
-        
+
         if (isReady) {
           console.log('✅ Vector Database: ChromaDB');
         } else {
-          console.warn('⚠️  ChromaDB initialized but not ready. RAG features may be limited.');
+          console.warn(
+            '⚠️  ChromaDB initialized but not ready. RAG features may be limited.',
+          );
         }
       } catch (error) {
-        console.warn('⚠️  ChromaDB initialization failed. Continuing without vector search.');
-        console.warn('   Error:', error instanceof Error ? error.message : error);
-        console.warn('   Make sure ChromaDB is running: docker run -p 8000:8000 chromadb/chroma');
+        console.warn(
+          '⚠️  ChromaDB initialization failed. Continuing without vector search.',
+        );
+        console.warn(
+          '   Error:',
+          error instanceof Error ? error.message : error,
+        );
+        console.warn(
+          '   Make sure ChromaDB is running: docker run -p 8000:8000 chromadb/chroma',
+        );
         vectorDb = undefined;
       }
     } else {
@@ -3171,9 +3191,10 @@ async function startServer() {
     // ============================================================================
 
     console.log('Creating Express application...');
-    
-    const routingStrategy = (process.env.ROUTING_STRATEGY as RouterStrategy) || RouterStrategy.HYBRID;
-    
+
+    const routingStrategy =
+      (process.env.ROUTING_STRATEGY as RouterStrategy) || RouterStrategy.HYBRID;
+
     const app = createApp({
       llmProvider,
       vectorDb,
@@ -3185,7 +3206,7 @@ async function startServer() {
     // ============================================================================
 
     const PORT = parseInt(process.env.PORT || '3000');
-    
+
     app.listen(PORT, () => {
       console.log('');
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -3219,18 +3240,20 @@ async function startServer() {
     // Graceful Shutdown
     // ============================================================================
 
-    process.on('SIGINT', async () => {
+    process.on('SIGTERM', async () => {
       console.log('\n\n🛑 Shutting down gracefully...');
-      
+
+      // Cleanup expired sessions - would need memory manager instance
+      // await memoryManager.cleanup(30);
+
+      // Close vector DB if configured
       if (vectorDb) {
-        console.log('Closing vector database...');
         await vectorDb.close();
       }
-      
+
       console.log('✅ Goodbye!');
       process.exit(0);
     });
-
   } catch (error) {
     console.error('❌ Failed to start server:');
     console.error(error);
@@ -5159,6 +5182,94 @@ export interface CRAGEvaluation {
   reasoning: string;
   shouldRequery: boolean;
   alternativeQuery?: string;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\utils\helpers.ts
+==============================
+
+/**
+ * Utility Helper Functions
+ * Common helper functions used across controllers
+ */
+
+import { ParsedQs } from 'qs';
+
+/**
+ * Safely extract a string parameter from Express request params
+ * Handles the case where params can be string | string[]
+ */
+export function getStringParam(
+  param: string | string[] | undefined,
+): string | undefined {
+  if (!param) return undefined;
+  return Array.isArray(param) ? param[0] : param;
+}
+
+/**
+ * Safely extract a string from query parameters
+ * Handles Express query type: string | ParsedQs | (string | ParsedQs)[] | undefined
+ */
+export function getStringQuery(
+  param: string | ParsedQs | (string | ParsedQs)[] | undefined,
+): string | undefined {
+  if (!param) return undefined;
+
+  if (typeof param === 'string') {
+    return param;
+  }
+
+  if (Array.isArray(param) && param.length > 0) {
+    const first = param[0];
+    return typeof first === 'string' ? first : undefined;
+  }
+
+  return undefined;
+}
+
+/**
+ * Safely extract a required string parameter from Express request params
+ * Throws an error if the parameter is missing
+ */
+export function getRequiredStringParam(
+  param: string | string[] | undefined,
+  paramName: string,
+): string {
+  const value = getStringParam(param);
+  if (!value) {
+    throw new Error(`Missing required parameter: ${paramName}`);
+  }
+  return value;
+}
+
+/**
+ * Parse integer from request params
+ */
+export function parseIntParam(
+  param: string | string[] | undefined,
+  defaultValue?: number,
+): number | undefined {
+  const strValue = getStringParam(param);
+  if (!strValue) return defaultValue;
+
+  const parsed = parseInt(strValue, 10);
+  return isNaN(parsed) ? defaultValue : parsed;
+}
+
+/**
+ * Parse integer from request query parameters
+ * Handles Express query type: string | ParsedQs | (string | ParsedQs)[] | undefined
+ */
+export function parseIntQuery(
+  param: string | ParsedQs | (string | ParsedQs)[] | undefined,
+  defaultValue?: number,
+): number | undefined {
+  const strValue = getStringQuery(param);
+  if (!strValue) return defaultValue;
+
+  const parsed = parseInt(strValue, 10);
+  return isNaN(parsed) ? defaultValue : parsed;
 }
 
 
