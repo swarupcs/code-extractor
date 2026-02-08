@@ -1579,7 +1579,7 @@ import { v4 as uuidv4 } from 'uuid';
 import pdfParse from 'pdf-parse';
 
 // Configuration
-const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000/api';
+const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:8080/api';
 const RESUME_FOLDER = path.join(__dirname, '..', 'test-data', 'resumes');
 
 // Ensure resume folder exists
@@ -1782,8 +1782,10 @@ async function startInterview() {
   };
   const difficulty = diffMap[diffChoice] || 'medium';
 
-  const durationInput = await question('Duration in minutes (default: 30): ');
-  const duration = parseInt(durationInput) || 30;
+  const durationInput = await question(
+    'Duration in minutes (default: 30, min: 15): ',
+  );
+  const duration = Math.max(parseInt(durationInput) || 30, 15); // Minimum 15 minutes
 
   const focusAreasInput = await question(
     'Focus areas (comma-separated, optional): ',
@@ -1805,6 +1807,12 @@ async function startInterview() {
       duration,
       focusAreas,
     });
+
+    // Check if we got valid data
+    if (!response.data.data.currentQuestion) {
+      print('❌ Failed to generate questions. Please try again.', 'red');
+      return;
+    }
 
     state.interviewSessionId = response.data.data.sessionId;
 
@@ -1932,11 +1940,12 @@ async function getInterviewStatus() {
 }
 
 async function extractPdfText(filePath: string): Promise<string> {
+  // Correct way to import CommonJS module in TypeScript
+  const pdfParse = (await import('pdf-parse')).default;
   const dataBuffer = fs.readFileSync(filePath);
   const data = await pdfParse(dataBuffer);
   return data.text;
 }
-
 async function reviewResume() {
   printHeader('Review Resume');
 
@@ -2278,6 +2287,9 @@ export class InterviewController {
   /**
    * Start a new interview session
    */
+  /**
+   * Start a new interview session
+   */
   async startInterview(req: Request, res: Response): Promise<void> {
     try {
       const requestData = req.body as StartInterviewRequest;
@@ -2299,11 +2311,24 @@ export class InterviewController {
         requestData.type,
         requestData.difficulty || 'medium',
         requestData.duration,
-        requestData.focusAreas
+        requestData.focusAreas,
       );
 
       // Get first question
       const firstQuestion = this.sessionManager.getCurrentQuestion(session.id);
+
+      // Add validation for empty questions
+      if (!firstQuestion) {
+        res.status(500).json({
+          success: false,
+          error: {
+            code: 'GENERATION_ERROR',
+            message:
+              'Failed to generate interview questions. Please try again.',
+          },
+        } as APIResponse);
+        return;
+      }
 
       res.json({
         success: true,
@@ -2340,7 +2365,11 @@ export class InterviewController {
       const requestData = req.body as AnswerRequest;
 
       // Validate request
-      if (!requestData.sessionId || !requestData.userId || !requestData.answer) {
+      if (
+        !requestData.sessionId ||
+        !requestData.userId ||
+        !requestData.answer
+      ) {
         res.status(400).json({
           success: false,
           error: {
@@ -2354,7 +2383,7 @@ export class InterviewController {
       const result = await this.sessionManager.submitAnswer(
         requestData.sessionId,
         requestData.answer,
-        requestData.timeSpent
+        requestData.timeSpent,
       );
 
       res.json({
@@ -2387,7 +2416,7 @@ export class InterviewController {
    */
   async requestHint(req: Request, res: Response): Promise<void> {
     try {
-     const sessionId = getStringParam(req.params.sessionId);
+      const sessionId = getStringParam(req.params.sessionId);
 
       if (!sessionId) {
         res.status(400).json({
@@ -2498,7 +2527,7 @@ export class InterviewController {
    */
   async pauseSession(req: Request, res: Response): Promise<void> {
     try {
-     const sessionId = getStringParam(req.params.sessionId);
+      const sessionId = getStringParam(req.params.sessionId);
 
       if (!sessionId) {
         res.status(400).json({
@@ -4122,7 +4151,7 @@ export class InterviewSessionManager {
   constructor(
     private llmProvider: ILLMProvider,
     private memoryManager: MemoryManager,
-    private vectorDb?: IVectorDatabase
+    private vectorDb?: IVectorDatabase,
   ) {}
 
   /**
@@ -4133,7 +4162,7 @@ export class InterviewSessionManager {
     type: 'dsa' | 'system_design' | 'behavioral' | 'mixed',
     difficulty: 'easy' | 'medium' | 'hard' = 'medium',
     duration?: number,
-    focusAreas?: string[]
+    focusAreas?: string[],
   ): Promise<InterviewSession> {
     const sessionId = uuidv4();
 
@@ -4142,7 +4171,7 @@ export class InterviewSessionManager {
       type,
       difficulty,
       focusAreas,
-      duration
+      duration,
     );
 
     const session: InterviewSession = {
@@ -4185,7 +4214,7 @@ export class InterviewSessionManager {
   async submitAnswer(
     sessionId: string,
     answer: string,
-    timeSpent?: number
+    timeSpent?: number,
   ): Promise<{
     feedback: string;
     score: number;
@@ -4206,7 +4235,7 @@ export class InterviewSessionManager {
     const evaluation = await this.evaluateAnswer(
       currentQuestion,
       answer,
-      session.type
+      session.type,
     );
 
     // Update question with answer and feedback
@@ -4221,7 +4250,7 @@ export class InterviewSessionManager {
         session.userId,
         currentQuestion.category,
         session.type,
-        [evaluation.feedback]
+        [evaluation.feedback],
       );
     }
 
@@ -4284,7 +4313,7 @@ export class InterviewSessionManager {
     // Calculate overall score
     const totalScore = session.questions.reduce(
       (sum, q) => sum + (q.score || 0),
-      0
+      0,
     );
     session.score = totalScore / session.questions.length;
 
@@ -4294,9 +4323,8 @@ export class InterviewSessionManager {
     // Update learning progress
     await this.memoryManager.updateProgress(session.userId, {
       totalInterviews:
-        (
-          await this.memoryManager.getUserSummary(session.userId)
-        ).progress.totalInterviews + 1,
+        (await this.memoryManager.getUserSummary(session.userId)).progress
+          .totalInterviews + 1,
     });
   }
 
@@ -4330,24 +4358,60 @@ export class InterviewSessionManager {
   /**
    * Generate questions for a session
    */
+  /**
+   * Generate questions for a session
+   */
+  /**
+   * Generate questions for a session
+   */
   private async generateQuestions(
     type: string,
     difficulty: string,
     focusAreas?: string[],
-    duration?: number
+    duration?: number,
   ): Promise<InterviewQuestion[]> {
     // Calculate number of questions based on duration
-    const questionCount = duration ? Math.floor(duration / 15) : 5;
+    // Minimum 1 question, maximum 20 questions
+    let questionCount: number;
+
+    if (duration) {
+      if (duration < 15) {
+        questionCount = 1; // Very short sessions get 1 question
+      } else if (duration < 30) {
+        questionCount = 2; // 15-29 min gets 2 questions
+      } else {
+        questionCount = Math.min(Math.floor(duration / 15), 20); // 15 min per question, max 20
+      }
+    } else {
+      questionCount = 5; // Default
+    }
+
+    console.log(
+      `Generating ${questionCount} questions for ${duration} minute session`,
+    );
 
     const questions: InterviewQuestion[] = [];
 
     for (let i = 0; i < questionCount; i++) {
-      const question = await this.generateSingleQuestion(
-        type,
-        difficulty,
-        focusAreas
-      );
-      questions.push(question);
+      try {
+        const question = await this.generateSingleQuestion(
+          type,
+          difficulty,
+          focusAreas,
+        );
+        questions.push(question);
+        console.log(
+          `Generated question ${i + 1}/${questionCount}: ${question.question.substring(0, 50)}...`,
+        );
+      } catch (error) {
+        console.error(`Failed to generate question ${i + 1}:`, error);
+        // Continue generating other questions even if one fails
+      }
+    }
+
+    // Ensure we have at least one question
+    if (questions.length === 0) {
+      throw new Error('Failed to generate any interview questions');
     }
 
     return questions;
@@ -4359,7 +4423,7 @@ export class InterviewSessionManager {
   private async generateSingleQuestion(
     type: string,
     difficulty: string,
-    focusAreas?: string[]
+    focusAreas?: string[],
   ): Promise<InterviewQuestion> {
     const focusContext = focusAreas
       ? `Focus on these areas: ${focusAreas.join(', ')}`
@@ -4398,7 +4462,7 @@ Return as JSON.`;
         temperature: 0.8,
         maxTokens: 1000,
       },
-      schema
+      schema,
     );
 
     return {
@@ -4417,7 +4481,7 @@ Return as JSON.`;
   private async evaluateAnswer(
     question: InterviewQuestion,
     answer: string,
-    sessionType: string
+    sessionType: string,
   ): Promise<{ score: number; feedback: string }> {
     const evaluationPrompt = `Evaluate this interview answer:
 
@@ -4449,14 +4513,15 @@ Return as JSON.`;
         messages: [
           {
             role: 'system',
-            content: 'You are an expert interviewer evaluating candidate answers.',
+            content:
+              'You are an expert interviewer evaluating candidate answers.',
           },
           { role: 'user', content: evaluationPrompt },
         ],
         temperature: 0.3,
         maxTokens: 1000,
       },
-      schema
+      schema,
     );
   }
 
@@ -4464,12 +4529,12 @@ Return as JSON.`;
    * Generate overall session feedback
    */
   private async generateSessionFeedback(
-    session: InterviewSession
+    session: InterviewSession,
   ): Promise<string> {
     const questionSummary = session.questions
       .map(
         (q, i) =>
-          `Q${i + 1}: ${q.question.substring(0, 100)}... Score: ${q.score || 0}/100`
+          `Q${i + 1}: ${q.question.substring(0, 100)}... Score: ${q.score || 0}/100`,
       )
       .join('\n');
 
