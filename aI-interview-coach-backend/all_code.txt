@@ -1562,6 +1562,703 @@ export function createApp(config: AppConfig): Application {
 
 
 ==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\cli-driver.ts
+==============================
+
+/**
+ * Interactive CLI Driver for AI Interview Coach API
+ * Provides a terminal UI to test all API endpoints
+ */
+
+import readline from 'readline';
+import fs from 'fs';
+import path from 'path';
+import axios, { AxiosError } from 'axios';
+import { v4 as uuidv4 } from 'uuid';
+// @ts-ignore
+import pdfParse from 'pdf-parse';
+
+// Configuration
+const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000/api';
+const RESUME_FOLDER = path.join(__dirname, '..', 'test-data', 'resumes');
+
+// Ensure resume folder exists
+if (!fs.existsSync(RESUME_FOLDER)) {
+  fs.mkdirSync(RESUME_FOLDER, { recursive: true });
+}
+
+// Types
+interface SessionState {
+  userId: string;
+  currentSessionId?: string;
+  interviewSessionId?: string;
+}
+
+// Colors for terminal output
+const colors = {
+  reset: '\x1b[0m',
+  bright: '\x1b[1m',
+  dim: '\x1b[2m',
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
+  cyan: '\x1b[36m',
+};
+
+// Session state
+const state: SessionState = {
+  userId: uuidv4(),
+};
+
+// Create readline interface
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+});
+
+// Helper functions
+function print(message: string, color: keyof typeof colors = 'reset') {
+  console.log(`${colors[color]}${message}${colors.reset}`);
+}
+
+function printHeader(title: string) {
+  console.log('\n' + '='.repeat(60));
+  print(title, 'bright');
+  console.log('='.repeat(60) + '\n');
+}
+
+function printError(error: unknown) {
+  if (axios.isAxiosError(error)) {
+    const axiosError = error as AxiosError;
+    print(`\n❌ Error: ${axiosError.message}`, 'red');
+    if (axiosError.response?.data) {
+      print(JSON.stringify(axiosError.response.data, null, 2), 'red');
+    }
+  } else if (error instanceof Error) {
+    print(`\n❌ Error: ${error.message}`, 'red');
+  } else {
+    print(`\n❌ Unknown error occurred`, 'red');
+  }
+}
+
+function printSuccess(message: string, data?: any) {
+  print(`\n✅ ${message}`, 'green');
+  if (data) {
+    print(JSON.stringify(data, null, 2), 'cyan');
+  }
+}
+
+function question(prompt: string): Promise<string> {
+  return new Promise((resolve) => {
+    rl.question(`${colors.yellow}${prompt}${colors.reset}`, (answer) => {
+      resolve(answer.trim());
+    });
+  });
+}
+
+// API Functions
+async function healthCheck() {
+  printHeader('Health Check');
+  try {
+    const response = await axios.get(`${API_BASE_URL}/health`);
+    printSuccess('API is healthy!', response.data);
+  } catch (error) {
+    printError(error);
+  }
+}
+
+async function processQuery() {
+  printHeader('Process Query');
+
+  const query = await question('Enter your query: ');
+  if (!query) {
+    print('Query cannot be empty', 'red');
+    return;
+  }
+
+  const useRAG = await question('Use RAG? (y/n, default: n): ');
+
+  try {
+    const sessionId = state.currentSessionId || uuidv4();
+    state.currentSessionId = sessionId;
+
+    print('\n⏳ Processing query...', 'yellow');
+
+    const response = await axios.post(`${API_BASE_URL}/query`, {
+      query,
+      userId: state.userId,
+      sessionId,
+      useRAG: useRAG.toLowerCase() === 'y',
+    });
+
+    printSuccess('Query processed!');
+    print(`\n📝 Response from ${response.data.data.agentType}:`, 'cyan');
+    print(response.data.data.response, 'bright');
+    print(
+      `\n🎯 Confidence: ${(response.data.data.confidence * 100).toFixed(1)}%`,
+      'cyan',
+    );
+
+    if (response.data.data.suggestedFollowUps?.length > 0) {
+      print('\n💡 Suggested follow-ups:', 'magenta');
+      response.data.data.suggestedFollowUps.forEach(
+        (followUp: string, i: number) => {
+          print(`   ${i + 1}. ${followUp}`, 'dim');
+        },
+      );
+    }
+  } catch (error) {
+    printError(error);
+  }
+}
+
+async function getConversationHistory() {
+  printHeader('Get Conversation History');
+
+  if (!state.currentSessionId) {
+    print('No active session. Start a query first.', 'yellow');
+    return;
+  }
+
+  try {
+    const response = await axios.get(
+      `${API_BASE_URL}/query/history/${state.currentSessionId}`,
+    );
+
+    printSuccess('Conversation history retrieved!');
+
+    const history = response.data.data;
+    if (history.length === 0) {
+      print('No conversation history yet.', 'yellow');
+      return;
+    }
+
+    print('\n📜 Conversation History:', 'cyan');
+    history.forEach((turn: any, i: number) => {
+      const roleColor = turn.role === 'user' ? 'green' : 'blue';
+      print(`\n[${i + 1}] ${turn.role.toUpperCase()}:`, roleColor);
+      print(turn.content, 'dim');
+    });
+  } catch (error) {
+    printError(error);
+  }
+}
+
+async function startInterview() {
+  printHeader('Start Mock Interview');
+
+  print('Interview Types:', 'cyan');
+  print('1. DSA (Data Structures & Algorithms)', 'dim');
+  print('2. System Design', 'dim');
+  print('3. Behavioral', 'dim');
+  print('4. Mixed', 'dim');
+
+  const typeChoice = await question('\nSelect type (1-4): ');
+  const typeMap: Record<string, string> = {
+    '1': 'dsa',
+    '2': 'system_design',
+    '3': 'behavioral',
+    '4': 'mixed',
+  };
+
+  const type = typeMap[typeChoice];
+  if (!type) {
+    print('Invalid choice', 'red');
+    return;
+  }
+
+  print('\nDifficulty Levels:', 'cyan');
+  print('1. Easy', 'dim');
+  print('2. Medium', 'dim');
+  print('3. Hard', 'dim');
+
+  const diffChoice = await question('\nSelect difficulty (1-3, default: 2): ');
+  const diffMap: Record<string, string> = {
+    '1': 'easy',
+    '2': 'medium',
+    '3': 'hard',
+  };
+  const difficulty = diffMap[diffChoice] || 'medium';
+
+  const durationInput = await question('Duration in minutes (default: 30): ');
+  const duration = parseInt(durationInput) || 30;
+
+  const focusAreasInput = await question(
+    'Focus areas (comma-separated, optional): ',
+  );
+  const focusAreas = focusAreasInput
+    ? focusAreasInput
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : undefined;
+
+  try {
+    print('\n⏳ Starting interview session...', 'yellow');
+
+    const response = await axios.post(`${API_BASE_URL}/interview/start`, {
+      userId: state.userId,
+      type,
+      difficulty,
+      duration,
+      focusAreas,
+    });
+
+    state.interviewSessionId = response.data.data.sessionId;
+
+    printSuccess('Interview session started!');
+    print(`\n📋 Session ID: ${state.interviewSessionId}`, 'cyan');
+    print(`📊 Total Questions: ${response.data.data.totalQuestions}`, 'cyan');
+    print(
+      `\n❓ Question ${response.data.data.currentQuestionIndex}:`,
+      'bright',
+    );
+    print(response.data.data.currentQuestion.question, 'cyan');
+
+    if (response.data.data.currentQuestion.hints?.length > 0) {
+      print(
+        `\n💡 Hints available: ${response.data.data.currentQuestion.hints.length}`,
+        'dim',
+      );
+    }
+  } catch (error) {
+    printError(error);
+  }
+}
+
+async function submitAnswer() {
+  printHeader('Submit Answer');
+
+  if (!state.interviewSessionId) {
+    print('No active interview session. Start an interview first.', 'yellow');
+    return;
+  }
+
+  const answer = await question('Enter your answer: ');
+  if (!answer) {
+    print('Answer cannot be empty', 'red');
+    return;
+  }
+
+  const timeSpentInput = await question('Time spent (seconds, optional): ');
+  const timeSpent = timeSpentInput ? parseInt(timeSpentInput) : undefined;
+
+  try {
+    print('\n⏳ Evaluating answer...', 'yellow');
+
+    const response = await axios.post(`${API_BASE_URL}/interview/answer`, {
+      sessionId: state.interviewSessionId,
+      userId: state.userId,
+      answer,
+      timeSpent,
+    });
+
+    printSuccess('Answer submitted!');
+    print(`\n📊 Score: ${response.data.data.score}/100`, 'cyan');
+    print(`\n📝 Feedback:`, 'bright');
+    print(response.data.data.feedback, 'cyan');
+
+    if (response.data.data.sessionCompleted) {
+      print('\n🎉 Interview session completed!', 'green');
+      state.interviewSessionId = undefined;
+    } else if (response.data.data.nextQuestion) {
+      print(`\n❓ Next Question:`, 'bright');
+      print(response.data.data.nextQuestion.question, 'cyan');
+
+      if (response.data.data.nextQuestion.hints?.length > 0) {
+        print(
+          `\n💡 Hints available: ${response.data.data.nextQuestion.hints.length}`,
+          'dim',
+        );
+      }
+    }
+  } catch (error) {
+    printError(error);
+  }
+}
+
+async function requestHint() {
+  printHeader('Request Hint');
+
+  if (!state.interviewSessionId) {
+    print('No active interview session. Start an interview first.', 'yellow');
+    return;
+  }
+
+  try {
+    const response = await axios.get(
+      `${API_BASE_URL}/interview/${state.interviewSessionId}/hint`,
+    );
+
+    printSuccess('Hint received!');
+    print(`\n💡 ${response.data.data.hint}`, 'cyan');
+  } catch (error) {
+    printError(error);
+  }
+}
+
+async function getInterviewStatus() {
+  printHeader('Get Interview Status');
+
+  if (!state.interviewSessionId) {
+    print('No active interview session. Start an interview first.', 'yellow');
+    return;
+  }
+
+  try {
+    const response = await axios.get(
+      `${API_BASE_URL}/interview/${state.interviewSessionId}`,
+    );
+
+    printSuccess('Interview status retrieved!');
+
+    const data = response.data.data;
+    print(`\n📋 Session ID: ${data.sessionId}`, 'cyan');
+    print(`📊 Status: ${data.status}`, 'cyan');
+    print(`📝 Type: ${data.type}`, 'cyan');
+    print(
+      `❓ Question: ${data.currentQuestionIndex}/${data.totalQuestions}`,
+      'cyan',
+    );
+
+    if (data.score !== undefined) {
+      print(`🎯 Score: ${data.score.toFixed(1)}/100`, 'cyan');
+    }
+  } catch (error) {
+    printError(error);
+  }
+}
+
+async function extractPdfText(filePath: string): Promise<string> {
+  const dataBuffer = fs.readFileSync(filePath);
+  const data = await pdfParse(dataBuffer);
+  return data.text;
+}
+
+async function reviewResume() {
+  printHeader('Review Resume');
+
+  // Check for PDF files in resume folder
+  const files = fs.readdirSync(RESUME_FOLDER).filter((f) => f.endsWith('.pdf'));
+
+  if (files.length === 0) {
+    print(`No resume PDFs found in: ${RESUME_FOLDER}`, 'yellow');
+    print('\n📁 Please place your resume PDF in this folder:', 'cyan');
+    print(`   ${RESUME_FOLDER}`, 'bright');
+    print('\nExample: resume.pdf, my_resume.pdf, etc.', 'dim');
+    return;
+  }
+
+  print('Available resume PDFs:', 'cyan');
+  files.forEach((file, i) => {
+    print(`${i + 1}. ${file}`, 'dim');
+  });
+
+  const fileChoice = await question(
+    '\nSelect file (number) or press Enter for first: ',
+  );
+  const selectedIndex = fileChoice ? parseInt(fileChoice) - 1 : 0;
+
+  if (selectedIndex < 0 || selectedIndex >= files.length) {
+    print('Invalid choice', 'red');
+    return;
+  }
+
+  const selectedFile = files[selectedIndex];
+  const filePath = path.join(RESUME_FOLDER, selectedFile);
+
+  print(`\n📄 Selected: ${selectedFile}`, 'cyan');
+
+  const targetRole = await question('Target role (optional): ');
+  const targetCompaniesInput = await question(
+    'Target companies (comma-separated, optional): ',
+  );
+  const targetCompanies = targetCompaniesInput
+    ? targetCompaniesInput
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : undefined;
+
+  try {
+    print('\n⏳ Extracting text from PDF...', 'yellow');
+    const resumeText = await extractPdfText(filePath);
+
+    print('⏳ Analyzing resume...', 'yellow');
+
+    const response = await axios.post(`${API_BASE_URL}/resume/review`, {
+      userId: state.userId,
+      resumeText,
+      targetRole: targetRole || undefined,
+      targetCompanies,
+    });
+
+    printSuccess('Resume reviewed!');
+    print(`\n${response.data.data.review}`, 'cyan');
+
+    if (response.data.data.analysis) {
+      print(
+        `\n🎯 Overall Score: ${response.data.data.analysis.overallScore}/100`,
+        'green',
+      );
+      print(
+        `📊 ATS Compatibility: ${response.data.data.analysis.atsCompatibility}/100`,
+        'green',
+      );
+    }
+  } catch (error) {
+    printError(error);
+  }
+}
+
+async function getUserProgress() {
+  printHeader('Get User Progress');
+
+  try {
+    const response = await axios.get(
+      `${API_BASE_URL}/progress/${state.userId}`,
+    );
+
+    printSuccess('Progress retrieved!');
+
+    const data = response.data.data;
+
+    print(`\n📊 Learning Progress:`, 'bright');
+    print(
+      `   Total Interviews: ${data.learningProgress.totalInterviews}`,
+      'cyan',
+    );
+    print(`   Current Level: ${data.learningProgress.currentLevel}`, 'cyan');
+    print(`   Goal Level: ${data.learningProgress.goalLevel}`, 'cyan');
+
+    if (data.weakAreas.length > 0) {
+      print(`\n⚠️  Weak Areas:`, 'yellow');
+      data.weakAreas.forEach((area: any) => {
+        print(
+          `   • ${area.topic} (${area.category}) - Failed ${area.failureCount} times`,
+          'dim',
+        );
+      });
+    } else {
+      print('\n✅ No weak areas identified yet!', 'green');
+    }
+
+    if (data.recentTopics.length > 0) {
+      print(`\n📚 Recent Topics:`, 'cyan');
+      data.recentTopics.forEach((topic: string) => {
+        print(`   • ${topic}`, 'dim');
+      });
+    }
+  } catch (error) {
+    printError(error);
+  }
+}
+
+async function getWeakAreas() {
+  printHeader('Get Weak Areas');
+
+  const limitInput = await question(
+    'Number of weak areas to show (default: 5): ',
+  );
+  const limit = parseInt(limitInput) || 5;
+
+  try {
+    const response = await axios.get(
+      `${API_BASE_URL}/progress/${state.userId}/weak-areas?limit=${limit}`,
+    );
+
+    printSuccess('Weak areas retrieved!');
+
+    const weakAreas = response.data.data.weakAreas;
+
+    if (weakAreas.length === 0) {
+      print('\n✅ No weak areas identified yet!', 'green');
+      return;
+    }
+
+    print(`\n⚠️  Top ${weakAreas.length} Weak Areas:`, 'yellow');
+    weakAreas.forEach((area: any, i: number) => {
+      print(`\n${i + 1}. ${area.topic} (${area.category})`, 'bright');
+      print(`   Failed ${area.failureCount} times`, 'dim');
+      print(
+        `   Last encountered: ${new Date(area.lastEncountered).toLocaleDateString()}`,
+        'dim',
+      );
+
+      if (area.improvementSuggestions.length > 0) {
+        print('   Suggestions:', 'cyan');
+        area.improvementSuggestions
+          .slice(0, 3)
+          .forEach((suggestion: string) => {
+            print(`   • ${suggestion}`, 'dim');
+          });
+      }
+    });
+  } catch (error) {
+    printError(error);
+  }
+}
+
+async function pauseInterview() {
+  if (!state.interviewSessionId) {
+    print('No active interview session.', 'yellow');
+    return;
+  }
+
+  try {
+    await axios.post(
+      `${API_BASE_URL}/interview/${state.interviewSessionId}/pause`,
+    );
+    printSuccess('Interview paused!');
+  } catch (error) {
+    printError(error);
+  }
+}
+
+async function resumeInterview() {
+  if (!state.interviewSessionId) {
+    print('No active interview session.', 'yellow');
+    return;
+  }
+
+  try {
+    await axios.post(
+      `${API_BASE_URL}/interview/${state.interviewSessionId}/resume`,
+    );
+    printSuccess('Interview resumed!');
+  } catch (error) {
+    printError(error);
+  }
+}
+
+// Main menu
+async function showMenu() {
+  printHeader('AI Interview Coach - API Testing CLI');
+
+  print('Current User ID: ' + state.userId, 'dim');
+  if (state.currentSessionId) {
+    print('Query Session ID: ' + state.currentSessionId, 'dim');
+  }
+  if (state.interviewSessionId) {
+    print('Interview Session ID: ' + state.interviewSessionId, 'dim');
+  }
+
+  console.log('\n' + '─'.repeat(60));
+  print('1.  Health Check', 'cyan');
+  print('2.  Process Query (General)', 'cyan');
+  print('3.  Get Conversation History', 'cyan');
+  console.log('─'.repeat(60));
+  print('4.  Start Mock Interview', 'green');
+  print('5.  Submit Answer', 'green');
+  print('6.  Request Hint', 'green');
+  print('7.  Get Interview Status', 'green');
+  print('8.  Pause Interview', 'green');
+  print('9.  Resume Interview', 'green');
+  console.log('─'.repeat(60));
+  print('10. Review Resume (PDF)', 'magenta');
+  console.log('─'.repeat(60));
+  print('11. Get User Progress', 'yellow');
+  print('12. Get Weak Areas', 'yellow');
+  console.log('─'.repeat(60));
+  print('13. Change User ID', 'blue');
+  print('14. Reset Session', 'blue');
+  console.log('─'.repeat(60));
+  print('0.  Exit', 'red');
+  console.log('─'.repeat(60) + '\n');
+}
+
+async function changeUserId() {
+  const newUserId = await question(
+    'Enter new User ID (or press Enter for random): ',
+  );
+  state.userId = newUserId || uuidv4();
+  state.currentSessionId = undefined;
+  state.interviewSessionId = undefined;
+  printSuccess(`User ID changed to: ${state.userId}`);
+}
+
+async function resetSession() {
+  state.currentSessionId = undefined;
+  state.interviewSessionId = undefined;
+  printSuccess('Session reset!');
+}
+
+// Main loop
+async function main() {
+  print('\n🎯 Welcome to AI Interview Coach API CLI', 'bright');
+  print(`📁 Resume folder: ${RESUME_FOLDER}`, 'dim');
+  print(`🌐 API Base URL: ${API_BASE_URL}\n`, 'dim');
+
+  while (true) {
+    await showMenu();
+    const choice = await question('Select an option: ');
+
+    switch (choice) {
+      case '1':
+        await healthCheck();
+        break;
+      case '2':
+        await processQuery();
+        break;
+      case '3':
+        await getConversationHistory();
+        break;
+      case '4':
+        await startInterview();
+        break;
+      case '5':
+        await submitAnswer();
+        break;
+      case '6':
+        await requestHint();
+        break;
+      case '7':
+        await getInterviewStatus();
+        break;
+      case '8':
+        await pauseInterview();
+        break;
+      case '9':
+        await resumeInterview();
+        break;
+      case '10':
+        await reviewResume();
+        break;
+      case '11':
+        await getUserProgress();
+        break;
+      case '12':
+        await getWeakAreas();
+        break;
+      case '13':
+        await changeUserId();
+        break;
+      case '14':
+        await resetSession();
+        break;
+      case '0':
+        print('\n👋 Goodbye!', 'green');
+        rl.close();
+        process.exit(0);
+      default:
+        print('\n❌ Invalid option. Please try again.', 'red');
+    }
+
+    await question('\nPress Enter to continue...');
+  }
+}
+
+// Start the CLI
+main().catch((error) => {
+  printError(error);
+  rl.close();
+  process.exit(1);
+});
+
+
+==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\controllers\interview-controller.ts
 ==============================
 
@@ -2221,7 +2918,7 @@ import {
   WeakArea,
   LearningProgress,
   SkillLevel,
-} from '../../types';
+} from '../types';
 
 /**
  * Memory storage interface
@@ -3109,7 +3806,7 @@ FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\server.ts
 import dotenv from 'dotenv';
 import { createApp } from './app';
 import { LLMProviderFactory } from './services/llm/provider-factory';
-import { ChromaVectorDatabase } from './services/vector-db/chroma-db';
+import { PineconeVectorDatabase } from './services/vector-db/pinecone-db';
 import { IVectorDatabase } from './services/vector-db/base-vector-db';
 import { RouterStrategy } from './types';
 
@@ -3146,44 +3843,66 @@ async function startServer() {
     let vectorDb: IVectorDatabase | undefined = undefined;
     const vectorDbProvider = process.env.VECTOR_DB_PROVIDER;
 
-    if (vectorDbProvider === 'chroma') {
-      console.log('Initializing ChromaDB...');
+    if (vectorDbProvider === 'pinecone') {
+      console.log('Initializing Pinecone...');
       try {
-        const chromaHost = process.env.CHROMA_HOST || 'localhost';
-        const chromaPort = parseInt(process.env.CHROMA_PORT || '8000');
+        const pineconeApiKey = process.env.PINECONE_API_KEY;
+        const indexName = process.env.PINECONE_INDEX_NAME || 'interview-coach';
+        const namespace = process.env.PINECONE_NAMESPACE || 'default';
+        const cloud = process.env.PINECONE_CLOUD || 'aws';
+        const region = process.env.PINECONE_REGION || 'us-east-1';
 
-        vectorDb = new ChromaVectorDatabase(
-          { collectionName: 'interview_coach' },
-          chromaHost,
-          chromaPort,
+        if (!pineconeApiKey) {
+          throw new Error(
+            'PINECONE_API_KEY not found in environment variables',
+          );
+        }
+
+        vectorDb = new PineconeVectorDatabase(
+          {
+            indexName,
+            namespace,
+            cloud,
+            region,
+            embeddingDimension: 1536,
+          },
+          pineconeApiKey,
         );
 
-        await vectorDb.initialize({ collectionName: 'interview_coach' });
+        await vectorDb.initialize({
+          indexName,
+          namespace,
+          cloud,
+          region,
+        });
+
         const isReady = await vectorDb.isReady();
 
         if (isReady) {
-          console.log('✅ Vector Database: ChromaDB');
+          console.log('✅ Vector Database: Pinecone');
+          console.log(`   Index: ${indexName}`);
+          console.log(`   Namespace: ${namespace}`);
         } else {
           console.warn(
-            '⚠️  ChromaDB initialized but not ready. RAG features may be limited.',
+            '⚠️  Pinecone initialized but not ready. RAG features may be limited.',
           );
         }
       } catch (error) {
         console.warn(
-          '⚠️  ChromaDB initialization failed. Continuing without vector search.',
+          '⚠️  Pinecone initialization failed. Continuing without vector search.',
         );
         console.warn(
           '   Error:',
           error instanceof Error ? error.message : error,
         );
         console.warn(
-          '   Make sure ChromaDB is running: docker run -p 8000:8000 chromadb/chroma',
+          '   Make sure you have set PINECONE_API_KEY in your .env file',
         );
         vectorDb = undefined;
       }
     } else {
       console.log('⚠️  Vector database not configured. RAG features disabled.');
-      console.log('   Set VECTOR_DB_PROVIDER=chroma in .env to enable.');
+      console.log('   Set VECTOR_DB_PROVIDER=pinecone in .env to enable.');
     }
 
     // ============================================================================
@@ -3219,7 +3938,7 @@ async function startServer() {
       console.log('');
       console.log('  Configuration:');
       console.log(`    • LLM:       ${llmProvider.name}`);
-      console.log(`    • Vector DB: ${vectorDb ? 'ChromaDB' : 'Disabled'}`);
+      console.log(`    • Vector DB: ${vectorDb ? 'Pinecone' : 'Disabled'}`);
       console.log(`    • Routing:   ${routingStrategy}`);
       console.log(`    • Env:       ${process.env.NODE_ENV || 'development'}`);
       console.log('');
@@ -3242,9 +3961,6 @@ async function startServer() {
 
     process.on('SIGTERM', async () => {
       console.log('\n\n🛑 Shutting down gracefully...');
-
-      // Cleanup expired sessions - would need memory manager instance
-      // await memoryManager.cleanup(30);
 
       // Close vector DB if configured
       if (vectorDb) {
@@ -3909,7 +4625,7 @@ FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\
  * This abstraction allows swapping between OpenAI, Anthropic, or other providers
  */
 
-import { LLMRequest, LLMResponse, LLMMessage } from '../types';
+import { LLMRequest, LLMResponse, LLMMessage } from '../../types';
 
 /**
  * Base interface all LLM providers must implement
@@ -4328,6 +5044,11 @@ export interface VectorDBConfig {
   collectionName?: string;
   embeddingDimension?: number;
   similarityMetric?: 'cosine' | 'euclidean' | 'dot_product';
+  // Pinecone-specific properties
+  indexName?: string;
+  namespace?: string;
+  cloud?: string;
+  region?: string;
 }
 
 /**
@@ -4357,7 +5078,11 @@ export interface IVectorDatabase {
   /**
    * Search for similar documents
    */
-  search(query: string, topK?: number, filter?: Record<string, unknown>): Promise<RetrievalResult[]>;
+  search(
+    query: string,
+    topK?: number,
+    filter?: Record<string, unknown>,
+  ): Promise<RetrievalResult[]>;
 
   /**
    * Search using a query embedding directly
@@ -4365,7 +5090,7 @@ export interface IVectorDatabase {
   searchByEmbedding(
     embedding: number[],
     topK?: number,
-    filter?: Record<string, unknown>
+    filter?: Record<string, unknown>,
   ): Promise<RetrievalResult[]>;
 
   /**
@@ -4417,20 +5142,32 @@ export abstract class BaseVectorDatabase implements IVectorDatabase {
       collectionName: config.collectionName || 'interview_coach',
       embeddingDimension: config.embeddingDimension || 1536, // OpenAI default
       similarityMetric: config.similarityMetric || 'cosine',
+      // Include Pinecone-specific properties if provided
+      indexName: config.indexName,
+      namespace: config.namespace,
+      cloud: config.cloud,
+      region: config.region,
     };
   }
 
   abstract initialize(config: VectorDBConfig): Promise<void>;
   abstract addDocuments(documents: Document[]): Promise<void>;
-  abstract search(query: string, topK?: number, filter?: Record<string, unknown>): Promise<RetrievalResult[]>;
+  abstract search(
+    query: string,
+    topK?: number,
+    filter?: Record<string, unknown>,
+  ): Promise<RetrievalResult[]>;
   abstract searchByEmbedding(
     embedding: number[],
     topK?: number,
-    filter?: Record<string, unknown>
+    filter?: Record<string, unknown>,
   ): Promise<RetrievalResult[]>;
   abstract deleteDocuments(ids: string[]): Promise<void>;
   abstract getDocument(id: string): Promise<Document | null>;
-  abstract updateDocument(id: string, document: Partial<Document>): Promise<void>;
+  abstract updateDocument(
+    id: string,
+    document: Partial<Document>,
+  ): Promise<void>;
   abstract clear(): Promise<void>;
   abstract close(): Promise<void>;
 
@@ -4448,7 +5185,9 @@ export abstract class BaseVectorDatabase implements IVectorDatabase {
 
   protected ensureInitialized(): void {
     if (!this.initialized) {
-      throw new Error(`${this.name} vector database not initialized. Call initialize() first.`);
+      throw new Error(
+        `${this.name} vector database not initialized. Call initialize() first.`,
+      );
     }
   }
 }
@@ -4764,6 +5503,411 @@ export class ChromaVectorDatabase extends BaseVectorDatabase {
     this.client = null;
     this.collection = null;
     console.log('ChromaDB connection closed');
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\vector-db\pinecone-db.ts
+==============================
+
+/**
+ * Pinecone Vector Database Implementation
+ */
+
+import { Pinecone, Index, RecordMetadata } from '@pinecone-database/pinecone';
+import { BaseVectorDatabase, VectorDBConfig } from './base-vector-db';
+import { Document, RetrievalResult } from '../../types';
+import { EmbeddingService } from '../embedding/embedding-service';
+
+export class PineconeVectorDatabase extends BaseVectorDatabase {
+  readonly name = 'Pinecone';
+  private client: Pinecone | null = null;
+  private index: Index | null = null;
+  private embeddingService: EmbeddingService;
+  private namespace: string;
+  private indexName: string;
+
+  constructor(
+    config: VectorDBConfig = {},
+    private apiKey?: string,
+  ) {
+    super(config);
+    this.embeddingService = new EmbeddingService();
+    this.namespace = config.namespace || 'default';
+    this.indexName =
+      config.indexName || config.collectionName || 'interview-coach';
+  }
+
+  async initialize(config: VectorDBConfig): Promise<void> {
+    try {
+      this.config = { ...this.config, ...config };
+
+      if (config.indexName) {
+        this.indexName = config.indexName;
+      }
+      if (config.namespace) {
+        this.namespace = config.namespace;
+      }
+
+      // Initialize Pinecone client
+      const apiKey = this.apiKey || process.env.PINECONE_API_KEY;
+      if (!apiKey) {
+        throw new Error('Pinecone API key is required');
+      }
+
+      this.client = new Pinecone({
+        apiKey: apiKey,
+      });
+
+      // Get or create index
+      try {
+        // Try to describe the index (check if it exists)
+        await this.client.describeIndex(this.indexName);
+        console.log(`Using existing Pinecone index: ${this.indexName}`);
+      } catch (error) {
+        // Index doesn't exist, create it
+        console.log(`Creating new Pinecone index: ${this.indexName}`);
+        await this.client.createIndex({
+          name: this.indexName,
+          dimension: this.config.embeddingDimension || 1536,
+          metric: this.config.similarityMetric || 'cosine',
+          spec: {
+            serverless: {
+              cloud: (config.cloud as 'aws' | 'gcp' | 'azure') || 'aws',
+              region: config.region || 'us-east-1',
+            },
+          },
+        });
+
+        // Wait for index to be ready
+        await this.waitForIndexReady();
+      }
+
+      // Get index reference
+      this.index = this.client.index(this.indexName);
+
+      this.initialized = true;
+      console.log(
+        `Pinecone initialized with index: ${this.indexName}, namespace: ${this.namespace}`,
+      );
+    } catch (error) {
+      console.error('Failed to initialize Pinecone:', error);
+      throw new Error(
+        `Pinecone initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  }
+
+  private async waitForIndexReady(maxWaitTime: number = 60000): Promise<void> {
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < maxWaitTime) {
+      try {
+        const indexDescription = await this.client!.describeIndex(
+          this.indexName,
+        );
+        if (indexDescription.status?.ready) {
+          return;
+        }
+      } catch (error) {
+        // Index might not be ready yet
+      }
+
+      // Wait 2 seconds before checking again
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    throw new Error('Index creation timeout');
+  }
+
+  async addDocuments(documents: Document[]): Promise<void> {
+    this.ensureInitialized();
+    if (!this.index) {
+      throw new Error('Index not initialized');
+    }
+
+    if (documents.length === 0) {
+      return;
+    }
+
+    try {
+      // Generate embeddings for documents that don't have them
+      const documentsWithEmbeddings = await Promise.all(
+        documents.map(async (doc) => {
+          if (!doc.embedding) {
+            const embedding = await this.embeddingService.generateEmbedding(
+              doc.content,
+            );
+            return { ...doc, embedding };
+          }
+          return doc;
+        }),
+      );
+
+      // Prepare records for Pinecone
+      const records = documentsWithEmbeddings.map((doc) => ({
+        id: doc.id,
+        values: doc.embedding!,
+        metadata: {
+          content: doc.content,
+          source: doc.metadata.source,
+          category: doc.metadata.category,
+          tags: JSON.stringify(doc.metadata.tags),
+          difficulty: doc.metadata.difficulty || '',
+          company: doc.metadata.company || '',
+          dateAdded: doc.metadata.dateAdded.toISOString(),
+        } as RecordMetadata,
+      }));
+
+      // Upsert in batches of 100 (Pinecone recommendation)
+      const batchSize = 100;
+      for (let i = 0; i < records.length; i += batchSize) {
+        const batch = records.slice(i, i + batchSize);
+        // Fix: Pinecone v7 expects an object with 'records' property
+        await this.index.namespace(this.namespace).upsert({ records: batch });
+      }
+
+      console.log(`Added ${documents.length} documents to Pinecone`);
+    } catch (error) {
+      console.error('Failed to add documents to Pinecone:', error);
+      throw new Error(
+        `Failed to add documents: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  }
+
+  async search(
+    query: string,
+    topK: number = 5,
+    filter?: Record<string, unknown>,
+  ): Promise<RetrievalResult[]> {
+    this.ensureInitialized();
+    if (!this.index) {
+      throw new Error('Index not initialized');
+    }
+
+    try {
+      // Generate embedding for query
+      const queryEmbedding =
+        await this.embeddingService.generateEmbedding(query);
+
+      return await this.searchByEmbedding(queryEmbedding, topK, filter);
+    } catch (error) {
+      console.error('Failed to search in Pinecone:', error);
+      throw new Error(
+        `Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  }
+
+  async searchByEmbedding(
+    embedding: number[],
+    topK: number = 5,
+    filter?: Record<string, unknown>,
+  ): Promise<RetrievalResult[]> {
+    this.ensureInitialized();
+    if (!this.index) {
+      throw new Error('Index not initialized');
+    }
+
+    try {
+      // Prepare filter in Pinecone format
+      const pineconeFilter = filter
+        ? this.convertToPineconeFilter(filter)
+        : undefined;
+
+      // Query Pinecone
+      const queryResponse = await this.index.namespace(this.namespace).query({
+        vector: embedding,
+        topK: topK,
+        includeMetadata: true,
+        filter: pineconeFilter,
+      });
+
+      // Transform Pinecone results to our format
+      const retrievalResults: RetrievalResult[] = queryResponse.matches.map(
+        (match) => {
+          const metadata = match.metadata as any;
+
+          return {
+            document: {
+              id: match.id,
+              content: metadata.content || '',
+              metadata: {
+                source: metadata.source || '',
+                category: metadata.category || '',
+                tags: metadata.tags ? JSON.parse(metadata.tags as string) : [],
+                difficulty: metadata.difficulty || undefined,
+                company: metadata.company || undefined,
+                dateAdded: metadata.dateAdded
+                  ? new Date(metadata.dateAdded as string)
+                  : new Date(),
+              },
+              embedding: match.values,
+            },
+            score: match.score || 0,
+            relevance: match.score || 0, // Pinecone score is already a similarity score (0-1)
+          };
+        },
+      );
+
+      return retrievalResults;
+    } catch (error) {
+      console.error('Failed to search by embedding in Pinecone:', error);
+      throw new Error(
+        `Search by embedding failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  }
+
+  private convertToPineconeFilter(
+    filter: Record<string, unknown>,
+  ): Record<string, any> {
+    // Convert our filter format to Pinecone's filter format
+    // Pinecone uses MongoDB-like filter syntax
+    const pineconeFilter: Record<string, any> = {};
+
+    for (const [key, value] of Object.entries(filter)) {
+      if (key === 'category' && typeof value === 'string') {
+        pineconeFilter.category = { $eq: value };
+      } else if (key === 'difficulty' && typeof value === 'string') {
+        pineconeFilter.difficulty = { $eq: value };
+      } else if (key === 'tags' && Array.isArray(value)) {
+        // For tags, we need to check if any tag matches
+        // Since we store tags as JSON string, we'll use $in operator
+        pineconeFilter.tags = { $in: value };
+      } else {
+        pineconeFilter[key] = value;
+      }
+    }
+
+    return pineconeFilter;
+  }
+
+  async deleteDocuments(ids: string[]): Promise<void> {
+    this.ensureInitialized();
+    if (!this.index) {
+      throw new Error('Index not initialized');
+    }
+
+    try {
+      // Fix: Pinecone v7 expects deleteMany with array of ids
+      await this.index.namespace(this.namespace).deleteMany(ids);
+      console.log(`Deleted ${ids.length} documents from Pinecone`);
+    } catch (error) {
+      console.error('Failed to delete documents from Pinecone:', error);
+      throw new Error(
+        `Failed to delete documents: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  }
+
+  async getDocument(id: string): Promise<Document | null> {
+    this.ensureInitialized();
+    if (!this.index) {
+      throw new Error('Index not initialized');
+    }
+
+    try {
+      // Fix: Pinecone v7 expects an object with 'ids' property
+      const fetchResponse = await this.index
+        .namespace(this.namespace)
+        .fetch({ ids: [id] });
+      const record = fetchResponse.records[id];
+
+      if (!record || !record.metadata) {
+        return null;
+      }
+
+      const metadata = record.metadata as any;
+
+      return {
+        id: record.id,
+        content: metadata.content || '',
+        metadata: {
+          source: metadata.source || '',
+          category: metadata.category || '',
+          tags: metadata.tags ? JSON.parse(metadata.tags as string) : [],
+          difficulty: metadata.difficulty || undefined,
+          company: metadata.company || undefined,
+          dateAdded: metadata.dateAdded
+            ? new Date(metadata.dateAdded as string)
+            : new Date(),
+        },
+        embedding: record.values,
+      };
+    } catch (error) {
+      console.error('Failed to get document from Pinecone:', error);
+      return null;
+    }
+  }
+
+  async updateDocument(id: string, document: Partial<Document>): Promise<void> {
+    this.ensureInitialized();
+    if (!this.index) {
+      throw new Error('Index not initialized');
+    }
+
+    try {
+      // Pinecone doesn't have direct update - need to fetch, merge, and upsert
+      const existing = await this.getDocument(id);
+      if (!existing) {
+        throw new Error(`Document with id ${id} not found`);
+      }
+
+      const updated: Document = {
+        ...existing,
+        ...document,
+        id, // Ensure ID doesn't change
+        metadata: {
+          ...existing.metadata,
+          ...(document.metadata || {}),
+        },
+      };
+
+      // Generate new embedding if content changed
+      if (document.content && document.content !== existing.content) {
+        updated.embedding = await this.embeddingService.generateEmbedding(
+          updated.content,
+        );
+      }
+
+      await this.addDocument(updated);
+
+      console.log(`Updated document ${id} in Pinecone`);
+    } catch (error) {
+      console.error('Failed to update document in Pinecone:', error);
+      throw new Error(
+        `Failed to update document: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  }
+
+  async clear(): Promise<void> {
+    this.ensureInitialized();
+    if (!this.index) {
+      throw new Error('Index not initialized');
+    }
+
+    try {
+      // Delete all vectors in the namespace
+      await this.index.namespace(this.namespace).deleteAll();
+      console.log('Cleared Pinecone namespace');
+    } catch (error) {
+      console.error('Failed to clear Pinecone:', error);
+      throw new Error(
+        `Failed to clear namespace: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  }
+
+  async close(): Promise<void> {
+    // Pinecone client doesn't need explicit closing
+    this.initialized = false;
+    this.client = null;
+    this.index = null;
+    console.log('Pinecone connection closed');
   }
 }
 
@@ -5284,7 +6428,7 @@ FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\utils\see
 
 import dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
-import { ChromaVectorDatabase } from '../services/vector-db/chroma-db';
+import { PineconeVectorDatabase } from '../services/vector-db/pinecone-db';
 import { Document } from '../types';
 
 dotenv.config();
@@ -5427,19 +6571,36 @@ async function seedDatabase() {
   try {
     console.log('🌱 Starting database seeding...\n');
 
-    // Initialize ChromaDB
-    const chromaHost = process.env.CHROMA_HOST || 'localhost';
-    const chromaPort = parseInt(process.env.CHROMA_PORT || '8000');
+    // Initialize Pinecone
+    const pineconeApiKey = process.env.PINECONE_API_KEY;
+    const indexName = process.env.PINECONE_INDEX_NAME || 'interview-coach';
+    const namespace = process.env.PINECONE_NAMESPACE || 'default';
+    const cloud = process.env.PINECONE_CLOUD || 'aws';
+    const region = process.env.PINECONE_REGION || 'us-east-1';
 
-    const vectorDb = new ChromaVectorDatabase(
-      { collectionName: 'interview_coach' },
-      chromaHost,
-      chromaPort
+    if (!pineconeApiKey) {
+      throw new Error('PINECONE_API_KEY not found in environment variables');
+    }
+
+    const vectorDb = new PineconeVectorDatabase(
+      {
+        indexName,
+        namespace,
+        cloud,
+        region,
+        embeddingDimension: 1536,
+      },
+      pineconeApiKey,
     );
 
-    console.log('Connecting to ChromaDB...');
-    await vectorDb.initialize({ collectionName: 'interview_coach' });
-    console.log('✅ Connected to ChromaDB\n');
+    console.log('Connecting to Pinecone...');
+    await vectorDb.initialize({
+      indexName,
+      namespace,
+      cloud,
+      region,
+    });
+    console.log('✅ Connected to Pinecone\n');
 
     // Clear existing data
     console.log('Clearing existing data...');

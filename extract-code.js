@@ -18,6 +18,15 @@ const path = require('path');
 const TARGET_FOLDER =
   'E:/My Projects/AI-Interview-Coach/aI-interview-coach-backend/src';
 
+
+// const TARGET_FOLDER = 'E:/My Projects/LeetLab/Algodrill/frontend/src';
+// const TARGET_FOLDER =
+//   'E:/My Projects/Dev-Collab/Dev-Collab-Frontend/src';
+
+// const TARGET_FOLDER = 'E:/My Projects/Slack Clone/Slack-Frontend/src';
+
+// E:\My Projects\Dev-Collab\Dev-Collab-Frontend\src
+
 // 👇 HARD-CODED output folder name
 const OUTPUT_FOLDER_NAME = 'aI-interview-coach-backend';
 
