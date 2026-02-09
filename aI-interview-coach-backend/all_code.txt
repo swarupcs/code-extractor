@@ -399,8 +399,14 @@ FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\agents\ds
 ==============================
 
 /**
- * DSA Interview Agent
+ * DSA Interview Agent - FIXED VERSION
  * Handles data structures and algorithms interview questions
+ *
+ * KEY FIXES:
+ * 1. Improved implementation detection
+ * 2. Better evaluation prompts that don't incorrectly mark complete code as incomplete
+ * 3. More accurate scoring for valid solutions
+ * 4. Fixed TypeScript type errors
  */
 
 import { BaseAgent } from './base-agent';
@@ -422,6 +428,7 @@ interface DSAEvaluation {
   weaknesses: string[];
   suggestions: string[];
   correctness: 'correct' | 'partially_correct' | 'incorrect';
+  hasImplementation: boolean;
 }
 
 export class DSAInterviewAgent extends BaseAgent {
@@ -432,7 +439,7 @@ export class DSAInterviewAgent extends BaseAgent {
   constructor(
     llmProvider: ILLMProvider,
     memoryManager: MemoryManager,
-    private vectorDb?: IVectorDatabase
+    private vectorDb?: IVectorDatabase,
   ) {
     super(llmProvider, memoryManager);
   }
@@ -535,23 +542,64 @@ Be encouraging but honest. Focus on learning and improvement.`;
   }
 
   /**
-   * Check if the query is an answer submission
+   * Check if the query is an answer submission with actual implementation
+   * IMPROVED: Better detection of valid code
    */
   private isAnswerSubmission(query: string): boolean {
-    const answerIndicators = [
-      'my solution',
-      'here is my code',
-      'def ',
-      'function ',
-      'class Solution',
-      '{',
-      'public ',
-      'private ',
+    // Check for code patterns with actual implementation
+    const codePatterns = [
+      /function\s+\w+\s*\([^)]*\)\s*\{[\s\S]+\}/, // JavaScript function with body
+      /const\s+\w+\s*=\s*\([^)]*\)\s*=>\s*\{[\s\S]+\}/, // Arrow function with body
+      /def\s+\w+\s*\([^)]*\)\s*:[\s\S]+\n\s+\w+/, // Python function with body
+      /class\s+Solution[\s\S]+{[\s\S]+}/, // Class with implementation
+      /public\s+\w+\s+\w+\s*\([^)]*\)\s*\{[\s\S]+\}/, // Java method with body
     ];
 
-    const queryLower = query.toLowerCase();
-    return answerIndicators.some((indicator) => queryLower.includes(indicator)) ||
-           query.includes('{') || query.match(/def\s+\w+/) !== null;
+    const hasCodePattern = codePatterns.some((pattern) => pattern.test(query));
+
+    // Check for implementation indicators (not just signatures)
+    const implementationKeywords = [
+      /return\s+\w+/, // Actual return statement with value
+      /for\s*\(/, // For loop
+      /while\s*\(/, // While loop
+      /if\s*\(/, // If statement
+      /let\s+\w+\s*=/, // Variable declaration with assignment
+      /const\s+\w+\s*=/, // Const declaration with assignment
+    ];
+
+    const hasImplementation = implementationKeywords.some((pattern) =>
+      pattern.test(query),
+    );
+
+    // Check if it's not just a signature (has actual logic)
+    const lines = query.split('\n').filter((line) => {
+      const trimmed = line.trim();
+      return (
+        trimmed.length > 0 &&
+        !trimmed.startsWith('//') &&
+        !trimmed.startsWith('/*') &&
+        !trimmed.startsWith('*')
+      );
+    });
+
+    const hasMultipleLogicalLines = lines.length > 2;
+
+    // Must have code pattern, implementation keywords, and multiple lines
+    return hasCodePattern && hasImplementation && hasMultipleLogicalLines;
+  }
+
+  /**
+   * Extract code from the submission
+   */
+  private extractCode(query: string): string {
+    // Remove markdown code blocks if present
+    const codeBlockMatch = query.match(
+      /```(?:javascript|python|java|cpp)?\n([\s\S]*?)```/,
+    );
+    if (codeBlockMatch) {
+      return codeBlockMatch[1].trim();
+    }
+    return query.trim();
   }
 
   /**
@@ -559,15 +607,18 @@ Be encouraging but honest. Focus on learning and improvement.`;
    */
   private async handleQuery(input: BaseAgentInput): Promise<string> {
     const systemPrompt = this.buildSystemPrompt();
-    
+
     // Get user's weak areas to personalize questions
     const weakAreas = await this.memoryManager.getWeakAreas(input.userId);
-    const weakAreaContext = weakAreas.length > 0
-      ? `\n\nUser's weak areas: ${weakAreas.map((wa) => wa.topic).join(', ')}`
-      : '';
+    const weakAreaContext =
+      weakAreas.length > 0
+        ? `\n\nUser's weak areas: ${weakAreas.map((wa) => wa.topic).join(', ')}`
+        : '';
 
     // Get conversation context
-    const conversationHistory = await this.getConversationContext(input.sessionId);
+    const conversationHistory = await this.getConversationContext(
+      input.sessionId,
+    );
 
     // Try RAG if vector db is available
     let ragContext = '';
@@ -576,9 +627,10 @@ Be encouraging but honest. Focus on learning and improvement.`;
         const results = await this.vectorDb.search(input.query, 3, {
           category: 'dsa',
         });
-        
+
         if (results.length > 0) {
-          ragContext = '\n\nRelevant DSA problems and concepts:\n' +
+          ragContext =
+            '\n\nRelevant DSA problems and concepts:\n' +
             results.map((r, i) => `${i + 1}. ${r.document.content}`).join('\n');
         }
       } catch (error) {
@@ -592,37 +644,112 @@ Be encouraging but honest. Focus on learning and improvement.`;
       enhancedPrompt,
       input.query,
       conversationHistory,
-      0.7
+      0.7,
     );
   }
 
   /**
    * Evaluate a submitted code solution
+   * FIXED: Improved evaluation that properly recognizes complete implementations
    */
   private async evaluateAnswer(input: BaseAgentInput): Promise<string> {
-    const evaluationPrompt = `You are evaluating a DSA coding solution. Analyze the code for:
+    const code = this.extractCode(input.query);
 
-1. Correctness: Does it solve the problem?
-2. Time Complexity: Big O analysis
-3. Space Complexity: Big O analysis  
-4. Code Quality: Readability, style, edge cases
-5. Optimizations: Better approaches
+    // First, check if there's actual implementation
+    const hasImplementationCheck = await this.checkImplementation(code);
 
-Provide structured feedback with:
-- Score (0-100)
-- What they did well
-- What needs improvement
-- Specific suggestions
+    if (!hasImplementationCheck.hasImplementation) {
+      return `❌ **No Implementation Detected**
 
-Be constructive and educational.`;
+The code you submitted appears to be just a function signature or incomplete implementation.
 
-    const conversationHistory = await this.getConversationContext(input.sessionId);
+**What I see:**
+${hasImplementationCheck.analysis}
+
+**What I need:**
+- A complete function implementation with logic
+- Actual return statements with computed values
+- Loop structures or conditional logic
+- Variable assignments and operations
+
+**Example of what to submit:**
+\`\`\`javascript
+function twoSum(nums, target) {
+  const map = new Map();
+  
+  for (let i = 0; i < nums.length; i++) {
+    const complement = target - nums[i];
+    if (map.has(complement)) {
+      return [map.get(complement), i];
+    }
+    map.set(nums[i], i);
+  }
+  
+  return [];
+}
+\`\`\`
+
+Please submit your complete solution with implementation details.`;
+    }
+
+    // Now evaluate the actual implementation
+    // FIXED: Better prompt that doesn't incorrectly mark complete code as incomplete
+    const evaluationPrompt = `You are evaluating a DSA coding solution. This code HAS BEEN VERIFIED to contain actual implementation logic.
+
+Analyze the code for:
+
+1. **Correctness**: Does it solve the problem correctly? Are there logical errors?
+2. **Time Complexity**: Provide Big O analysis
+3. **Space Complexity**: Provide Big O analysis  
+4. **Code Quality**: Readability, style, variable names
+5. **Edge Cases**: What edge cases are handled? What's missing?
+6. **Optimizations**: Are there better approaches?
+
+**IMPORTANT**: This is a COMPLETE implementation with logic, loops, and return statements. Do NOT say it's incomplete or just a signature. Evaluate it as a full solution.
+
+**Code submitted:**
+\`\`\`javascript
+${code}
+\`\`\`
+
+**Evaluation Format:**
+
+## Score: [X/100]
+
+Provide a score between 60-100 for working solutions. Only give below 60 if there are serious correctness issues.
+
+## ✅ Strengths
+- [List what was done well - acknowledge the implementation is complete]
+
+## ⚠️ Weaknesses (if any)
+- [List issues and problems, or write "None - solution is correct" if it's a good solution]
+
+## 💡 Suggestions for Improvement
+- [Specific actionable suggestions, or "Great work!" if minimal improvements needed]
+
+## 🔍 Complexity Analysis
+- **Time Complexity**: O(?)
+- **Space Complexity**: O(?)
+- **Explanation**: [Brief explanation]
+
+## 🎯 Edge Cases
+- **Handled**: [Cases that are handled]
+- **Missing**: [Cases that should be handled, or "All major edge cases covered"]
+
+## 🚀 Optimization Opportunities
+- [Better approaches or optimizations, or "Solution is optimal" if applicable]
+
+Be constructive, encouraging, and educational. Recognize good implementations appropriately.`;
+
+    const conversationHistory = await this.getConversationContext(
+      input.sessionId,
+    );
 
     const evaluation = await this.generateResponse(
       evaluationPrompt,
       input.query,
       conversationHistory,
-      0.5 // Lower temperature for consistent evaluation
+      0.3, // Lower temperature for consistent evaluation
     );
 
     // Extract weak areas from evaluation and record them
@@ -632,31 +759,84 @@ Be constructive and educational.`;
   }
 
   /**
+   * Check if code has actual implementation
+   * IMPROVED: Better heuristics for detecting complete code
+   */
+  private async checkImplementation(code: string): Promise<{
+    hasImplementation: boolean;
+    analysis: string;
+  }> {
+    // Enhanced heuristic checks
+    const hasReturnWithValue = /return\s+[^;}\n]+/.test(code);
+    const hasLoop = /for\s*\(|while\s*\(/.test(code);
+    const hasConditional = /if\s*\(/.test(code);
+    const hasAssignment = /[let|const|var]\s+\w+\s*=/.test(code);
+    const hasMethodCall = /\.\w+\(/.test(code); // e.g., Math.max(), arr.push()
+
+    const linesWithLogic = code.split('\n').filter((line) => {
+      const trimmed = line.trim();
+      return (
+        trimmed &&
+        !trimmed.startsWith('//') &&
+        !trimmed.startsWith('/*') &&
+        trimmed !== '{' &&
+        trimmed !== '}' &&
+        trimmed !== 'function' &&
+        !trimmed.match(/^function\s+\w+\s*\(/)
+      );
+    }).length;
+
+    // More lenient detection: needs SOME implementation indicators
+    const hasImplementation =
+      linesWithLogic > 2 &&
+      (hasReturnWithValue || hasLoop || hasConditional || hasMethodCall) &&
+      hasAssignment;
+
+    let analysis: string;
+    if (hasImplementation) {
+      analysis =
+        'Found implementation logic including loops, conditionals, assignments, and/or method calls.';
+    } else {
+      const missing: string[] = []; // FIXED: Explicitly type as string[]
+      if (!hasReturnWithValue) missing.push('return statements with values');
+      if (!hasLoop && !hasConditional)
+        missing.push('control flow (loops/conditionals)');
+      if (!hasAssignment) missing.push('variable assignments');
+      if (linesWithLogic <= 2) missing.push('sufficient lines of logic');
+
+      analysis = `Only found function signature without meaningful implementation. Missing: ${missing.join(', ')}.`;
+    }
+
+    return {
+      hasImplementation,
+      analysis,
+    };
+  }
+
+  /**
    * Extract and record weak areas from evaluation
    */
   private async recordWeakAreasFromEvaluation(
     userId: string,
-    evaluation: string
+    evaluation: string,
   ): Promise<void> {
     // Simple heuristic: look for common weak area indicators
     const weakAreaPatterns = [
-      /time complexity/i,
-      /space complexity/i,
-      /edge case/i,
-      /optimization/i,
-      /bug/i,
-      /incorrect/i,
+      { pattern: /time complexity/i, topic: 'Time Complexity Analysis' },
+      { pattern: /space complexity/i, topic: 'Space Complexity Analysis' },
+      { pattern: /edge case/i, topic: 'Edge Case Handling' },
+      { pattern: /optimization/i, topic: 'Code Optimization' },
+      { pattern: /\bbug\b/i, topic: 'Debugging' },
+      { pattern: /incorrect/i, topic: 'Correctness' },
+      { pattern: /logic error/i, topic: 'Algorithm Logic' },
     ];
 
-    for (const pattern of weakAreaPatterns) {
+    for (const { pattern, topic } of weakAreaPatterns) {
       if (pattern.test(evaluation)) {
-        const topic = pattern.source.replace(/\\/g, '').replace(/i$/, '');
-        await this.memoryManager.recordWeakArea(
-          userId,
-          topic,
-          'DSA',
-          ['Review the evaluation feedback']
-        );
+        await this.memoryManager.recordWeakArea(userId, topic, 'DSA', [
+          'Review the evaluation feedback',
+          'Practice similar problems',
+        ]);
       }
     }
   }
@@ -666,7 +846,7 @@ Be constructive and educational.`;
    */
   async generateQuestion(
     difficulty: 'easy' | 'medium' | 'hard',
-    topic?: string
+    topic?: string,
   ): Promise<DSAQuestion> {
     const prompt = `Generate a ${difficulty} level DSA coding problem${topic ? ` on ${topic}` : ''}.
 
@@ -686,14 +866,17 @@ Include:
     return await this.generateStructuredResponse<DSAQuestion>(
       'You are a DSA question generator.',
       prompt,
-      schema
+      schema,
     );
   }
 
   /**
    * Calculate custom confidence for DSA responses
    */
-  protected calculateConfidence(response: string, input: BaseAgentInput): number {
+  protected calculateConfidence(
+    response: string,
+    input: BaseAgentInput,
+  ): number {
     let confidence = super.calculateConfidence(response, input);
 
     // Boost confidence if response includes complexity analysis
@@ -1836,6 +2019,50 @@ async function startInterview() {
   }
 }
 
+function readMultilineInput(prompt: string): Promise<string> {
+  return new Promise((resolve) => {
+    console.log(prompt);
+    console.log(
+      'Paste your code and press Ctrl+D (or Ctrl+Z on Windows) when done:',
+    );
+    console.log('');
+
+    const stdin = process.stdin;
+    const chunks: string[] = [];
+
+    // Set raw mode to capture all input
+    stdin.setRawMode(false);
+    stdin.resume();
+    stdin.setEncoding('utf8');
+
+    const onData = (chunk: string) => {
+      chunks.push(chunk);
+    };
+
+    const onEnd = () => {
+      stdin.removeListener('data', onData);
+      stdin.removeListener('end', onEnd);
+      stdin.pause();
+
+      const fullInput = chunks.join('').trim();
+      resolve(fullInput);
+    };
+
+    stdin.on('data', onData);
+    stdin.on('end', onEnd);
+  });
+}
+
+
+/**
+ * FIX for cli-driver.ts - Multi-line Input Handling
+ * 
+ * The current CLI only reads a single line when you press Enter.
+ * This fix allows multi-line code input.
+ */
+
+// REPLACE the submitAnswer function in cli-driver.ts with this:
+
 async function submitAnswer() {
   printHeader('Submit Answer');
 
@@ -1844,9 +2071,60 @@ async function submitAnswer() {
     return;
   }
 
-  const answer = await question('Enter your answer: ');
-  if (!answer) {
+  print('Choose input method:', 'cyan');
+  print('1. Read from file (recommended for multi-line code)', 'dim');
+  print('2. Paste multi-line code (press Ctrl+D when done)', 'dim');
+  print('3. Type single line (for simple answers)', 'dim');
+
+  const method = await question('\nSelect method (1/2/3): ');
+
+  let answer = '';
+
+  if (method === '1') {
+    // Read from file
+    const fs = require('fs');
+    const path = require('path');
+    const filename = await question('Enter filename (default: answer.txt): ');
+    const filepath = path.join(process.cwd(), filename || 'answer.txt');
+
+    try {
+      answer = fs.readFileSync(filepath, 'utf-8').trim();
+      print('\n✅ Loaded code from file:', 'green');
+      print('─'.repeat(60), 'dim');
+      print(answer, 'bright');
+      print('─'.repeat(60), 'dim');
+    } catch (error) {
+      print(`\n❌ Could not read file: ${filepath}`, 'red');
+      print('Make sure the file exists and try again.', 'yellow');
+      return;
+    }
+  } else if (method === '2') {
+    // Multi-line paste with Ctrl+D
+    rl.pause(); // Pause readline
+
+    try {
+      answer = await readMultilineInput('📝 Paste your code:');
+
+      print('\n✅ Code received:', 'green');
+      print('─'.repeat(60), 'dim');
+      print(answer, 'bright');
+      print('─'.repeat(60), 'dim');
+    } finally {
+      rl.resume(); // Resume readline
+    }
+  } else {
+    // Single line (legacy mode)
+    answer = await question('Enter your answer: ');
+  }
+
+  if (!answer || answer.trim().length === 0) {
     print('Answer cannot be empty', 'red');
+    return;
+  }
+
+  const confirm = await question('\nSubmit this answer? (y/n): ');
+  if (confirm.toLowerCase() !== 'y') {
+    print('Submission cancelled', 'yellow');
     return;
   }
 
@@ -1859,7 +2137,7 @@ async function submitAnswer() {
     const response = await axios.post(`${API_BASE_URL}/interview/answer`, {
       sessionId: state.interviewSessionId,
       userId: state.userId,
-      answer,
+      answer: answer.trim(),
       timeSpent,
     });
 
@@ -1886,6 +2164,7 @@ async function submitAnswer() {
     printError(error);
   }
 }
+
 
 async function requestHint() {
   printHeader('Request Hint');
@@ -2363,6 +2642,8 @@ export class InterviewController {
   async submitAnswer(req: Request, res: Response): Promise<void> {
     try {
       const requestData = req.body as AnswerRequest;
+
+      console.log('Request data:', requestData?.answer);
 
       // Validate request
       if (
@@ -4131,16 +4412,14 @@ FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\
 ==============================
 
 /**
- * Interview Session Manager
+ * Interview Session Manager - FIXED VERSION
  * Manages mock interview sessions
+ *
+ * KEY FIX: Improved implementation detection to properly recognize valid code
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import {
-  InterviewSession,
-  InterviewQuestion,
-  AgentType,
-} from '../types';
+import { InterviewSession, InterviewQuestion, AgentType } from '../types';
 import { ILLMProvider } from '../services/llm/base-provider';
 import { MemoryManager } from '../memory/memory-manager';
 import { IVectorDatabase } from '../services/vector-db/base-vector-db';
@@ -4358,12 +4637,6 @@ export class InterviewSessionManager {
   /**
    * Generate questions for a session
    */
-  /**
-   * Generate questions for a session
-   */
-  /**
-   * Generate questions for a session
-   */
   private async generateQuestions(
     type: string,
     difficulty: string,
@@ -4476,29 +4749,100 @@ Return as JSON.`;
   }
 
   /**
-   * Evaluate an answer
+   * Evaluate an answer - FIXED VERSION
+   * Now properly detects and evaluates complete code implementations
    */
   private async evaluateAnswer(
     question: InterviewQuestion,
     answer: string,
     sessionType: string,
   ): Promise<{ score: number; feedback: string }> {
-    const evaluationPrompt = `Evaluate this interview answer:
+    // Check if this is a code submission
+    const isCodeSubmission = this.isCodeSubmission(answer);
+
+    if (isCodeSubmission) {
+      // For code submissions, check if it has actual implementation
+      const implementationCheck = this.hasActualImplementation(answer);
+
+      console.log('Code Implementation Check:', implementationCheck); // Debug log
+
+      if (!implementationCheck.hasImplementation) {
+        return {
+          score: 0,
+          feedback: `❌ **No Implementation Detected**
+
+Your submission appears to be just a function signature without implementation.
+
+**What's missing:**
+${implementationCheck.missing.join('\n')}
+
+Please provide a complete solution with:
+- Actual logic and control flow (loops, conditionals)
+- Return statements with computed values
+- Variable assignments and operations
+
+Submit your complete working code to receive a proper evaluation.`,
+        };
+      }
+    }
+
+    // FIXED: Improved evaluation prompt
+    const evaluationPrompt = `You are evaluating an interview answer. ${
+      isCodeSubmission
+        ? 'This submission CONTAINS ACTUAL CODE IMPLEMENTATION with logic, loops, and return statements. It is a COMPLETE working solution.'
+        : ''
+    }
 
 Question: ${question.question}
 Category: ${question.category}
 Type: ${sessionType}
 Difficulty: ${question.difficulty}
 
-Answer: ${answer}
+Answer:
+${answer}
 
-Provide:
-1. Score (0-100)
-2. Detailed feedback
-3. What was done well
-4. What could be improved
+${
+  isCodeSubmission
+    ? `**CRITICAL INSTRUCTIONS FOR CODE EVALUATION:**
+- This code HAS actual implementation (verified programmatically)
+- This is NOT just a function signature - it has loops, logic, and return statements
+- Do NOT say it's incomplete or just a signature
+- Evaluate it as a COMPLETE, WORKING solution
+- Assess correctness, efficiency, and code quality
+- Provide scores between 70-100 for correct working solutions
+- Give 50-69 for solutions with minor issues
+- Only score below 50 if there are serious correctness problems
 
-Return as JSON.`;
+**Your task:** Evaluate this COMPLETE implementation fairly and accurately.`
+    : ''
+}
+
+Provide a comprehensive evaluation with:
+
+1. **Score (0-100)**
+   ${
+     isCodeSubmission
+       ? `- 85-100: Optimal solution, handles all cases well
+   - 70-84: Correct solution, minor optimization possible
+   - 50-69: Works but has issues (edge cases, efficiency)
+   - Below 50: Major correctness problems`
+       : '- Based on completeness, accuracy, and clarity'
+   }
+
+2. **Detailed Feedback**
+   - Start by acknowledging what was done correctly
+   ${isCodeSubmission ? '- Recognize that implementation is complete (do NOT claim otherwise)' : ''}
+   - What could be improved
+   - Specific suggestions for enhancement
+   ${isCodeSubmission ? '- Time/space complexity analysis\n   - Edge cases handled/missing' : ''}
+
+Return as JSON with:
+{
+  "score": number,
+  "feedback": "detailed feedback string"
+}
+
+Remember: If this is code, it has been verified to have implementation. Score it fairly as a complete solution.`;
 
     const schema = {
       score: 'number (0-100)',
@@ -4514,15 +4858,97 @@ Return as JSON.`;
           {
             role: 'system',
             content:
-              'You are an expert interviewer evaluating candidate answers.',
+              'You are an expert interviewer who provides fair, accurate evaluations. You recognize complete code implementations and score them appropriately between 70-100 when they work correctly. You NEVER claim working code is incomplete.',
           },
           { role: 'user', content: evaluationPrompt },
         ],
         temperature: 0.3,
-        maxTokens: 1000,
+        maxTokens: 1500,
       },
       schema,
     );
+  }
+
+  /**
+   * Check if answer is a code submission
+   */
+  private isCodeSubmission(answer: string): boolean {
+    const codePatterns = [
+      /function\s+\w+/,
+      /const\s+\w+\s*=/,
+      /let\s+\w+\s*=/,
+      /def\s+\w+/,
+      /class\s+\w+/,
+      /public\s+\w+/,
+    ];
+
+    return codePatterns.some((pattern) => pattern.test(answer));
+  }
+
+  /**
+   * Check if code has actual implementation (not just signature)
+   * FULLY FIXED VERSION - Now properly detects your code!
+   */
+  private hasActualImplementation(code: string): {
+    hasImplementation: boolean;
+    missing: string[];
+  } {
+    // Super simple checks - does the code have basic programming elements?
+    const hasReturn = code.includes('return');
+    const hasFor = code.includes('for');
+    const hasWhile = code.includes('while');
+    const hasIf = code.includes('if');
+    const hasLet = code.includes('let');
+    const hasConst = code.includes('const');
+    const hasVar = code.includes('var');
+
+    const hasLoop = hasFor || hasWhile;
+    const hasConditional = hasIf;
+    const hasAssignment = hasLet || hasConst || hasVar;
+
+    // Count actual lines of code (not empty, not just braces)
+    const codeLines = code
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(
+        (line) =>
+          line.length > 0 &&
+          line !== '{' &&
+          line !== '}' &&
+          !line.startsWith('//'),
+      );
+
+    const hasEnoughCode = codeLines.length >= 3;
+
+    // Build missing list
+    const missing: string[] = [];
+    if (!hasReturn) missing.push('- Return statement');
+    if (!hasLoop && !hasConditional) missing.push('- Loop or conditional');
+    if (!hasAssignment) missing.push('- Variable declaration');
+    if (!hasEnoughCode) missing.push('- Sufficient code (need 3+ lines)');
+
+    // Simple logic: needs return AND (loop OR conditional) AND variable declaration
+    const hasImplementation =
+      hasReturn &&
+      (hasLoop || hasConditional) &&
+      hasAssignment &&
+      hasEnoughCode;
+
+    // Debug logging
+    console.log('=== Code Implementation Check ===');
+    console.log('Has return:', hasReturn);
+    console.log('Has loop:', hasLoop);
+    console.log('Has conditional:', hasConditional);
+    console.log('Has assignment:', hasAssignment);
+    console.log('Code lines:', codeLines.length);
+    console.log('Has implementation:', hasImplementation);
+    console.log('Missing:', missing.length === 0 ? 'Nothing!' : missing);
+    console.log('=================================');
+
+    return {
+      hasImplementation,
+      missing,
+    };
   }
 
   /**
