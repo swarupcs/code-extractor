@@ -1530,14 +1530,15 @@ Answer only 'yes' or 'no'.`;
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\app.ts
 ==============================
 
-/**
- * Express Application Setup
- * Configures middleware, routes, and error handling
- */
-
+// src/app.ts - UPDATE to integrate new features
 import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import passport from './config/passport'; 
+import session from 'express-session';
 import { createRoutes } from './routes/api-routes';
+import { createAuthRoutes } from './routes/auth.routes';
+import { createAnalyticsRoutes } from './routes/analytics.routes';
 import { QueryController } from './controllers/query-controller';
 import { InterviewController } from './controllers/interview-controller';
 import {
@@ -1549,6 +1550,7 @@ import { MemoryManager } from './memory/memory-manager';
 import { InterviewSessionManager } from './services/interview-session-manager';
 import { ILLMProvider } from './services/llm/base-provider';
 import { IVectorDatabase } from './services/vector-db/base-vector-db';
+import { RouterStrategy } from './types';
 import { DSAInterviewAgent } from './agents/dsa-agent';
 import { SystemDesignAgent } from './agents/system-design-agent';
 import { ResumeReviewAgent } from './agents/resume-agent';
@@ -1556,7 +1558,8 @@ import {
   HRBehavioralAgent,
   LearningSupportAgent,
 } from './agents/behavioral-learning-agents';
-import { RouterStrategy } from './types';
+import { globalRateLimiter } from './middleware/rate-limit.middleware';
+import { PrismaMemoryStore } from './memory/prisma-memory-store';
 
 export interface AppConfig {
   llmProvider: ILLMProvider;
@@ -1564,29 +1567,47 @@ export interface AppConfig {
   routingStrategy?: RouterStrategy;
 }
 
-/**
- * Create and configure Express application
- */
 export function createApp(config: AppConfig): Application {
   const app = express();
 
   // ============================================================================
-  // Middleware
+  // Security Middleware
   // ============================================================================
 
-  // Parse JSON bodies
+  app.use(helmet());
   app.use(express.json({ limit: '10mb' }));
-
-  // Parse URL-encoded bodies
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-  // Enable CORS
+  // Session middleware (required for Passport)
+  app.use(
+    session({
+      secret: process.env.SESSION_SECRET || 'your-session-secret',
+      resave: false,
+      saveUninitialized: false,
+      cookie: {
+        secure: process.env.NODE_ENV === 'production',
+        httpOnly: true,
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      },
+    }),
+  );
+
+  // Initialize Passport
+  app.use(passport.initialize());
+  app.use(passport.session());
+
+  // CORS configuration
   app.use(
     cors({
       origin: process.env.CORS_ORIGIN || '*',
       credentials: true,
-    })
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
+    }),
   );
+
+  // Global rate limiting
+  app.use(globalRateLimiter);
 
   // Request logging
   app.use((req: Request, res: Response, next: NextFunction) => {
@@ -1595,50 +1616,46 @@ export function createApp(config: AppConfig): Application {
   });
 
   // ============================================================================
-  // Initialize Core Services
+  // Initialize Core Services with Prisma
   // ============================================================================
 
-  const memoryManager = new MemoryManager();
+  const prismaStore = new PrismaMemoryStore();
+  const memoryManager = new MemoryManager(prismaStore);
   const agentRouter = new AgentRouter(
     config.llmProvider,
-    config.routingStrategy || RouterStrategy.HYBRID
+    config.routingStrategy || RouterStrategy.HYBRID,
   );
 
   // ============================================================================
   // Register Agents
   // ============================================================================
 
-  // DSA Interview Agent
   const dsaAgent = new DSAInterviewAgent(
     config.llmProvider,
     memoryManager,
-    config.vectorDb
+    config.vectorDb,
   );
   agentRouter.registerAgent(dsaAgent);
 
-  // System Design Agent
   const systemDesignAgent = new SystemDesignAgent(
     config.llmProvider,
     memoryManager,
-    config.vectorDb
+    config.vectorDb,
   );
   agentRouter.registerAgent(systemDesignAgent);
 
-  // Resume Review Agent
   const resumeAgent = new ResumeReviewAgent(config.llmProvider, memoryManager);
   agentRouter.registerAgent(resumeAgent);
 
-  // HR Behavioral Agent
   const behavioralAgent = new HRBehavioralAgent(
     config.llmProvider,
-    memoryManager
+    memoryManager,
   );
   agentRouter.registerAgent(behavioralAgent);
 
-  // Learning Support Agent
   const learningAgent = new LearningSupportAgent(
     config.llmProvider,
-    memoryManager
+    memoryManager,
   );
   agentRouter.registerAgent(learningAgent);
 
@@ -1649,27 +1666,34 @@ export function createApp(config: AppConfig): Application {
   // ============================================================================
 
   const queryController = new QueryController(agentRouter, memoryManager);
-  
   const sessionManager = new InterviewSessionManager(
     config.llmProvider,
     memoryManager,
-    config.vectorDb
+    config.vectorDb,
   );
   const interviewController = new InterviewController(sessionManager);
-  
   const resumeController = new ResumeController(agentRouter, memoryManager);
-  const progressController = new ProgressController(memoryManager);
+  const progressController = new ProgressController();
 
   // ============================================================================
   // Routes
   // ============================================================================
 
-  // API routes
+  // Auth routes (public)
+  app.use('/api/auth', createAuthRoutes());
+
+  // User routes (protected)
+  app.use('/api/user', createUserRoutes());
+
+  // Analytics routes (protected)
+  app.use('/api/analytics', createAnalyticsRoutes());
+
+  // Existing API routes
   const apiRoutes = createRoutes(
     queryController,
     interviewController,
     resumeController,
-    progressController
+    progressController,
   );
   app.use('/api', apiRoutes);
 
@@ -1677,18 +1701,39 @@ export function createApp(config: AppConfig): Application {
   app.get('/', (req: Request, res: Response) => {
     res.json({
       name: 'AI Interview Coach API',
-      version: '1.0.0',
+      version: '2.0.0',
       status: 'running',
+      features: [
+        'Authentication & Authorization',
+        'User Progress Tracking',
+        'Analytics Dashboard',
+        'Interview Sessions',
+        'Resume Review',
+      ],
       endpoints: {
-        health: '/api/health',
-        query: '/api/query',
-        interview: {
-          start: '/api/interview/start',
-          answer: '/api/interview/answer',
-          status: '/api/interview/:sessionId',
+        auth: {
+          register: 'POST /api/auth/register',
+          login: 'POST /api/auth/login',
+          refresh: 'POST /api/auth/refresh',
+          logout: 'POST /api/auth/logout',
+          verifyEmail: 'GET /api/auth/verify-email',
+          forgotPassword: 'POST /api/auth/forgot-password',
+          resetPassword: 'POST /api/auth/reset-password',
+          me: 'GET /api/auth/me',
         },
-        resume: '/api/resume/review',
-        progress: '/api/progress/:userId',
+        analytics: {
+          dashboard: 'GET /api/analytics/dashboard',
+          stats: 'GET /api/analytics/stats',
+          topicPerformance: 'GET /api/analytics/performance/topics',
+          trends: 'GET /api/analytics/performance/trends',
+          comparative: 'GET /api/analytics/comparative',
+          skillGaps: 'GET /api/analytics/skill-gaps',
+        },
+        interview: {
+          start: 'POST /api/interview/start',
+          answer: 'POST /api/interview/answer',
+          status: 'GET /api/interview/:sessionId',
+        },
       },
     });
   });
@@ -1697,7 +1742,6 @@ export function createApp(config: AppConfig): Application {
   // Error Handling
   // ============================================================================
 
-  // 404 handler
   app.use((req: Request, res: Response) => {
     res.status(404).json({
       success: false,
@@ -1708,16 +1752,16 @@ export function createApp(config: AppConfig): Application {
     });
   });
 
-  // Global error handler
   app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     console.error('Global error handler:', err);
-    
+
     res.status(500).json({
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
         message: 'An unexpected error occurred',
-        details: process.env.NODE_ENV === 'development' ? err.message : undefined,
+        details:
+          process.env.NODE_ENV === 'development' ? err.message : undefined,
       },
     });
   });
@@ -1728,15 +1772,10 @@ export function createApp(config: AppConfig): Application {
 
   process.on('SIGTERM', async () => {
     console.log('SIGTERM received, cleaning up...');
-    
-    // Cleanup expired sessions
     await memoryManager.cleanup(30);
-    
-    // Close vector DB if configured
     if (config.vectorDb) {
       await config.vectorDb.close();
     }
-    
     process.exit(0);
   });
 
@@ -2547,6 +2586,627 @@ main().catch((error) => {
 
 
 ==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\config\database.ts
+==============================
+
+// src/config/database.ts
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient({
+  log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
+});
+
+// Graceful shutdown
+process.on('beforeExit', async () => {
+  await prisma.$disconnect();
+});
+
+export default prisma;
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\config\passport.ts
+==============================
+
+// src/config/passport.ts
+import passport from 'passport';
+import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
+import { Strategy as GitHubStrategy } from 'passport-github2';
+import { UserRepository } from '../repositories/user.repository';
+import { OAuthProfile } from '../types/auth.types';
+
+const userRepo = new UserRepository();
+
+// Google OAuth Strategy
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID || '',
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
+      callbackURL: `${process.env.BACKEND_URL}/api/auth/google/callback`,
+      scope: ['profile', 'email'],
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        const oauthProfile: OAuthProfile = {
+          provider: 'google',
+          id: profile.id,
+          email: profile.emails?.[0]?.value || '',
+          name: profile.displayName,
+          picture: profile.photos?.[0]?.value,
+        };
+
+        done(null, oauthProfile);
+      } catch (error) {
+        done(error as Error, undefined);
+      }
+    },
+  ),
+);
+
+// GitHub OAuth Strategy
+passport.use(
+  new GitHubStrategy(
+    {
+      clientID: process.env.GITHUB_CLIENT_ID || '',
+      clientSecret: process.env.GITHUB_CLIENT_SECRET || '',
+      callbackURL: `${process.env.BACKEND_URL}/api/auth/github/callback`,
+      scope: ['user:email'],
+    },
+    async (
+      accessToken: string,
+      refreshToken: string,
+      profile: any,
+      done: any,
+    ) => {
+      try {
+        const oauthProfile: OAuthProfile = {
+          provider: 'github',
+          id: profile.id,
+          email: profile.emails?.[0]?.value || '',
+          name: profile.displayName || profile.username,
+          picture: profile.photos?.[0]?.value,
+        };
+
+        done(null, oauthProfile);
+      } catch (error) {
+        done(error as Error, undefined);
+      }
+    },
+  ),
+);
+
+// Serialize user for session (not used with JWT, but required by Passport)
+passport.serializeUser((user: any, done) => {
+  done(null, user);
+});
+
+passport.deserializeUser((user: any, done) => {
+  done(null, user);
+});
+
+export default passport;
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\config\redis.ts
+==============================
+
+// src/config/redis.ts
+import Redis from 'ioredis';
+
+const redis = new Redis({
+  host: process.env.REDIS_HOST || 'localhost',
+  port: parseInt(process.env.REDIS_PORT || '6379'),
+  password: process.env.REDIS_PASSWORD,
+  retryStrategy: (times) => {
+    const delay = Math.min(times * 50, 2000);
+    return delay;
+  },
+});
+
+redis.on('connect', () => {
+  console.log('✅ Redis connected');
+});
+
+redis.on('error', (err) => {
+  console.error('❌ Redis error:', err);
+});
+
+export default redis;
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\controllers\analytics.controller.ts
+==============================
+
+// src/controllers/analytics.controller.ts
+import { Request, Response } from 'express';
+import { AnalyticsRepository } from '../repositories/analytics.repository';
+import { APIResponse } from '../types';
+
+export class AnalyticsController {
+  private analyticsRepo: AnalyticsRepository;
+
+  constructor() {
+    this.analyticsRepo = new AnalyticsRepository();
+  }
+
+  async getDashboard(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const userId = req.user.userId;
+
+      // Fetch all dashboard data in parallel
+      const [
+        stats,
+        topicPerformance,
+        trends,
+        weakAreas,
+        userProgress,
+        comparative,
+      ] = await Promise.all([
+        this.analyticsRepo.getInterviewStats(userId),
+        this.analyticsRepo.getTopicPerformance(userId),
+        this.analyticsRepo.getPerformanceTrends(userId, 30),
+        this.analyticsRepo.getWeakAreas(userId, 5),
+        this.analyticsRepo.getUserProgress(userId),
+        this.analyticsRepo.getComparativeAnalytics(userId),
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          statistics: stats,
+          topicPerformance,
+          performanceTrends: trends,
+          weakAreas,
+          userProgress,
+          comparative,
+        },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Dashboard fetch error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'DASHBOARD_ERROR',
+          message: 'Failed to fetch dashboard data',
+        },
+      } as APIResponse);
+    }
+  }
+
+  async getInterviewStats(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const stats = await this.analyticsRepo.getInterviewStats(req.user.userId);
+
+      res.json({
+        success: true,
+        data: stats,
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Interview stats error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'STATS_ERROR',
+          message: 'Failed to fetch interview statistics',
+        },
+      } as APIResponse);
+    }
+  }
+
+  async getTopicPerformance(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const performance = await this.analyticsRepo.getTopicPerformance(
+        req.user.userId,
+      );
+
+      res.json({
+        success: true,
+        data: { topics: performance },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Topic performance error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'PERFORMANCE_ERROR',
+          message: 'Failed to fetch topic performance',
+        },
+      } as APIResponse);
+    }
+  }
+
+  async getPerformanceTrends(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const days = parseInt(req.query.days as string) || 30;
+      const trends = await this.analyticsRepo.getPerformanceTrends(
+        req.user.userId,
+        days,
+      );
+
+      res.json({
+        success: true,
+        data: { trends },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Performance trends error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'TRENDS_ERROR',
+          message: 'Failed to fetch performance trends',
+        },
+      } as APIResponse);
+    }
+  }
+
+  async getComparativeAnalytics(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const comparative = await this.analyticsRepo.getComparativeAnalytics(
+        req.user.userId,
+      );
+
+      res.json({
+        success: true,
+        data: comparative,
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Comparative analytics error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'COMPARATIVE_ERROR',
+          message: 'Failed to fetch comparative analytics',
+        },
+      } as APIResponse);
+    }
+  }
+
+  async getSkillGaps(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const userId = req.user.userId;
+
+      const [weakAreas, topicPerformance, userProgress] = await Promise.all([
+        this.analyticsRepo.getWeakAreas(userId, 10),
+        this.analyticsRepo.getTopicPerformance(userId),
+        this.analyticsRepo.getUserProgress(userId),
+      ]);
+
+      // Identify skill gaps based on performance
+      const skillGaps = topicPerformance
+        .filter((topic) => topic.averageScore < 60 || topic.successRate < 50)
+        .map((topic) => ({
+          skill: topic.topic,
+          category: topic.category,
+          currentLevel: this.determineLevel(topic.averageScore),
+          targetLevel: 'ADVANCED',
+          gap: 100 - topic.averageScore,
+          priority: this.calculatePriority(topic),
+        }))
+        .sort((a, b) => b.priority - a.priority);
+
+      res.json({
+        success: true,
+        data: {
+          skillGaps,
+          weakAreas,
+          currentLevel: userProgress?.currentLevel || 'BEGINNER',
+          goalLevel: userProgress?.goalLevel || 'ADVANCED',
+        },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Skill gaps error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'SKILL_GAPS_ERROR',
+          message: 'Failed to identify skill gaps',
+        },
+      } as APIResponse);
+    }
+  }
+
+  private determineLevel(score: number): string {
+    if (score >= 85) return 'EXPERT';
+    if (score >= 70) return 'ADVANCED';
+    if (score >= 50) return 'INTERMEDIATE';
+    return 'BEGINNER';
+  }
+
+  private calculatePriority(topic: any): number {
+    // Higher priority for topics with low scores and high question count
+    const scoreFactor = (100 - topic.averageScore) / 100;
+    const volumeFactor = Math.min(topic.totalQuestions / 20, 1);
+    const successFactor = (100 - topic.successRate) / 100;
+
+    return (scoreFactor * 0.5 + volumeFactor * 0.2 + successFactor * 0.3) * 100;
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\controllers\auth.controller.ts
+==============================
+
+// src/controllers/auth.controller.ts - ADD OAuth methods
+import { Request, Response } from 'express';
+import { AuthService } from '../services/auth/auth.service';
+import { OAuthProfile } from '../types/auth.types';
+import { APIResponse } from '../types';
+
+export class AuthController {
+  private authService: AuthService;
+
+  constructor() {
+    this.authService = new AuthService();
+  }
+
+  // ... existing methods ...
+
+  /**
+   * Handle OAuth callback (Google/GitHub)
+   */
+  async oauthCallback(req: Request, res: Response): Promise<void> {
+    try {
+      const profile = req.user as OAuthProfile;
+
+      if (!profile) {
+        res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_failed`);
+        return;
+      }
+
+      const ipAddress = req.ip || req.socket.remoteAddress || 'unknown';
+      const userAgent = req.headers['user-agent'] || 'unknown';
+
+      const result = await this.authService.loginWithOAuth(
+        profile,
+        ipAddress,
+        userAgent,
+      );
+
+      // Redirect to frontend with tokens
+      const redirectUrl = new URL(`${process.env.FRONTEND_URL}/auth/callback`);
+      redirectUrl.searchParams.set('accessToken', result.tokens.accessToken);
+      redirectUrl.searchParams.set('refreshToken', result.tokens.refreshToken);
+      redirectUrl.searchParams.set('isNewUser', result.isNewUser.toString());
+
+      res.redirect(redirectUrl.toString());
+    } catch (error) {
+      console.error('OAuth callback error:', error);
+      res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_failed`);
+    }
+  }
+
+  /**
+   * Link OAuth account to existing user
+   */
+  async linkOAuthAccount(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const { provider, code } = req.body;
+
+      if (!provider || !code) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'Provider and code are required',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      // Handle OAuth linking logic here
+      // This would verify the code and link the account
+
+      res.json({
+        success: true,
+        data: { message: 'OAuth account linked successfully' },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Link OAuth error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'LINK_ERROR',
+          message: 'Failed to link OAuth account',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Unlink OAuth account
+   */
+  async unlinkOAuthAccount(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const userRepo = new (
+        await import('../repositories/user.repository')
+      ).UserRepository();
+      const user = await userRepo.findById(req.user.userId);
+
+      if (!user) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'USER_NOT_FOUND', message: 'User not found' },
+        } as APIResponse);
+        return;
+      }
+
+      // Don't allow unlinking if it's the only login method
+      if (!user.passwordHash && user.oauthProvider) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'CANNOT_UNLINK',
+            message: 'Cannot unlink OAuth - set a password first',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      await userRepo.update(user.id, {
+        oauthProvider: null,
+        oauthId: null,
+      });
+
+      res.json({
+        success: true,
+        data: { message: 'OAuth account unlinked successfully' },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Unlink OAuth error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'UNLINK_ERROR',
+          message: 'Failed to unlink OAuth account',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Set password for OAuth-only users
+   */
+  async setPassword(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const { newPassword } = req.body;
+
+      if (!newPassword) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'New password is required',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      const PasswordUtil = (await import('../utils/password.util'))
+        .PasswordUtil;
+
+      // Validate password
+      const validation = PasswordUtil.validate(newPassword);
+      if (!validation.valid) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_PASSWORD',
+            message: validation.errors.join(', '),
+          },
+        } as APIResponse);
+        return;
+      }
+
+      const passwordHash = await PasswordUtil.hash(newPassword);
+      const userRepo = new (
+        await import('../repositories/user.repository')
+      ).UserRepository();
+
+      await userRepo.update(req.user.userId, { passwordHash });
+
+      res.json({
+        success: true,
+        data: { message: 'Password set successfully' },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Set password error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'SET_PASSWORD_ERROR',
+          message: 'Failed to set password',
+        },
+      } as APIResponse);
+    }
+  }
+}
+
+
+==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\controllers\interview-controller.ts
 ==============================
 
@@ -2886,6 +3546,100 @@ export class InterviewController {
 
 
 ==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\controllers\progress.controller.ts
+==============================
+
+// src/controllers/progress.controller.ts - UPDATE with new methods
+import { Request, Response } from 'express';
+import { AnalyticsRepository } from '../repositories/analytics.repository';
+import { APIResponse } from '../types';
+import { parseIntQuery } from '../utils/helpers';
+
+export class ProgressController {
+  private analyticsRepo: AnalyticsRepository;
+
+  constructor() {
+    this.analyticsRepo = new AnalyticsRepository();
+  }
+
+  async getProgress(req: Request, res: Response): Promise<void> {
+    try {
+      // Use authenticated user ID if available, otherwise fall back to param
+      const userId = req.user?.userId || req.params.userId;
+
+      if (!userId) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_REQUEST', message: 'User ID is required' },
+        } as APIResponse);
+        return;
+      }
+
+      const [weakAreas, userProgress, stats] = await Promise.all([
+        this.analyticsRepo.getWeakAreas(userId, 10),
+        this.analyticsRepo.getUserProgress(userId),
+        this.analyticsRepo.getInterviewStats(userId),
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          weakAreas,
+          learningProgress: userProgress,
+          statistics: stats,
+        },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get progress error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'PROGRESS_ERROR',
+          message: 'Failed to fetch user progress',
+        },
+      } as APIResponse);
+    }
+  }
+
+  async getWeakAreas(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user?.userId || req.params.userId;
+      const limit = parseIntQuery(req.query.limit, 5);
+
+      if (!userId) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_REQUEST', message: 'User ID is required' },
+        } as APIResponse);
+        return;
+      }
+
+      const weakAreas = await this.analyticsRepo.getWeakAreas(
+        userId,
+        limit || 5,
+      );
+
+      res.json({
+        success: true,
+        data: { weakAreas },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get weak areas error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'WEAK_AREAS_ERROR',
+          message: 'Failed to fetch weak areas',
+        },
+      } as APIResponse);
+    }
+  }
+}
+
+
+==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\controllers\query-controller.ts
 ==============================
 
@@ -3213,6 +3967,442 @@ export class ProgressController {
 
 
 ==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\controllers\user.controller.ts
+==============================
+
+// src/controllers/user.controller.ts
+import { Request, Response } from 'express';
+import { UserRepository } from '../repositories/user.repository';
+import { LoginHistoryRepository } from '../repositories/login-history.repository';
+import { RefreshTokenRepository } from '../repositories/refresh-token.repository';
+import { AnalyticsRepository } from '../repositories/analytics.repository';
+import { APIResponse } from '../types';
+import { PasswordUtil } from '../utils/password.util';
+import prisma from '../config/database';
+
+export class UserController {
+  private userRepo: UserRepository;
+  private loginHistoryRepo: LoginHistoryRepository;
+  private refreshTokenRepo: RefreshTokenRepository;
+  private analyticsRepo: AnalyticsRepository;
+
+  constructor() {
+    this.userRepo = new UserRepository();
+    this.loginHistoryRepo = new LoginHistoryRepository();
+    this.refreshTokenRepo = new RefreshTokenRepository();
+    this.analyticsRepo = new AnalyticsRepository();
+  }
+
+  /**
+   * Update user profile
+   */
+  async updateProfile(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const { name, profilePicture } = req.body;
+      const updates: any = {};
+
+      if (name) updates.name = name;
+      if (profilePicture) updates.profilePicture = profilePicture;
+
+      const user = await this.userRepo.update(req.user.userId, updates);
+
+      res.json({
+        success: true,
+        data: { user: this.userRepo.toSafeUser(user) },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Update profile error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'UPDATE_ERROR',
+          message: 'Failed to update profile',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Change password
+   */
+  async changePassword(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const { currentPassword, newPassword } = req.body;
+
+      if (!currentPassword || !newPassword) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'Current and new password are required',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      const user = await this.userRepo.findById(req.user.userId);
+      if (!user || !user.passwordHash) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'NO_PASSWORD',
+            message: 'User has no password set',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      // Verify current password
+      const isValid = await PasswordUtil.compare(
+        currentPassword,
+        user.passwordHash,
+      );
+      if (!isValid) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_PASSWORD',
+            message: 'Current password is incorrect',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      // Validate new password
+      const validation = PasswordUtil.validate(newPassword);
+      if (!validation.valid) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_NEW_PASSWORD',
+            message: validation.errors.join(', '),
+          },
+        } as APIResponse);
+        return;
+      }
+
+      // Update password
+      const newHash = await PasswordUtil.hash(newPassword);
+      await this.userRepo.updatePassword(user.id, newHash);
+
+      // Revoke all refresh tokens for security
+      await this.refreshTokenRepo.revokeAllForUser(user.id);
+
+      res.json({
+        success: true,
+        data: { message: 'Password changed successfully. Please login again.' },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Change password error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'CHANGE_PASSWORD_ERROR',
+          message: 'Failed to change password',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Get login history
+   */
+  async getLoginHistory(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const limit = parseInt(req.query.limit as string) || 10;
+      const history = await this.loginHistoryRepo.getRecentLogins(
+        req.user.userId,
+        limit,
+      );
+
+      res.json({
+        success: true,
+        data: { loginHistory: history },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get login history error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'HISTORY_ERROR',
+          message: 'Failed to fetch login history',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Get user preferences
+   */
+  async getPreferences(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const preferences = await prisma.userPreferences.findUnique({
+        where: { userId: req.user.userId },
+      });
+
+      res.json({
+        success: true,
+        data: { preferences },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get preferences error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'PREFERENCES_ERROR',
+          message: 'Failed to fetch preferences',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Update user preferences
+   */
+  async updatePreferences(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const {
+        difficulty,
+        focusAreas,
+        interviewType,
+        sessionDuration,
+        notificationsEnabled,
+        emailNotifications,
+      } = req.body;
+
+      const preferences = await prisma.userPreferences.upsert({
+        where: { userId: req.user.userId },
+        update: {
+          ...(difficulty && { difficulty }),
+          ...(focusAreas && { focusAreas }),
+          ...(interviewType && { interviewType }),
+          ...(sessionDuration && { sessionDuration }),
+          ...(notificationsEnabled !== undefined && { notificationsEnabled }),
+          ...(emailNotifications !== undefined && { emailNotifications }),
+        },
+        create: {
+          userId: req.user.userId,
+          difficulty: difficulty || 'MEDIUM',
+          focusAreas: focusAreas || [],
+          interviewType: interviewType || 'fullstack',
+          sessionDuration: sessionDuration || 30,
+          notificationsEnabled: notificationsEnabled !== false,
+          emailNotifications: emailNotifications !== false,
+        },
+      });
+
+      res.json({
+        success: true,
+        data: { preferences },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Update preferences error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'UPDATE_PREFERENCES_ERROR',
+          message: 'Failed to update preferences',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Delete account
+   */
+  async deleteAccount(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const { password, confirmation } = req.body;
+
+      if (confirmation !== 'DELETE MY ACCOUNT') {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_CONFIRMATION',
+            message: 'Please type "DELETE MY ACCOUNT" to confirm',
+          },
+        } as APIResponse);
+        return;
+      }
+
+      const user = await this.userRepo.findById(req.user.userId);
+      if (!user) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'USER_NOT_FOUND', message: 'User not found' },
+        } as APIResponse);
+        return;
+      }
+
+      // Verify password if user has one
+      if (user.passwordHash) {
+        if (!password) {
+          res.status(400).json({
+            success: false,
+            error: {
+              code: 'PASSWORD_REQUIRED',
+              message: 'Password is required to delete account',
+            },
+          } as APIResponse);
+          return;
+        }
+
+        const isValid = await PasswordUtil.compare(password, user.passwordHash);
+        if (!isValid) {
+          res.status(400).json({
+            success: false,
+            error: {
+              code: 'INVALID_PASSWORD',
+              message: 'Password is incorrect',
+            },
+          } as APIResponse);
+          return;
+        }
+      }
+
+      // Delete user (cascades to all related data)
+      await prisma.user.delete({
+        where: { id: req.user.userId },
+      });
+
+      res.json({
+        success: true,
+        data: { message: 'Account deleted successfully' },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Delete account error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'DELETE_ERROR',
+          message: 'Failed to delete account',
+        },
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Export user data (GDPR compliance)
+   */
+  async exportData(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const userId = req.user.userId;
+
+      // Gather all user data
+      const [
+        user,
+        sessions,
+        interviews,
+        progress,
+        weakAreas,
+        preferences,
+        loginHistory,
+      ] = await Promise.all([
+        this.userRepo.findById(userId),
+        prisma.session.findMany({ where: { userId } }),
+        prisma.interviewSession.findMany({
+          where: { userId },
+          include: { questions: true },
+        }),
+        this.analyticsRepo.getUserProgress(userId),
+        this.analyticsRepo.getWeakAreas(userId, 100),
+        prisma.userPreferences.findUnique({ where: { userId } }),
+        this.loginHistoryRepo.getRecentLogins(userId, 100),
+      ]);
+
+      const exportData = {
+        user: user ? this.userRepo.toSafeUser(user) : null,
+        sessions,
+        interviews,
+        progress,
+        weakAreas,
+        preferences,
+        loginHistory,
+        exportedAt: new Date(),
+      };
+
+      res.json({
+        success: true,
+        data: exportData,
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Export data error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'EXPORT_ERROR',
+          message: 'Failed to export data',
+        },
+      } as APIResponse);
+    }
+  }
+}
+
+
+==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\memory\memory-manager.ts
 ==============================
 
@@ -3515,6 +4705,514 @@ export class MemoryManager {
 
 
 ==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\memory\prisma-memory-store.ts
+==============================
+
+// src/memory/prisma-memory-store.ts
+import prisma from '../config/database';
+import { IMemoryStore } from './memory-manager';
+import {
+  ShortTermMemory,
+  LongTermMemory,
+  ConversationTurn,
+  WeakArea,
+  LearningProgress,
+} from '../types';
+import { Prisma } from '@prisma/client';
+
+export class PrismaMemoryStore implements IMemoryStore {
+  async getShortTermMemory(sessionId: string): Promise<ShortTermMemory | null> {
+    const session = await prisma.session.findUnique({
+      where: { id: sessionId },
+    });
+
+    if (!session) return null;
+
+    return {
+      sessionId: session.id,
+      userId: session.userId,
+      conversationHistory: session.conversationHistory as ConversationTurn[],
+      startTime: session.createdAt,
+      lastActivity: session.lastActivity,
+    };
+  }
+
+  async setShortTermMemory(memory: ShortTermMemory): Promise<void> {
+    const expiresAt = new Date(memory.lastActivity.getTime() + 30 * 60 * 1000); // 30 min
+
+    await prisma.session.upsert({
+      where: { id: memory.sessionId },
+      update: {
+        conversationHistory: memory.conversationHistory as Prisma.JsonArray,
+        lastActivity: memory.lastActivity,
+        expiresAt,
+      },
+      create: {
+        id: memory.sessionId,
+        userId: memory.userId,
+        conversationHistory: memory.conversationHistory as Prisma.JsonArray,
+        createdAt: memory.startTime,
+        lastActivity: memory.lastActivity,
+        expiresAt,
+      },
+    });
+  }
+
+  async deleteShortTermMemory(sessionId: string): Promise<void> {
+    await prisma.session
+      .delete({
+        where: { id: sessionId },
+      })
+      .catch(() => {
+        // Ignore if not found
+      });
+  }
+
+  async addConversationTurn(
+    sessionId: string,
+    turn: ConversationTurn,
+  ): Promise<void> {
+    const session = await prisma.session.findUnique({
+      where: { id: sessionId },
+    });
+
+    if (!session) return;
+
+    const history = session.conversationHistory as ConversationTurn[];
+    history.push(turn);
+
+    await prisma.session.update({
+      where: { id: sessionId },
+      data: {
+        conversationHistory: history as Prisma.JsonArray,
+        lastActivity: new Date(),
+      },
+    });
+  }
+
+  async getLongTermMemory(userId: string): Promise<LongTermMemory | null> {
+    const [weakAreas, userProgress, interviewSessions] = await Promise.all([
+      prisma.weakArea.findMany({ where: { userId } }),
+      prisma.userProgress.findUnique({ where: { userId } }),
+      prisma.interviewSession.findMany({
+        where: { userId },
+        include: { questions: true },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      }),
+    ]);
+
+    if (
+      !userProgress &&
+      weakAreas.length === 0 &&
+      interviewSessions.length === 0
+    ) {
+      return null;
+    }
+
+    const learningProgress: LearningProgress = userProgress
+      ? {
+          totalInterviews: userProgress.totalInterviews,
+          topicsCompleted: userProgress.topicsCompleted as string[],
+          currentLevel: userProgress.currentLevel,
+          goalLevel: userProgress.goalLevel,
+          milestones: userProgress.milestones as any[],
+        }
+      : {
+          totalInterviews: 0,
+          topicsCompleted: [],
+          currentLevel: 'BEGINNER' as any,
+          goalLevel: 'ADVANCED' as any,
+          milestones: [],
+        };
+
+    return {
+      userId,
+      weakAreas: weakAreas.map((wa) => ({
+        topic: wa.topic,
+        category: wa.category,
+        failureCount: wa.failureCount,
+        lastEncountered: wa.lastEncountered,
+        improvementSuggestions: wa.improvementSuggestions as string[],
+      })),
+      strengths: [], // Can be derived from high-performing topics
+      interviewHistory: interviewSessions.map((session) => ({
+        id: session.id,
+        userId: session.userId,
+        type: session.type.toLowerCase() as any,
+        status: session.status.toLowerCase() as any,
+        startTime: session.startTime,
+        endTime: session.endTime || undefined,
+        questions: session.questions.map((q) => ({
+          id: q.id,
+          question: q.question,
+          difficulty: q.difficulty?.toLowerCase() as any,
+          category: q.category,
+          expectedAnswer: q.expectedAnswer || undefined,
+          userAnswer: q.userAnswer || undefined,
+          score: q.score ? Number(q.score) : undefined,
+          feedback: q.feedback || undefined,
+          timeSpent: q.timeSpent || undefined,
+          hints: q.hints as string[],
+          hintsUsed: q.hintsUsed,
+        })),
+        currentQuestionIndex: session.currentQuestionIndex,
+        score: session.score ? Number(session.score) : undefined,
+        feedback: session.feedback || undefined,
+      })),
+      learningProgress,
+    };
+  }
+
+  async setLongTermMemory(memory: LongTermMemory): Promise<void> {
+    // Update user progress
+    await prisma.userProgress.upsert({
+      where: { userId: memory.userId },
+      update: {
+        totalInterviews: memory.learningProgress.totalInterviews,
+        topicsCompleted: memory.learningProgress
+          .topicsCompleted as Prisma.JsonArray,
+        currentLevel: memory.learningProgress.currentLevel,
+        goalLevel: memory.learningProgress.goalLevel,
+        milestones: memory.learningProgress.milestones as Prisma.JsonArray,
+        lastUpdated: new Date(),
+      },
+      create: {
+        userId: memory.userId,
+        totalInterviews: memory.learningProgress.totalInterviews,
+        topicsCompleted: memory.learningProgress
+          .topicsCompleted as Prisma.JsonArray,
+        currentLevel: memory.learningProgress.currentLevel,
+        goalLevel: memory.learningProgress.goalLevel,
+        milestones: memory.learningProgress.milestones as Prisma.JsonArray,
+      },
+    });
+  }
+
+  async updateWeakAreas(userId: string, weakAreas: WeakArea[]): Promise<void> {
+    // Delete existing weak areas
+    await prisma.weakArea.deleteMany({ where: { userId } });
+
+    // Create new weak areas
+    await prisma.weakArea.createMany({
+      data: weakAreas.map((wa) => ({
+        userId,
+        topic: wa.topic,
+        category: wa.category,
+        failureCount: wa.failureCount,
+        lastEncountered: wa.lastEncountered,
+        improvementSuggestions: wa.improvementSuggestions as Prisma.JsonArray,
+      })),
+    });
+  }
+
+  async updateLearningProgress(
+    userId: string,
+    progress: Partial<LearningProgress>,
+  ): Promise<void> {
+    await prisma.userProgress.upsert({
+      where: { userId },
+      update: {
+        ...(progress.totalInterviews !== undefined && {
+          totalInterviews: progress.totalInterviews,
+        }),
+        ...(progress.topicsCompleted && {
+          topicsCompleted: progress.topicsCompleted as Prisma.JsonArray,
+        }),
+        ...(progress.currentLevel && { currentLevel: progress.currentLevel }),
+        ...(progress.goalLevel && { goalLevel: progress.goalLevel }),
+        ...(progress.milestones && {
+          milestones: progress.milestones as Prisma.JsonArray,
+        }),
+        lastUpdated: new Date(),
+      },
+      create: {
+        userId,
+        totalInterviews: progress.totalInterviews || 0,
+        topicsCompleted: (progress.topicsCompleted as Prisma.JsonArray) || [],
+        currentLevel: progress.currentLevel || 'BEGINNER',
+        goalLevel: progress.goalLevel || 'ADVANCED',
+        milestones: (progress.milestones as Prisma.JsonArray) || [],
+      },
+    });
+  }
+
+  async cleanupExpiredSessions(timeoutMinutes: number): Promise<number> {
+    const cutoffTime = new Date(Date.now() - timeoutMinutes * 60 * 1000);
+
+    const result = await prisma.session.deleteMany({
+      where: {
+        OR: [
+          { expiresAt: { lt: new Date() } },
+          { lastActivity: { lt: cutoffTime } },
+        ],
+      },
+    });
+
+    return result.count;
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\middleware\auth.middleware.ts
+==============================
+
+// src/middleware/auth.middleware.ts
+import { Request, Response, NextFunction } from 'express';
+import { TokenUtil } from '../utils/token.util';
+import { UserRepository } from '../repositories/user.repository';
+import { JWTPayload } from '../types/auth.types';
+import { UserRole } from '@prisma/client';
+
+// Extend Express Request type
+declare global {
+  namespace Express {
+    interface Request {
+      user?: JWTPayload;
+    }
+  }
+}
+
+export const authenticate = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      res.status(401).json({
+        success: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'No authentication token provided',
+        },
+      });
+      return;
+    }
+
+    const token = authHeader.substring(7);
+
+    let payload: JWTPayload;
+    try {
+      payload = TokenUtil.verifyAccessToken(token);
+    } catch (error) {
+      res.status(401).json({
+        success: false,
+        error: {
+          code: 'INVALID_TOKEN',
+          message: 'Invalid or expired token',
+        },
+      });
+      return;
+    }
+
+    // Verify user still exists and is active
+    const userRepo = new UserRepository();
+    const user = await userRepo.findById(payload.userId);
+
+    if (!user || !user.isActive) {
+      res.status(401).json({
+        success: false,
+        error: {
+          code: 'USER_INACTIVE',
+          message: 'User account is inactive',
+        },
+      });
+      return;
+    }
+
+    req.user = payload;
+    next();
+  } catch (error) {
+    console.error('Authentication error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'AUTH_ERROR',
+        message: 'Authentication failed',
+      },
+    });
+  }
+};
+
+export const authorize = (...roles: UserRole[]) => {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({
+        success: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        },
+      });
+      return;
+    }
+
+    if (!roles.includes(req.user.role)) {
+      res.status(403).json({
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Insufficient permissions',
+        },
+      });
+      return;
+    }
+
+    next();
+  };
+};
+
+export const optionalAuth = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  const authHeader = req.headers.authorization;
+
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    try {
+      const token = authHeader.substring(7);
+      const payload = TokenUtil.verifyAccessToken(token);
+      req.user = payload;
+    } catch (error) {
+      // Invalid token, but continue anyway since auth is optional
+    }
+  }
+
+  next();
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\middleware\rate-limit.middleware.ts
+==============================
+
+// src/middleware/rate-limit.middleware.ts
+import rateLimit from 'express-rate-limit';
+import RedisStore from 'rate-limit-redis';
+import redis from '../config/redis';
+import { Request } from 'express';
+
+// Global rate limiter
+export const globalRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: {
+    success: false,
+    error: {
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: 'Too many requests, please try again later',
+    },
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: new RedisStore({
+    // @ts-expect-error - Known typing issue with rate-limit-redis
+    client: redis,
+    prefix: 'rl:global:',
+  }),
+});
+
+// Auth rate limiter (stricter)
+export const authRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5, // 5 attempts per 15 minutes
+  message: {
+    success: false,
+    error: {
+      code: 'TOO_MANY_ATTEMPTS',
+      message: 'Too many login attempts, please try again after 15 minutes',
+    },
+  },
+  skipSuccessfulRequests: true,
+  store: new RedisStore({
+    // @ts-expect-error
+    client: redis,
+    prefix: 'rl:auth:',
+  }),
+});
+
+// API rate limiter based on user role
+export const createUserRateLimiter = () => {
+  return rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: async (req: Request) => {
+      // Different limits based on user role
+      if (!req.user) return 20; // Unauthenticated
+
+      switch (req.user.role) {
+        case 'ADMIN':
+          return 1000;
+        case 'PREMIUM':
+          return 200;
+        case 'FREE':
+        default:
+          return 50;
+      }
+    },
+    keyGenerator: (req: Request) => {
+      return req.user?.userId || req.ip || 'unknown';
+    },
+    message: {
+      success: false,
+      error: {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'Rate limit exceeded. Upgrade to Premium for higher limits.',
+      },
+    },
+    store: new RedisStore({
+      // @ts-expect-error
+      client: redis,
+      prefix: 'rl:user:',
+    }),
+  });
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\middleware\validation.middleware.ts
+==============================
+
+// src/middleware/validation.middleware.ts
+import { Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
+
+export const validate = (schema: z.ZodSchema) => {
+  return async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      await schema.parseAsync(req.body);
+      next();
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid request data',
+            details: error.errors.map((err) => ({
+              field: err.path.join('.'),
+              message: err.message,
+            })),
+          },
+        });
+        return;
+      }
+
+      next(error);
+    }
+  };
+};
+
+
+==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\rag\rag-service.ts
 ==============================
 
@@ -3648,6 +5346,551 @@ export class RAGService {
    */
   getConfig(): RAGConfig {
     return { ...this.config };
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\repositories\analytics.repository.ts
+==============================
+
+// src/repositories/analytics.repository.ts
+import prisma from '../config/database';
+import { InterviewSession, InterviewQuestion, Prisma } from '@prisma/client';
+
+export interface InterviewStats {
+  totalInterviews: number;
+  completedInterviews: number;
+  averageScore: number;
+  completionRate: number;
+  totalTimeSpent: number;
+}
+
+export interface TopicPerformance {
+  topic: string;
+  category: string;
+  totalQuestions: number;
+  averageScore: number;
+  successRate: number;
+}
+
+export interface PerformanceTrend {
+  date: Date;
+  averageScore: number;
+  interviewCount: number;
+}
+
+export class AnalyticsRepository {
+  async getInterviewStats(userId: string): Promise<InterviewStats> {
+    const sessions = await prisma.interviewSession.findMany({
+      where: { userId },
+      include: { questions: true },
+    });
+
+    const completed = sessions.filter((s) => s.status === 'COMPLETED');
+
+    const totalScore = completed.reduce(
+      (sum, s) => sum + (Number(s.score) || 0),
+      0,
+    );
+    const totalTime = sessions.reduce(
+      (sum, s) => sum + (s.durationMinutes || 0),
+      0,
+    );
+
+    return {
+      totalInterviews: sessions.length,
+      completedInterviews: completed.length,
+      averageScore: completed.length > 0 ? totalScore / completed.length : 0,
+      completionRate:
+        sessions.length > 0 ? (completed.length / sessions.length) * 100 : 0,
+      totalTimeSpent: totalTime,
+    };
+  }
+
+  async getTopicPerformance(userId: string): Promise<TopicPerformance[]> {
+    const questions = await prisma.interviewQuestion.findMany({
+      where: {
+        session: { userId },
+        score: { not: null },
+      },
+      select: {
+        category: true,
+        score: true,
+      },
+    });
+
+    const topicMap = new Map<string, { scores: number[]; total: number }>();
+
+    questions.forEach((q) => {
+      if (!topicMap.has(q.category)) {
+        topicMap.set(q.category, { scores: [], total: 0 });
+      }
+      const data = topicMap.get(q.category)!;
+      data.scores.push(Number(q.score));
+      data.total++;
+    });
+
+    const performance: TopicPerformance[] = [];
+    topicMap.forEach((data, category) => {
+      const avgScore =
+        data.scores.reduce((a, b) => a + b, 0) / data.scores.length;
+      const successRate =
+        (data.scores.filter((s) => s >= 60).length / data.total) * 100;
+
+      performance.push({
+        topic: category,
+        category: category,
+        totalQuestions: data.total,
+        averageScore: avgScore,
+        successRate,
+      });
+    });
+
+    return performance.sort((a, b) => b.averageScore - a.averageScore);
+  }
+
+  async getPerformanceTrends(
+    userId: string,
+    days: number = 30,
+  ): Promise<PerformanceTrend[]> {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const sessions = await prisma.interviewSession.findMany({
+      where: {
+        userId,
+        status: 'COMPLETED',
+        createdAt: { gte: startDate },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const dailyMap = new Map<string, { scores: number[]; count: number }>();
+
+    sessions.forEach((session) => {
+      const dateKey = session.createdAt.toISOString().split('T')[0];
+      if (!dailyMap.has(dateKey)) {
+        dailyMap.set(dateKey, { scores: [], count: 0 });
+      }
+      const data = dailyMap.get(dateKey)!;
+      if (session.score) {
+        data.scores.push(Number(session.score));
+      }
+      data.count++;
+    });
+
+    const trends: PerformanceTrend[] = [];
+    dailyMap.forEach((data, dateKey) => {
+      trends.push({
+        date: new Date(dateKey),
+        averageScore:
+          data.scores.length > 0
+            ? data.scores.reduce((a, b) => a + b, 0) / data.scores.length
+            : 0,
+        interviewCount: data.count,
+      });
+    });
+
+    return trends;
+  }
+
+  async getWeakAreas(userId: string, limit: number = 5) {
+    return prisma.weakArea.findMany({
+      where: { userId },
+      orderBy: [{ failureCount: 'desc' }, { lastEncountered: 'desc' }],
+      take: limit,
+    });
+  }
+
+  async getUserProgress(userId: string) {
+    return prisma.userProgress.findUnique({
+      where: { userId },
+    });
+  }
+
+  async updateUserProgress(
+    userId: string,
+    data: Prisma.UserProgressUpdateInput,
+  ) {
+    return prisma.userProgress.upsert({
+      where: { userId },
+      update: data,
+      create: {
+        userId,
+        ...data,
+      },
+    });
+  }
+
+  async recordWeakArea(userId: string, topic: string, category: string) {
+    return prisma.weakArea.upsert({
+      where: {
+        userId_topic: { userId, topic },
+      },
+      update: {
+        failureCount: { increment: 1 },
+        lastEncountered: new Date(),
+      },
+      create: {
+        userId,
+        topic,
+        category,
+        failureCount: 1,
+      },
+    });
+  }
+
+  async getComparativeAnalytics(userId: string) {
+    const userStats = await this.getInterviewStats(userId);
+
+    const globalStats = await prisma.interviewSession.aggregate({
+      where: { status: 'COMPLETED' },
+      _avg: { score: true },
+      _count: true,
+    });
+
+    const userRanking = await prisma.$queryRaw<{ rank: bigint }[]>`
+      WITH user_scores AS (
+        SELECT 
+          "userId",
+          AVG(score) as avg_score
+        FROM "InterviewSession"
+        WHERE status = 'COMPLETED' AND score IS NOT NULL
+        GROUP BY "userId"
+      )
+      SELECT COUNT(*) + 1 as rank
+      FROM user_scores
+      WHERE avg_score > (
+        SELECT avg_score FROM user_scores WHERE "userId" = ${userId}
+      )
+    `;
+
+    return {
+      userAverageScore: userStats.averageScore,
+      globalAverageScore: Number(globalStats._avg.score) || 0,
+      totalUsers: globalStats._count,
+      userRank: Number(userRanking[0]?.rank || 0),
+      percentile: userRanking[0]
+        ? (
+            (1 - Number(userRanking[0].rank) / globalStats._count) *
+            100
+          ).toFixed(1)
+        : 0,
+    };
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\repositories\login-history.repository.ts
+==============================
+
+// src/repositories/login-history.repository.ts
+import prisma from '../config/database';
+
+export class LoginHistoryRepository {
+  async create(
+    userId: string,
+    ipAddress: string,
+    userAgent: string,
+    loginMethod: string,
+    success: boolean = true,
+  ) {
+    return prisma.loginHistory.create({
+      data: {
+        userId,
+        ipAddress,
+        userAgent,
+        loginMethod,
+        success,
+      },
+    });
+  }
+
+  async getRecentLogins(userId: string, limit: number = 10) {
+    return prisma.loginHistory.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+  }
+
+  async getFailedAttempts(userId: string, since: Date) {
+    return prisma.loginHistory.count({
+      where: {
+        userId,
+        success: false,
+        createdAt: { gte: since },
+      },
+    });
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\repositories\refresh-token.repository.ts
+==============================
+
+// src/repositories/refresh-token.repository.ts
+import prisma from '../config/database';
+import { RefreshToken } from '@prisma/client';
+
+export class RefreshTokenRepository {
+  async create(
+    userId: string,
+    token: string,
+    expiresAt: Date,
+  ): Promise<RefreshToken> {
+    return prisma.refreshToken.create({
+      data: {
+        userId,
+        token,
+        expiresAt,
+      },
+    });
+  }
+
+  async findByToken(token: string): Promise<RefreshToken | null> {
+    return prisma.refreshToken.findUnique({
+      where: { token },
+      include: { user: true },
+    });
+  }
+
+  async revoke(token: string, replacedByToken?: string): Promise<void> {
+    await prisma.refreshToken.update({
+      where: { token },
+      data: {
+        revoked: true,
+        replacedByToken,
+      },
+    });
+  }
+
+  async revokeAllForUser(userId: string): Promise<void> {
+    await prisma.refreshToken.updateMany({
+      where: { userId },
+      data: { revoked: true },
+    });
+  }
+
+  async deleteExpired(): Promise<number> {
+    const result = await prisma.refreshToken.deleteMany({
+      where: {
+        expiresAt: {
+          lt: new Date(),
+        },
+      },
+    });
+    return result.count;
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\repositories\session.repository.ts
+==============================
+
+// src/repositories/session.repository.ts
+import prisma from '../config/database';
+import { Session } from '@prisma/client';
+import { ConversationTurn } from '../types';
+
+export class SessionRepository {
+  async create(
+    userId: string,
+    sessionId: string,
+    expiresAt: Date,
+  ): Promise<Session> {
+    return prisma.session.create({
+      data: {
+        id: sessionId,
+        userId,
+        expiresAt,
+      },
+    });
+  }
+
+  async findById(sessionId: string): Promise<Session | null> {
+    return prisma.session.findUnique({
+      where: { id: sessionId },
+    });
+  }
+
+  async addConversationTurn(
+    sessionId: string,
+    turn: ConversationTurn,
+  ): Promise<void> {
+    const session = await this.findById(sessionId);
+    if (!session) return;
+
+    const history = session.conversationHistory as ConversationTurn[];
+    history.push(turn);
+
+    await prisma.session.update({
+      where: { id: sessionId },
+      data: {
+        conversationHistory: history,
+        lastActivity: new Date(),
+      },
+    });
+  }
+
+  async updateLastActivity(sessionId: string): Promise<void> {
+    await prisma.session.update({
+      where: { id: sessionId },
+      data: { lastActivity: new Date() },
+    });
+  }
+
+  async deleteExpired(): Promise<number> {
+    const result = await prisma.session.deleteMany({
+      where: {
+        expiresAt: {
+          lt: new Date(),
+        },
+      },
+    });
+    return result.count;
+  }
+
+  async findByUserId(userId: string, limit: number = 10): Promise<Session[]> {
+    return prisma.session.findMany({
+      where: { userId },
+      orderBy: { lastActivity: 'desc' },
+      take: limit,
+    });
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\repositories\user.repository.ts
+==============================
+
+// src/repositories/user.repository.ts
+import prisma from '../config/database';
+import { User, UserRole } from '@prisma/client';
+import { RegisterDTO, SafeUser } from '../types/auth.types';
+
+export class UserRepository {
+  async create(data: RegisterDTO & { passwordHash: string }): Promise<User> {
+    return prisma.user.create({
+      data: {
+        email: data.email,
+        passwordHash: data.passwordHash,
+        name: data.name,
+      },
+    });
+  }
+
+  async findById(id: string): Promise<User | null> {
+    return prisma.user.findUnique({
+      where: { id },
+    });
+  }
+
+  async findByEmail(email: string): Promise<User | null> {
+    return prisma.user.findUnique({
+      where: { email },
+    });
+  }
+
+  async findByVerificationToken(token: string): Promise<User | null> {
+    return prisma.user.findFirst({
+      where: {
+        verificationToken: token,
+        verificationTokenExpires: {
+          gte: new Date(),
+        },
+      },
+    });
+  }
+
+  async findByResetToken(token: string): Promise<User | null> {
+    return prisma.user.findFirst({
+      where: {
+        resetToken: token,
+        resetTokenExpires: {
+          gte: new Date(),
+        },
+      },
+    });
+  }
+
+  async findByOAuth(provider: string, oauthId: string): Promise<User | null> {
+    return prisma.user.findFirst({
+      where: {
+        oauthProvider: provider,
+        oauthId,
+      },
+    });
+  }
+
+  async update(id: string, data: Partial<User>): Promise<User> {
+    return prisma.user.update({
+      where: { id },
+      data,
+    });
+  }
+
+  async updateLastLogin(id: string): Promise<void> {
+    await prisma.user.update({
+      where: { id },
+      data: { lastLogin: new Date() },
+    });
+  }
+
+  async setVerificationToken(
+    id: string,
+    token: string,
+    expires: Date,
+  ): Promise<void> {
+    await prisma.user.update({
+      where: { id },
+      data: {
+        verificationToken: token,
+        verificationTokenExpires: expires,
+      },
+    });
+  }
+
+  async setResetToken(id: string, token: string, expires: Date): Promise<void> {
+    await prisma.user.update({
+      where: { id },
+      data: {
+        resetToken: token,
+        resetTokenExpires: expires,
+      },
+    });
+  }
+
+  async verifyEmail(id: string): Promise<void> {
+    await prisma.user.update({
+      where: { id },
+      data: {
+        emailVerified: true,
+        verificationToken: null,
+        verificationTokenExpires: null,
+      },
+    });
+  }
+
+  async updatePassword(id: string, passwordHash: string): Promise<void> {
+    await prisma.user.update({
+      where: { id },
+      data: {
+        passwordHash,
+        resetToken: null,
+        resetTokenExpires: null,
+      },
+    });
+  }
+
+  toSafeUser(user: User): SafeUser {
+    const { passwordHash, verificationToken, resetToken, ...safeUser } = user;
+    return safeUser;
   }
 }
 
@@ -3952,6 +6195,77 @@ Respond with JSON containing:
 
 
 ==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\routes\analytics.routes.ts
+==============================
+
+// src/routes/analytics.routes.ts
+import express, { Router } from 'express';
+import { AnalyticsController } from '../controllers/analytics.controller';
+import { authenticate } from '../middleware/auth.middleware';
+import { createUserRateLimiter } from '../middleware/rate-limit.middleware';
+
+export function createAnalyticsRoutes(): Router {
+  const router = express.Router();
+  const analyticsController = new AnalyticsController();
+  const userRateLimit = createUserRateLimiter();
+
+  // All analytics routes require authentication
+  router.use(authenticate);
+  router.use(userRateLimit);
+
+  /**
+   * GET /api/analytics/dashboard
+   * Get complete dashboard with all analytics
+   */
+  router.get('/dashboard', (req, res) =>
+    analyticsController.getDashboard(req, res),
+  );
+
+  /**
+   * GET /api/analytics/stats
+   * Get interview statistics
+   */
+  router.get('/stats', (req, res) =>
+    analyticsController.getInterviewStats(req, res),
+  );
+
+  /**
+   * GET /api/analytics/performance/topics
+   * Get topic-wise performance breakdown
+   */
+  router.get('/performance/topics', (req, res) =>
+    analyticsController.getTopicPerformance(req, res),
+  );
+
+  /**
+   * GET /api/analytics/performance/trends
+   * Get performance trends over time
+   */
+  router.get('/performance/trends', (req, res) =>
+    analyticsController.getPerformanceTrends(req, res),
+  );
+
+  /**
+   * GET /api/analytics/comparative
+   * Get comparative analytics (user vs peers)
+   */
+  router.get('/comparative', (req, res) =>
+    analyticsController.getComparativeAnalytics(req, res),
+  );
+
+  /**
+   * GET /api/analytics/skill-gaps
+   * Identify skill gaps and recommendations
+   */
+  router.get('/skill-gaps', (req, res) =>
+    analyticsController.getSkillGaps(req, res),
+  );
+
+  return router;
+}
+
+
+==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\routes\api-routes.ts
 ==============================
 
@@ -4099,6 +6413,237 @@ export function createRoutes(
       },
     });
   });
+
+  return router;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\routes\auth.routes.ts
+==============================
+
+// src/routes/auth.routes.ts - UPDATE with OAuth routes
+import express, { Router } from 'express';
+import passport from 'passport';
+import { AuthController } from '../controllers/auth.controller';
+import { authenticate } from '../middleware/auth.middleware';
+import { authRateLimiter } from '../middleware/rate-limit.middleware';
+import { validate } from '../middleware/validation.middleware';
+import {
+  registerSchema,
+  loginSchema,
+  passwordResetRequestSchema,
+  passwordResetConfirmSchema,
+} from '../utils/validation';
+
+export function createAuthRoutes(): Router {
+  const router = express.Router();
+  const authController = new AuthController();
+
+  // ============================================================================
+  // Email/Password Authentication
+  // ============================================================================
+
+  router.post(
+    '/register',
+    authRateLimiter,
+    validate(registerSchema),
+    (req, res) => authController.register(req, res),
+  );
+
+  router.post('/login', authRateLimiter, validate(loginSchema), (req, res) =>
+    authController.login(req, res),
+  );
+
+  router.post('/refresh', (req, res) => authController.refreshToken(req, res));
+
+  router.post('/logout', authenticate, (req, res) =>
+    authController.logout(req, res),
+  );
+
+  router.get('/verify-email', (req, res) =>
+    authController.verifyEmail(req, res),
+  );
+
+  router.post(
+    '/forgot-password',
+    authRateLimiter,
+    validate(passwordResetRequestSchema),
+    (req, res) => authController.requestPasswordReset(req, res),
+  );
+
+  router.post(
+    '/reset-password',
+    validate(passwordResetConfirmSchema),
+    (req, res) => authController.resetPassword(req, res),
+  );
+
+  router.get('/me', authenticate, (req, res) =>
+    authController.getCurrentUser(req, res),
+  );
+
+  // ============================================================================
+  // OAuth - Google
+  // ============================================================================
+
+  /**
+   * GET /api/auth/google
+   * Initiate Google OAuth flow
+   */
+  router.get(
+    '/google',
+    passport.authenticate('google', {
+      scope: ['profile', 'email'],
+      session: false,
+    }),
+  );
+
+  /**
+   * GET /api/auth/google/callback
+   * Google OAuth callback
+   */
+  router.get(
+    '/google/callback',
+    passport.authenticate('google', {
+      session: false,
+      failureRedirect: `${process.env.FRONTEND_URL}/login?error=google_failed`,
+    }),
+    (req, res) => authController.oauthCallback(req, res),
+  );
+
+  // ============================================================================
+  // OAuth - GitHub
+  // ============================================================================
+
+  /**
+   * GET /api/auth/github
+   * Initiate GitHub OAuth flow
+   */
+  router.get(
+    '/github',
+    passport.authenticate('github', {
+      scope: ['user:email'],
+      session: false,
+    }),
+  );
+
+  /**
+   * GET /api/auth/github/callback
+   * GitHub OAuth callback
+   */
+  router.get(
+    '/github/callback',
+    passport.authenticate('github', {
+      session: false,
+      failureRedirect: `${process.env.FRONTEND_URL}/login?error=github_failed`,
+    }),
+    (req, res) => authController.oauthCallback(req, res),
+  );
+
+  // ============================================================================
+  // OAuth Account Management
+  // ============================================================================
+
+  /**
+   * POST /api/auth/oauth/link
+   * Link OAuth account to current user
+   */
+  router.post('/oauth/link', authenticate, (req, res) =>
+    authController.linkOAuthAccount(req, res),
+  );
+
+  /**
+   * DELETE /api/auth/oauth/unlink
+   * Unlink OAuth account from current user
+   */
+  router.delete('/oauth/unlink', authenticate, (req, res) =>
+    authController.unlinkOAuthAccount(req, res),
+  );
+
+  /**
+   * POST /api/auth/set-password
+   * Set password for OAuth-only users
+   */
+  router.post('/set-password', authenticate, (req, res) =>
+    authController.setPassword(req, res),
+  );
+
+  return router;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\routes\user.routes.ts
+==============================
+
+// src/routes/user.routes.ts
+import express, { Router } from 'express';
+import { UserController } from '../controllers/user.controller';
+import { authenticate } from '../middleware/auth.middleware';
+import { createUserRateLimiter } from '../middleware/rate-limit.middleware';
+
+export function createUserRoutes(): Router {
+  const router = express.Router();
+  const userController = new UserController();
+  const userRateLimit = createUserRateLimiter();
+
+  // All user routes require authentication
+  router.use(authenticate);
+  router.use(userRateLimit);
+
+  /**
+   * PATCH /api/user/profile
+   * Update user profile
+   */
+  router.patch('/profile', (req, res) =>
+    userController.updateProfile(req, res),
+  );
+
+  /**
+   * POST /api/user/change-password
+   * Change password
+   */
+  router.post('/change-password', (req, res) =>
+    userController.changePassword(req, res),
+  );
+
+  /**
+   * GET /api/user/login-history
+   * Get login history
+   */
+  router.get('/login-history', (req, res) =>
+    userController.getLoginHistory(req, res),
+  );
+
+  /**
+   * GET /api/user/preferences
+   * Get user preferences
+   */
+  router.get('/preferences', (req, res) =>
+    userController.getPreferences(req, res),
+  );
+
+  /**
+   * PATCH /api/user/preferences
+   * Update user preferences
+   */
+  router.patch('/preferences', (req, res) =>
+    userController.updatePreferences(req, res),
+  );
+
+  /**
+   * DELETE /api/user/account
+   * Delete user account
+   */
+  router.delete('/account', (req, res) =>
+    userController.deleteAccount(req, res),
+  );
+
+  /**
+   * GET /api/user/export
+   * Export all user data (GDPR)
+   */
+  router.get('/export', (req, res) => userController.exportData(req, res));
 
   return router;
 }
@@ -4289,6 +6834,356 @@ async function startServer() {
 
 // Start the server
 startServer();
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\auth\auth.service.ts
+==============================
+
+// src/services/auth/auth.service.ts
+import { UserRepository } from '../../repositories/user.repository';
+import { RefreshTokenRepository } from '../../repositories/refresh-token.repository';
+import { LoginHistoryRepository } from '../../repositories/login-history.repository';
+import { PasswordUtil } from '../../utils/password.util';
+import { TokenUtil } from '../../utils/token.util';
+import { EmailUtil } from '../../utils/email.util';
+import {
+  RegisterDTO,
+  LoginDTO,
+  AuthTokens,
+  SafeUser,
+  OAuthProfile,
+} from '../../types/auth.types';
+import redis from '../../config/redis';
+
+export class AuthService {
+  private userRepo: UserRepository;
+  private refreshTokenRepo: RefreshTokenRepository;
+  private loginHistoryRepo: LoginHistoryRepository;
+
+  constructor() {
+    this.userRepo = new UserRepository();
+    this.refreshTokenRepo = new RefreshTokenRepository();
+    this.loginHistoryRepo = new LoginHistoryRepository();
+  }
+
+  async register(
+    data: RegisterDTO,
+  ): Promise<{ user: SafeUser; message: string }> {
+    // Check if user exists
+    const existingUser = await this.userRepo.findByEmail(data.email);
+    if (existingUser) {
+      throw new Error('User with this email already exists');
+    }
+
+    // Validate password
+    const passwordValidation = PasswordUtil.validate(data.password);
+    if (!passwordValidation.valid) {
+      throw new Error(passwordValidation.errors.join(', '));
+    }
+
+    // Hash password
+    const passwordHash = await PasswordUtil.hash(data.password);
+
+    // Create user
+    const user = await this.userRepo.create({
+      ...data,
+      passwordHash,
+    });
+
+    // Generate verification token
+    const verificationToken = TokenUtil.generateVerificationToken();
+    const tokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+    await this.userRepo.setVerificationToken(
+      user.id,
+      verificationToken,
+      tokenExpiry,
+    );
+
+    // Send verification email
+    try {
+      await EmailUtil.sendVerificationEmail(
+        user.email,
+        verificationToken,
+        user.name,
+      );
+    } catch (error) {
+      console.error('Failed to send verification email:', error);
+    }
+
+    return {
+      user: this.userRepo.toSafeUser(user),
+      message:
+        'Registration successful. Please check your email to verify your account.',
+    };
+  }
+
+  async login(
+    data: LoginDTO,
+    ipAddress: string,
+    userAgent: string,
+  ): Promise<{ user: SafeUser; tokens: AuthTokens }> {
+    // Find user
+    const user = await this.userRepo.findByEmail(data.email);
+    if (!user || !user.passwordHash) {
+      await this.loginHistoryRepo.create(
+        user?.id || 'unknown',
+        ipAddress,
+        userAgent,
+        'email',
+        false,
+      );
+      throw new Error('Invalid email or password');
+    }
+
+    // Check if account is active
+    if (!user.isActive) {
+      throw new Error('Account has been deactivated');
+    }
+
+    // Verify password
+    const isValidPassword = await PasswordUtil.compare(
+      data.password,
+      user.passwordHash,
+    );
+    if (!isValidPassword) {
+      await this.loginHistoryRepo.create(
+        user.id,
+        ipAddress,
+        userAgent,
+        'email',
+        false,
+      );
+      throw new Error('Invalid email or password');
+    }
+
+    // Check for too many failed attempts
+    const recentFailures = await this.loginHistoryRepo.getFailedAttempts(
+      user.id,
+      new Date(Date.now() - 15 * 60 * 1000), // Last 15 minutes
+    );
+
+    if (recentFailures >= 5) {
+      throw new Error(
+        'Too many failed login attempts. Please try again later.',
+      );
+    }
+
+    // Generate tokens
+    const tokens = await this.generateTokens(user.id, user.email, user.role);
+
+    // Update last login
+    await this.userRepo.updateLastLogin(user.id);
+
+    // Record successful login
+    await this.loginHistoryRepo.create(
+      user.id,
+      ipAddress,
+      userAgent,
+      'email',
+      true,
+    );
+
+    return {
+      user: this.userRepo.toSafeUser(user),
+      tokens,
+    };
+  }
+
+  async refreshTokens(refreshToken: string): Promise<AuthTokens> {
+    // Verify token
+    let payload;
+    try {
+      payload = TokenUtil.verifyRefreshToken(refreshToken);
+    } catch (error) {
+      throw new Error('Invalid refresh token');
+    }
+
+    // Find token in database
+    const tokenRecord = await this.refreshTokenRepo.findByToken(refreshToken);
+    if (!tokenRecord || tokenRecord.revoked) {
+      throw new Error('Refresh token has been revoked');
+    }
+
+    if (tokenRecord.expiresAt < new Date()) {
+      throw new Error('Refresh token has expired');
+    }
+
+    // Generate new tokens
+    const newTokens = await this.generateTokens(
+      payload.userId,
+      payload.email,
+      payload.role,
+    );
+
+    // Revoke old refresh token
+    await this.refreshTokenRepo.revoke(refreshToken, newTokens.refreshToken);
+
+    return newTokens;
+  }
+
+  async logout(refreshToken: string): Promise<void> {
+    await this.refreshTokenRepo.revoke(refreshToken);
+  }
+
+  async verifyEmail(token: string): Promise<{ user: SafeUser }> {
+    const user = await this.userRepo.findByVerificationToken(token);
+    if (!user) {
+      throw new Error('Invalid or expired verification token');
+    }
+
+    await this.userRepo.verifyEmail(user.id);
+
+    // Send welcome email
+    try {
+      await EmailUtil.sendWelcomeEmail(user.email, user.name);
+    } catch (error) {
+      console.error('Failed to send welcome email:', error);
+    }
+
+    return {
+      user: this.userRepo.toSafeUser(user),
+    };
+  }
+
+  async requestPasswordReset(email: string): Promise<{ message: string }> {
+    const user = await this.userRepo.findByEmail(email);
+    if (!user) {
+      // Don't reveal if user exists
+      return { message: 'If the email exists, a reset link has been sent.' };
+    }
+
+    const resetToken = TokenUtil.generateResetToken();
+    const tokenExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    await this.userRepo.setResetToken(user.id, resetToken, tokenExpiry);
+
+    try {
+      await EmailUtil.sendPasswordResetEmail(user.email, resetToken, user.name);
+    } catch (error) {
+      console.error('Failed to send password reset email:', error);
+    }
+
+    return { message: 'If the email exists, a reset link has been sent.' };
+  }
+
+  async resetPassword(
+    token: string,
+    newPassword: string,
+  ): Promise<{ message: string }> {
+    const user = await this.userRepo.findByResetToken(token);
+    if (!user) {
+      throw new Error('Invalid or expired reset token');
+    }
+
+    // Validate new password
+    const passwordValidation = PasswordUtil.validate(newPassword);
+    if (!passwordValidation.valid) {
+      throw new Error(passwordValidation.errors.join(', '));
+    }
+
+    // Hash new password
+    const passwordHash = await PasswordUtil.hash(newPassword);
+
+    // Update password
+    await this.userRepo.updatePassword(user.id, passwordHash);
+
+    // Revoke all refresh tokens for security
+    await this.refreshTokenRepo.revokeAllForUser(user.id);
+
+    return {
+      message:
+        'Password reset successful. Please login with your new password.',
+    };
+  }
+
+  async loginWithOAuth(
+    profile: OAuthProfile,
+    ipAddress: string,
+    userAgent: string,
+  ): Promise<{ user: SafeUser; tokens: AuthTokens; isNewUser: boolean }> {
+    // Check if user exists
+    let user = await this.userRepo.findByOAuth(profile.provider, profile.id);
+    let isNewUser = false;
+
+    if (!user) {
+      // Check if email already exists
+      user = await this.userRepo.findByEmail(profile.email);
+
+      if (user) {
+        // Link OAuth to existing account
+        await this.userRepo.update(user.id, {
+          oauthProvider: profile.provider,
+          oauthId: profile.id,
+          profilePicture: profile.picture,
+          emailVerified: true, // OAuth emails are pre-verified
+        });
+      } else {
+        // Create new user
+        user = await this.userRepo.create({
+          email: profile.email,
+          name: profile.name,
+          passwordHash: '', // No password for OAuth users
+        });
+
+        await this.userRepo.update(user.id, {
+          oauthProvider: profile.provider,
+          oauthId: profile.id,
+          profilePicture: profile.picture,
+          emailVerified: true,
+        });
+
+        isNewUser = true;
+      }
+    }
+
+    // Generate tokens
+    const tokens = await this.generateTokens(user.id, user.email, user.role);
+
+    // Update last login
+    await this.userRepo.updateLastLogin(user.id);
+
+    // Record login
+    await this.loginHistoryRepo.create(
+      user.id,
+      ipAddress,
+      userAgent,
+      profile.provider,
+      true,
+    );
+
+    return {
+      user: this.userRepo.toSafeUser(user),
+      tokens,
+      isNewUser,
+    };
+  }
+
+  private async generateTokens(
+    userId: string,
+    email: string,
+    role: any,
+  ): Promise<AuthTokens> {
+    const payload = { userId, email, role };
+
+    const accessToken = TokenUtil.generateAccessToken(payload);
+    const refreshToken = TokenUtil.generateRefreshToken(payload);
+
+    // Store refresh token in database
+    await this.refreshTokenRepo.create(
+      userId,
+      refreshToken,
+      TokenUtil.getRefreshTokenExpiry(),
+    );
+
+    return {
+      accessToken,
+      refreshToken,
+      expiresIn: 15 * 60, // 15 minutes in seconds
+    };
+  }
+}
 
 
 ==============================
@@ -6404,6 +9299,61 @@ export class PineconeVectorDatabase extends BaseVectorDatabase {
 
 
 ==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\types\auth.types.ts
+==============================
+
+// src/types/auth.types.ts
+import { User as PrismaUser, UserRole } from '@prisma/client';
+
+export interface RegisterDTO {
+  email: string;
+  password: string;
+  name: string;
+}
+
+export interface LoginDTO {
+  email: string;
+  password: string;
+}
+
+export interface AuthTokens {
+  accessToken: string;
+  refreshToken: string;
+  expiresIn: number;
+}
+
+export interface JWTPayload {
+  userId: string;
+  email: string;
+  role: UserRole;
+  iat?: number;
+  exp?: number;
+}
+
+export interface PasswordResetRequest {
+  email: string;
+}
+
+export interface PasswordResetConfirm {
+  token: string;
+  newPassword: string;
+}
+
+export interface OAuthProfile {
+  provider: 'google' | 'github';
+  id: string;
+  email: string;
+  name: string;
+  picture?: string;
+}
+
+export type SafeUser = Omit<
+  PrismaUser,
+  'passwordHash' | 'verificationToken' | 'resetToken'
+>;
+
+
+==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\types\index.ts
 ==============================
 
@@ -6821,6 +9771,83 @@ export interface CRAGEvaluation {
 
 
 ==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\utils\email.util.ts
+==============================
+
+// src/utils/email.util.ts
+import nodemailer from 'nodemailer';
+
+const transporter = nodemailer.createTransporter({
+  host: process.env.SMTP_HOST || 'smtp.gmail.com',
+  port: parseInt(process.env.SMTP_PORT || '587'),
+  secure: false,
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
+
+export class EmailUtil {
+  static async sendVerificationEmail(
+    email: string,
+    token: string,
+    name: string,
+  ): Promise<void> {
+    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
+
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || 'noreply@interviewcoach.com',
+      to: email,
+      subject: 'Verify Your Email - AI Interview Coach',
+      html: `
+        <h1>Welcome to AI Interview Coach, ${name}!</h1>
+        <p>Please verify your email address by clicking the link below:</p>
+        <a href="${verificationUrl}">Verify Email</a>
+        <p>This link will expire in 24 hours.</p>
+        <p>If you didn't create an account, please ignore this email.</p>
+      `,
+    });
+  }
+
+  static async sendPasswordResetEmail(
+    email: string,
+    token: string,
+    name: string,
+  ): Promise<void> {
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
+
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || 'noreply@interviewcoach.com',
+      to: email,
+      subject: 'Password Reset Request - AI Interview Coach',
+      html: `
+        <h1>Password Reset Request</h1>
+        <p>Hi ${name},</p>
+        <p>You requested to reset your password. Click the link below to set a new password:</p>
+        <a href="${resetUrl}">Reset Password</a>
+        <p>This link will expire in 1 hour.</p>
+        <p>If you didn't request this, please ignore this email.</p>
+      `,
+    });
+  }
+
+  static async sendWelcomeEmail(email: string, name: string): Promise<void> {
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || 'noreply@interviewcoach.com',
+      to: email,
+      subject: 'Welcome to AI Interview Coach!',
+      html: `
+        <h1>Welcome aboard, ${name}!</h1>
+        <p>Your email has been verified successfully.</p>
+        <p>You can now start practicing with our AI-powered interview coach.</p>
+        <a href="${process.env.FRONTEND_URL}/dashboard">Go to Dashboard</a>
+      `,
+    });
+  }
+}
+
+
+==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\utils\helpers.ts
 ==============================
 
@@ -6905,6 +9932,53 @@ export function parseIntQuery(
 
   const parsed = parseInt(strValue, 10);
   return isNaN(parsed) ? defaultValue : parsed;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\utils\password.util.ts
+==============================
+
+// src/utils/password.util.ts
+import bcrypt from 'bcrypt';
+
+const SALT_ROUNDS = 12;
+
+export class PasswordUtil {
+  static async hash(password: string): Promise<string> {
+    return bcrypt.hash(password, SALT_ROUNDS);
+  }
+
+  static async compare(password: string, hash: string): Promise<boolean> {
+    return bcrypt.compare(password, hash);
+  }
+
+  static validate(password: string): { valid: boolean; errors: string[] } {
+    const errors: string[] = [];
+
+    if (password.length < 8) {
+      errors.push('Password must be at least 8 characters long');
+    }
+    if (!/[A-Z]/.test(password)) {
+      errors.push('Password must contain at least one uppercase letter');
+    }
+    if (!/[a-z]/.test(password)) {
+      errors.push('Password must contain at least one lowercase letter');
+    }
+    if (!/[0-9]/.test(password)) {
+      errors.push('Password must contain at least one number');
+    }
+    if (!/[!@#$%^&*]/.test(password)) {
+      errors.push(
+        'Password must contain at least one special character (!@#$%^&*)',
+      );
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+    };
+  }
 }
 
 
@@ -7139,3 +10213,104 @@ async function seedDatabase() {
 
 // Run seeder
 seedDatabase();
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\utils\token.util.ts
+==============================
+
+// src/utils/token.util.ts
+import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import { JWTPayload } from '../types/auth.types';
+
+const ACCESS_TOKEN_SECRET =
+  process.env.JWT_ACCESS_SECRET || 'your-access-secret-key';
+const REFRESH_TOKEN_SECRET =
+  process.env.JWT_REFRESH_SECRET || 'your-refresh-secret-key';
+const ACCESS_TOKEN_EXPIRY = '15m';
+const REFRESH_TOKEN_EXPIRY = '7d';
+
+export class TokenUtil {
+  static generateAccessToken(payload: Omit<JWTPayload, 'iat' | 'exp'>): string {
+    return jwt.sign(payload, ACCESS_TOKEN_SECRET, {
+      expiresIn: ACCESS_TOKEN_EXPIRY,
+    });
+  }
+
+  static generateRefreshToken(
+    payload: Omit<JWTPayload, 'iat' | 'exp'>,
+  ): string {
+    return jwt.sign(payload, REFRESH_TOKEN_SECRET, {
+      expiresIn: REFRESH_TOKEN_EXPIRY,
+    });
+  }
+
+  static verifyAccessToken(token: string): JWTPayload {
+    try {
+      return jwt.verify(token, ACCESS_TOKEN_SECRET) as JWTPayload;
+    } catch (error) {
+      throw new Error('Invalid or expired access token');
+    }
+  }
+
+  static verifyRefreshToken(token: string): JWTPayload {
+    try {
+      return jwt.verify(token, REFRESH_TOKEN_SECRET) as JWTPayload;
+    } catch (error) {
+      throw new Error('Invalid or expired refresh token');
+    }
+  }
+
+  static generateVerificationToken(): string {
+    return crypto.randomBytes(32).toString('hex');
+  }
+
+  static generateResetToken(): string {
+    return crypto.randomBytes(32).toString('hex');
+  }
+
+  static getRefreshTokenExpiry(): Date {
+    return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\utils\validation.ts
+==============================
+
+// src/utils/validation.ts
+import { z } from 'zod';
+
+export const registerSchema = z.object({
+  email: z.string().email('Invalid email address'),
+  password: z
+    .string()
+    .min(8, 'Password must be at least 8 characters')
+    .regex(/[A-Z]/, 'Password must contain uppercase letter')
+    .regex(/[a-z]/, 'Password must contain lowercase letter')
+    .regex(/[0-9]/, 'Password must contain number')
+    .regex(/[!@#$%^&*]/, 'Password must contain special character'),
+  name: z.string().min(2, 'Name must be at least 2 characters'),
+});
+
+export const loginSchema = z.object({
+  email: z.string().email('Invalid email address'),
+  password: z.string().min(1, 'Password is required'),
+});
+
+export const passwordResetRequestSchema = z.object({
+  email: z.string().email('Invalid email address'),
+});
+
+export const passwordResetConfirmSchema = z.object({
+  token: z.string().min(1, 'Reset token is required'),
+  newPassword: z
+    .string()
+    .min(8, 'Password must be at least 8 characters')
+    .regex(/[A-Z]/, 'Password must contain uppercase letter')
+    .regex(/[a-z]/, 'Password must contain lowercase letter')
+    .regex(/[0-9]/, 'Password must contain number')
+    .regex(/[!@#$%^&*]/, 'Password must contain special character'),
+});
