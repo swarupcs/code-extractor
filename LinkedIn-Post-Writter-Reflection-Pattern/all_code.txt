@@ -1,0 +1,160 @@
+
+
+==============================
+FILE: E:\Web Dev Course\Coder's Gyan Gen AI Course\LinkedIn-Post-Writter-Reflection-Pattern\src\graph.ts
+==============================
+
+import { END, START, StateGraph } from '@langchain/langgraph';
+
+import {
+  AIMessage,
+  HumanMessage,
+  SystemMessage,
+} from '@langchain/core/messages';
+import { State } from './state';
+import { model } from './model';
+
+async function writer(state: typeof State.State) {
+  const SYSTEM_PROMPT = `You are a LinkedIn writing assistant for beginner devs (0–2 years).
+    Goal: helpful, human, buzzword-free posts.
+
+    Style & format:
+    - Conversational, authentic, short lines, whitespace friendly.
+    - 160–220 words. Max 2 relevant emojis.
+    - Hook in the first 2 lines. Give 1–2 concrete examples. Clear takeaway.
+    - Explain any jargon with a quick analogy or simple example.
+    - Avoid controversy. Include a simple CTA to follow for more.
+
+    Behavior:
+    - If the latest human message contains critique or says “Revise now”, treat it as an explicit order to revise the previous draft. Apply all requested changes.
+    - Do NOT ask questions or seek confirmation. Output only the post text (no preamble).
+`;
+
+  const response = await model.invoke([
+    new SystemMessage(SYSTEM_PROMPT),
+    ...state.messages,
+  ]);
+
+  return { messages: [response] };
+}
+
+async function critique(state: typeof State.State) {
+  const SYSTEM_PROMPT = `You are a LinkedIn post critique. Your task is to give feedback on the previously generated post by the writer agent.
+
+Check against:
+1) Strong hook in 1–2 lines
+2) Beginner-friendly clarity; explain jargon with analogy/example
+3) Specific insights and concrete examples (not generic advice)
+4) Skimmable formatting (short lines, whitespace)
+5) Clear CTA to follow for more
+6) 160–220 words, no emojis, authentic tone, no buzzwords, no controversy
+
+Output format (no scores, no questions, no meta):
+Start with exactly:
+"Revise now. Apply ALL changes below. Output only the revised post text."
+Then list ONLY bullet-point FIXES (edit instructions). Do NOT include any rewritten sentences or paragraphs. Do NOT write the post.
+
+Return only the fixes.`;
+
+  const lastAIMessage = [...state.messages]
+    .reverse()
+    .find((m) => m.getType() === 'ai');
+
+  const response = await model.invoke([
+    new SystemMessage(SYSTEM_PROMPT),
+    lastAIMessage as AIMessage,
+  ]);
+
+  // console.log('lastAIMessage', lastAIMessage);
+  // console.log('response', response);
+
+  return {
+    messages: [new HumanMessage(response.content as string)],
+    revisions: state.revisions ? state.revisions + 1 : 1,
+  };
+}
+
+function shouldContinue(state: typeof State.State) {
+  // console.log('Revisions:', state.revisions);
+  if (state.revisions >= 3) {
+    return END;
+  }
+
+  return 'critique';
+}
+
+export const graph = new StateGraph(State)
+  .addNode('writer', writer)
+  .addNode('critique', critique)
+  .addEdge(START, 'writer')
+  .addEdge('critique', 'writer')
+  .addConditionalEdges('writer', shouldContinue, {
+    [END]: END,
+    critique: 'critique',
+  });
+
+
+==============================
+FILE: E:\Web Dev Course\Coder's Gyan Gen AI Course\LinkedIn-Post-Writter-Reflection-Pattern\src\index.ts
+==============================
+
+import readline from 'node:readline/promises';
+import { HumanMessage } from '@langchain/core/messages';
+import { graph } from './graph';
+
+
+async function main() {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  const app = graph.compile();
+
+  while (true) {
+    const query = await rl.question('What you want me to write about?\n');
+
+    if (query === '/bye') break;
+
+    const result = await app.invoke({
+      messages: [new HumanMessage(query)],
+    });
+
+    console.log(result.messages[result.messages.length - 1].content);
+  }
+
+  rl.close();
+}
+
+main();
+
+
+==============================
+FILE: E:\Web Dev Course\Coder's Gyan Gen AI Course\LinkedIn-Post-Writter-Reflection-Pattern\src\model.ts
+==============================
+
+import dotenv from 'dotenv';
+dotenv.config();
+
+import { ChatGroq } from '@langchain/groq';
+
+/**
+ * Initilise the LLM
+ */
+export const model = new ChatGroq({
+  model: 'openai/gpt-oss-120b',
+  temperature: 0,
+  apiKey: process.env.GROQ_API_KEY,
+});
+
+
+==============================
+FILE: E:\Web Dev Course\Coder's Gyan Gen AI Course\LinkedIn-Post-Writter-Reflection-Pattern\src\state.ts
+==============================
+
+import { Annotation, MessagesAnnotation } from '@langchain/langgraph';
+
+export const State = Annotation.Root({
+  ...MessagesAnnotation.spec,
+  revisions: Annotation<number>,
+});
