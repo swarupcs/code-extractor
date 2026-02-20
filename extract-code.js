@@ -42,6 +42,7 @@ const EXCLUDED_DIRS = new Set([
   "coverage",
   ".idea",
   ".vscode",
+  
 ]);
 
 const EXCLUDED_FILES = new Set([
@@ -53,11 +54,18 @@ const EXCLUDED_FILES = new Set([
   "Thumbs.db",
 ]);
 
-const EXCLUDED_EXTENSIONS = new Set([".log", ".swp", ".tsbuildinfo"]);
+const EXCLUDED_EXTENSIONS = new Set([
+  ".log",
+  ".swp",
+  ".tsbuildinfo",
+  ".json",
+  ".yml",
+]);
 
 // Directories excluded only when inside a specific parent directory
 const EXCLUDED_NESTED = [
   { parent: "components", child: "ui" },
+  { parent: "generated", child: "prisma" },
 ];
 
 // =========================
