@@ -13,7 +13,8 @@ const path = require("path");
 // =========================
 // 👇 Source folder (absolute or relative)
 // const TARGET_FOLDER = 'E:/My Projects/chrona-ai/chrona-ai-backend/src';
-const TARGET_FOLDER = String.raw`E:\My Projects\swarup-portfolio\src`;
+const TARGET_FOLDER = String.raw`E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src`;
+// const TARGET_FOLDER = String.raw`E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src`;
 // const TARGET_FOLDER = 'E:/My Projects/LeetLab/Algodrill/frontend/src';
 // const TARGET_FOLDER =
 //   'E:/My Projects/Dev-Collab/Dev-Collab-Frontend/src';

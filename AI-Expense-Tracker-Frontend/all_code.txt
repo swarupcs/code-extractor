@@ -1,0 +1,4424 @@
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\api\auth.api.ts
+==============================
+
+import { request } from './client';
+
+export interface SignUpInput {
+  name: string;
+  email: string;
+  password: string;
+}
+
+export interface SignInInput {
+  email: string;
+  password: string;
+}
+
+export interface ChangePasswordInput {
+  currentPassword: string;
+  newPassword: string;
+  confirmPassword: string;
+}
+
+export interface PublicUser {
+  id: number;
+  name: string;
+  email: string;
+  role: string;
+  isActive?: boolean;
+  lastLoginAt?: string;
+  createdAt: string;
+  updatedAt?: string;
+  _count?: { expenses: number };
+}
+
+export interface TokenPair {
+  accessToken: string;
+  refreshToken: string;
+}
+
+export interface AuthResult {
+  user: PublicUser;
+  tokens: TokenPair;
+}
+
+export const authApi = {
+  signUp: (data: SignUpInput) =>
+    request<AuthResult>('/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  signIn: (data: SignInInput) =>
+    request<AuthResult>('/auth/signin', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  signOut: (refreshToken: string) =>
+    request<void>('/auth/logout', {
+      method: 'POST',
+      body: JSON.stringify({ refreshToken }),
+    }),
+
+  getMe: () => request<PublicUser>('/auth/me'),
+
+  changePassword: (data: ChangePasswordInput) =>
+    request<void>('/auth/change-password', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\api\chat.api.ts
+==============================
+
+import { BASE_URL, tokenStorage } from './client';
+
+export type StreamMessageType =
+  | { type: 'ai'; payload: { text: string } }
+  | {
+      type: 'toolCall:start';
+      payload: { name: string; args: Record<string, unknown> };
+    }
+  | { type: 'tool'; payload: { name: string; result: Record<string, unknown> } }
+  | { type: 'error'; payload: { text: string } };
+
+export interface ChatMessage {
+  id: number;
+  threadId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+}
+
+interface ChatStreamCallbacks {
+  onMessage: (msg: StreamMessageType) => void;
+  onError?: (err: Error) => void;
+  onDone?: () => void;
+}
+
+export function streamChat(
+  query: string,
+  threadId: string,
+  callbacks: ChatStreamCallbacks,
+): () => void {
+  let isCancelled = false;
+
+  (async () => {
+    try {
+      const token = tokenStorage.getAccess();
+      const res = await fetch(`${BASE_URL}/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ query, threadId }),
+      });
+
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (!isCancelled) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        let pendingData = '';
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            pendingData = line.slice(6);
+          } else if (line === '' && pendingData) {
+            try {
+              const parsed = JSON.parse(pendingData) as StreamMessageType;
+              if (parsed.type) callbacks.onMessage(parsed);
+            } catch {
+              /* skip malformed */
+            }
+            pendingData = '';
+          }
+        }
+      }
+
+      callbacks.onDone?.();
+    } catch (err) {
+      if (!isCancelled) {
+        callbacks.onError?.(
+          err instanceof Error ? err : new Error(String(err)),
+        );
+      }
+    }
+  })();
+
+  return () => {
+    isCancelled = true;
+  };
+}
+
+export const chatApi = {
+  getHistory: (threadId?: string, limit = 50) => {
+    const token = tokenStorage.getAccess();
+    const params = new URLSearchParams();
+    if (threadId) params.set('threadId', threadId);
+    params.set('limit', String(limit));
+    return fetch(`${BASE_URL}/chat/history?${params}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }).then((r) => r.json());
+  },
+
+  deleteHistory: (threadId?: string) => {
+    const token = tokenStorage.getAccess();
+    const params = new URLSearchParams();
+    if (threadId) params.set('threadId', threadId);
+    return fetch(`${BASE_URL}/chat/history?${params}`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }).then((r) => r.json());
+  },
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\api\client.ts
+==============================
+
+// ─── Authenticated HTTP Client ────────────────────────────────────────────────
+const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4100/api';
+export { BASE_URL };
+
+// ─── Token storage ────────────────────────────────────────────────────────────
+export const tokenStorage = {
+  getAccess: (): string | null => localStorage.getItem('accessToken'),
+  getRefresh: (): string | null => localStorage.getItem('refreshToken'),
+  set: (access: string, refresh: string): void => {
+    localStorage.setItem('accessToken', access);
+    localStorage.setItem('refreshToken', refresh);
+  },
+  clear: (): void => {
+    localStorage.removeItem('accessToken');
+    localStorage.removeItem('refreshToken');
+  },
+};
+
+// ─── Silent refresh ───────────────────────────────────────────────────────────
+let refreshPromise: Promise<boolean> | null = null;
+
+async function doRefresh(): Promise<boolean> {
+  const refreshToken = tokenStorage.getRefresh();
+  if (!refreshToken) return false;
+  try {
+    const res = await fetch(`${BASE_URL}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    });
+    if (!res.ok) {
+      tokenStorage.clear();
+      return false;
+    }
+    const body = await res.json();
+    const { accessToken, refreshToken: newRefresh } = body.data.tokens;
+    tokenStorage.set(accessToken, newRefresh);
+    return true;
+  } catch {
+    tokenStorage.clear();
+    return false;
+  }
+}
+
+// ─── Core request ─────────────────────────────────────────────────────────────
+export interface ApiResponse<T = unknown> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  message?: string;
+  pagination?: {
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  };
+}
+
+export async function request<T>(
+  path: string,
+  options: RequestInit = {},
+  retry = true,
+): Promise<ApiResponse<T>> {
+  const token = tokenStorage.getAccess();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string>),
+  };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+
+  if (res.status === 401 && retry) {
+    if (!refreshPromise) refreshPromise = doRefresh();
+    const refreshed = await refreshPromise;
+    refreshPromise = null;
+    if (refreshed) return request<T>(path, options, false);
+    tokenStorage.clear();
+    window.location.href = '/login';
+    return { success: false, error: 'Session expired' };
+  }
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    return { success: false, error: body.error ?? `HTTP ${res.status}` };
+  }
+  return res.json();
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\api\expenses.api.ts
+==============================
+
+import { request } from './client';
+
+export type Category =
+  | 'DINING'
+  | 'SHOPPING'
+  | 'TRANSPORT'
+  | 'ENTERTAINMENT'
+  | 'UTILITIES'
+  | 'HEALTH'
+  | 'EDUCATION'
+  | 'OTHER';
+
+export interface Expense {
+  id: number;
+  title: string;
+  amount: number;
+  category: Category;
+  date: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+  userId: number;
+}
+
+export interface ExpenseStats {
+  total: number;
+  count: number;
+  average: number;
+  max: number;
+  min: number;
+  byCategory: Array<{ category: Category; amount: number; count: number }>;
+}
+
+export interface ExpenseFilters {
+  from?: string;
+  to?: string;
+  category?: Category;
+  search?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface CreateExpenseInput {
+  title: string;
+  amount: number;
+  category?: Category;
+  date?: string;
+  notes?: string;
+}
+
+export interface UpdateExpenseInput {
+  title?: string;
+  amount?: number;
+  category?: Category;
+  date?: string;
+  notes?: string;
+}
+
+export const expensesApi = {
+  list: (filters?: ExpenseFilters) => {
+    const params = new URLSearchParams();
+    if (filters?.from) params.set('from', filters.from);
+    if (filters?.to) params.set('to', filters.to);
+    if (filters?.category) params.set('category', filters.category);
+    if (filters?.search) params.set('search', filters.search);
+    if (filters?.page) params.set('page', String(filters.page));
+    if (filters?.limit) params.set('limit', String(filters.limit));
+    const qs = params.toString();
+    return request<Expense[]>(`/expenses${qs ? `?${qs}` : ''}`);
+  },
+
+  stats: (from?: string, to?: string) => {
+    const params = new URLSearchParams();
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    const qs = params.toString();
+    return request<ExpenseStats>(`/expenses/stats${qs ? `?${qs}` : ''}`);
+  },
+
+  get: (id: number) => request<Expense>(`/expenses/${id}`),
+
+  create: (data: CreateExpenseInput) =>
+    request<Expense>('/expenses', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  update: (id: number, data: UpdateExpenseInput) =>
+    request<Expense>(`/expenses/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  delete: (id: number) =>
+    request<void>(`/expenses/${id}`, { method: 'DELETE' }),
+
+  bulkDelete: (ids: number[]) =>
+    request<{ count: number }>('/expenses', {
+      method: 'DELETE',
+      body: JSON.stringify({ ids }),
+    }),
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\App.css
+==============================
+
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\App.tsx
+==============================
+
+import { useEffect } from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Sidebar } from '@/components/Sidebar';
+import { ProtectedRoute } from '@/components/ProtectedRoute';
+import Dashboard from '@/pages/Dashboard';
+import ChatPage from '@/pages/ChatPage';
+import ExpensesPage from '@/pages/ExpensesPage';
+import InsightsPage from '@/pages/InsightsPage';
+import SettingsPage from '@/pages/SettingsPage';
+import LoginPage from '@/pages/LoginPage';
+import SignupPage from '@/pages/SignupPage';
+import { useAuthStore } from '@/store/auth.store';
+
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
+});
+
+function AppShell() {
+  return (
+    <div className='flex h-screen font-sans antialiased overflow-hidden'>
+      <Sidebar />
+      <main className='flex-1 overflow-hidden'>
+        <Routes>
+          <Route path='/' element={<Dashboard />} />
+          <Route path='/chat' element={<ChatPage />} />
+          <Route path='/expenses' element={<ExpensesPage />} />
+          <Route path='/insights' element={<InsightsPage />} />
+          <Route path='/settings' element={<SettingsPage />} />
+          <Route path='*' element={<Navigate to='/' replace />} />
+        </Routes>
+      </main>
+    </div>
+  );
+}
+
+function AuthHydrator({ children }: { children: React.ReactNode }) {
+  const hydrate = useAuthStore((s) => s.hydrate);
+  useEffect(() => {
+    hydrate();
+  }, [hydrate]);
+  return <>{children}</>;
+}
+
+function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <BrowserRouter>
+        <AuthHydrator>
+          <Routes>
+            <Route path='/login' element={<LoginPage />} />
+            <Route path='/signup' element={<SignupPage />} />
+            <Route element={<ProtectedRoute />}>
+              <Route path='/*' element={<AppShell />} />
+            </Route>
+          </Routes>
+        </AuthHydrator>
+      </BrowserRouter>
+    </QueryClientProvider>
+  );
+}
+
+export default App;
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\assets\react.svg
+==============================
+
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" aria-hidden="true" role="img" class="iconify iconify--logos" width="35.93" height="32" preserveAspectRatio="xMidYMid meet" viewBox="0 0 256 228"><path fill="#00D8FF" d="M210.483 73.824a171.49 171.49 0 0 0-8.24-2.597c.465-1.9.893-3.777 1.273-5.621c6.238-30.281 2.16-54.676-11.769-62.708c-13.355-7.7-35.196.329-57.254 19.526a171.23 171.23 0 0 0-6.375 5.848a155.866 155.866 0 0 0-4.241-3.917C100.759 3.829 77.587-4.822 63.673 3.233C50.33 10.957 46.379 33.89 51.995 62.588a170.974 170.974 0 0 0 1.892 8.48c-3.28.932-6.445 1.924-9.474 2.98C17.309 83.498 0 98.307 0 113.668c0 15.865 18.582 31.778 46.812 41.427a145.52 145.52 0 0 0 6.921 2.165a167.467 167.467 0 0 0-2.01 9.138c-5.354 28.2-1.173 50.591 12.134 58.266c13.744 7.926 36.812-.22 59.273-19.855a145.567 145.567 0 0 0 5.342-4.923a168.064 168.064 0 0 0 6.92 6.314c21.758 18.722 43.246 26.282 56.54 18.586c13.731-7.949 18.194-32.003 12.4-61.268a145.016 145.016 0 0 0-1.535-6.842c1.62-.48 3.21-.974 4.76-1.488c29.348-9.723 48.443-25.443 48.443-41.52c0-15.417-17.868-30.326-45.517-39.844Zm-6.365 70.984c-1.4.463-2.836.91-4.3 1.345c-3.24-10.257-7.612-21.163-12.963-32.432c5.106-11 9.31-21.767 12.459-31.957c2.619.758 5.16 1.557 7.61 2.4c23.69 8.156 38.14 20.213 38.14 29.504c0 9.896-15.606 22.743-40.946 31.14Zm-10.514 20.834c2.562 12.94 2.927 24.64 1.23 33.787c-1.524 8.219-4.59 13.698-8.382 15.893c-8.067 4.67-25.32-1.4-43.927-17.412a156.726 156.726 0 0 1-6.437-5.87c7.214-7.889 14.423-17.06 21.459-27.246c12.376-1.098 24.068-2.894 34.671-5.345a134.17 134.17 0 0 1 1.386 6.193ZM87.276 214.515c-7.882 2.783-14.16 2.863-17.955.675c-8.075-4.657-11.432-22.636-6.853-46.752a156.923 156.923 0 0 1 1.869-8.499c10.486 2.32 22.093 3.988 34.498 4.994c7.084 9.967 14.501 19.128 21.976 27.15a134.668 134.668 0 0 1-4.877 4.492c-9.933 8.682-19.886 14.842-28.658 17.94ZM50.35 144.747c-12.483-4.267-22.792-9.812-29.858-15.863c-6.35-5.437-9.555-10.836-9.555-15.216c0-9.322 13.897-21.212 37.076-29.293c2.813-.98 5.757-1.905 8.812-2.773c3.204 10.42 7.406 21.315 12.477 32.332c-5.137 11.18-9.399 22.249-12.634 32.792a134.718 134.718 0 0 1-6.318-1.979Zm12.378-84.26c-4.811-24.587-1.616-43.134 6.425-47.789c8.564-4.958 27.502 2.111 47.463 19.835a144.318 144.318 0 0 1 3.841 3.545c-7.438 7.987-14.787 17.08-21.808 26.988c-12.04 1.116-23.565 2.908-34.161 5.309a160.342 160.342 0 0 1-1.76-7.887Zm110.427 27.268a347.8 347.8 0 0 0-7.785-12.803c8.168 1.033 15.994 2.404 23.343 4.08c-2.206 7.072-4.956 14.465-8.193 22.045a381.151 381.151 0 0 0-7.365-13.322Zm-45.032-43.861c5.044 5.465 10.096 11.566 15.065 18.186a322.04 322.04 0 0 0-30.257-.006c4.974-6.559 10.069-12.652 15.192-18.18ZM82.802 87.83a323.167 323.167 0 0 0-7.227 13.238c-3.184-7.553-5.909-14.98-8.134-22.152c7.304-1.634 15.093-2.97 23.209-3.984a321.524 321.524 0 0 0-7.848 12.897Zm8.081 65.352c-8.385-.936-16.291-2.203-23.593-3.793c2.26-7.3 5.045-14.885 8.298-22.6a321.187 321.187 0 0 0 7.257 13.246c2.594 4.48 5.28 8.868 8.038 13.147Zm37.542 31.03c-5.184-5.592-10.354-11.779-15.403-18.433c4.902.192 9.899.29 14.978.29c5.218 0 10.376-.117 15.453-.343c-4.985 6.774-10.018 12.97-15.028 18.486Zm52.198-57.817c3.422 7.8 6.306 15.345 8.596 22.52c-7.422 1.694-15.436 3.058-23.88 4.071a382.417 382.417 0 0 0 7.859-13.026a347.403 347.403 0 0 0 7.425-13.565Zm-16.898 8.101a358.557 358.557 0 0 1-12.281 19.815a329.4 329.4 0 0 1-23.444.823c-7.967 0-15.716-.248-23.178-.732a310.202 310.202 0 0 1-12.513-19.846h.001a307.41 307.41 0 0 1-10.923-20.627a310.278 310.278 0 0 1 10.89-20.637l-.001.001a307.318 307.318 0 0 1 12.413-19.761c7.613-.576 15.42-.876 23.31-.876H128c7.926 0 15.743.303 23.354.883a329.357 329.357 0 0 1 12.335 19.695a358.489 358.489 0 0 1 11.036 20.54a329.472 329.472 0 0 1-11 20.722Zm22.56-122.124c8.572 4.944 11.906 24.881 6.52 51.026c-.344 1.668-.73 3.367-1.15 5.09c-10.622-2.452-22.155-4.275-34.23-5.408c-7.034-10.017-14.323-19.124-21.64-27.008a160.789 160.789 0 0 1 5.888-5.4c18.9-16.447 36.564-22.941 44.612-18.3ZM128 90.808c12.625 0 22.86 10.235 22.86 22.86s-10.235 22.86-22.86 22.86s-22.86-10.235-22.86-22.86s10.235-22.86 22.86-22.86Z"></path></svg>
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\components\ChatContainer.tsx
+==============================
+
+import { useEffect, useRef, useState, useId } from 'react';
+import type { StreamMessage } from '@/types/StreamMessage.types';
+import { ChatInput } from './ChatInput';
+import { ChatMessage } from './ChatMessage';
+import {
+  Zap,
+  BarChart2,
+  PlusCircle,
+  TrendingUp,
+  Target,
+  Trash2,
+} from 'lucide-react';
+import { streamChat, chatApi } from '@/api/chat.api';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+
+const SUGGESTIONS = [
+  { icon: BarChart2, text: 'Show my spending this month as a chart' },
+  { icon: PlusCircle, text: 'Add expense: Coffee ₹180' },
+  { icon: TrendingUp, text: 'What did I spend last week?' },
+  { icon: Target, text: 'How can I reduce dining costs?' },
+];
+
+export function ChatContainer() {
+  const threadId = useId();
+  const messageEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [messages, setMessages] = useState<StreamMessage[]>([]);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const cancelRef = useRef<(() => void) | null>(null);
+
+  // Scroll to bottom whenever messages change
+  useEffect(() => {
+    messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const addMessage = (msg: Omit<StreamMessage, 'id'>) => {
+    const id = `${Date.now()}-${Math.random()}`;
+    setMessages((prev) => [...prev, { ...msg, id } as StreamMessage]);
+  };
+
+  const handleClearHistory = async () => {
+    await chatApi.deleteHistory(threadId);
+    setMessages([]);
+  };
+
+  const handleSubmit = (userInput: string) => {
+    if (!userInput.trim() || isStreaming) return;
+    addMessage({ type: 'user', payload: { text: userInput } });
+    setIsStreaming(true);
+
+    // Track the current AI message id so we can append to it
+    let currentAiId: string | null = null;
+
+    cancelRef.current = streamChat(userInput, threadId, {
+      onMessage: (msg) => {
+        if (msg.type === 'ai') {
+          if (currentAiId === null) {
+            // First chunk — create a new AI message
+            const id = `${Date.now()}-${Math.random()}`;
+            currentAiId = id;
+            setMessages((prev) => [
+              ...prev,
+              {
+                id,
+                type: 'ai',
+                payload: { text: msg.payload.text },
+              } as StreamMessage,
+            ]);
+          } else {
+            // Subsequent chunks — append text to the existing AI message
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === currentAiId && m.type === 'ai'
+                  ? {
+                      ...m,
+                      payload: { text: m.payload.text + msg.payload.text },
+                    }
+                  : m,
+              ),
+            );
+          }
+        } else {
+          // Non-AI messages (tool calls, tool results, errors) always add new entries
+          // Also reset currentAiId so next AI chunk starts fresh
+          currentAiId = null;
+          addMessage(msg as Omit<StreamMessage, 'id'>);
+        }
+      },
+      onError: (err) => {
+        console.error('Stream error:', err);
+        addMessage({
+          type: 'ai',
+          payload: { text: 'Sorry, something went wrong. Please try again.' },
+        });
+        setIsStreaming(false);
+      },
+      onDone: () => setIsStreaming(false),
+    });
+  };
+
+  return (
+    <TooltipProvider>
+      {/* 
+        KEY FIX: Use h-full instead of h-screen so it fills the parent <main> 
+        which already has h-screen. Then overflow-hidden on this container 
+        ensures the inner scroll area is properly constrained.
+      */}
+      <div className='flex flex-col h-full overflow-hidden bg-[--background]'>
+        {/* Header — fixed height, never shrinks */}
+        <div className='shrink-0 border-b border-[#1c1c22] bg-[#0a0a0c] px-6 py-4'>
+          <div className='max-w-3xl mx-auto flex items-center justify-between'>
+            <div className='flex items-center gap-3'>
+              <div className='w-9 h-9 rounded-xl bg-[--primary] flex items-center justify-center shrink-0'>
+                <Zap
+                  className='w-4 h-4 text-[--primary-foreground]'
+                  strokeWidth={2.5}
+                />
+              </div>
+              <div>
+                <h1 className='font-display text-base font-bold text-[--foreground]'>
+                  Finance Assistant
+                </h1>
+                <p className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                  AI-Powered Insights
+                </p>
+              </div>
+            </div>
+
+            <div className='flex items-center gap-2'>
+              {messages.length > 0 && !isStreaming && (
+                <AlertDialog>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant='ghost'
+                          size='icon'
+                          className='h-8 w-8 text-[--foreground-secondary] hover:text-red-400 hover:bg-red-950/20'
+                        >
+                          <Trash2 className='h-4 w-4' />
+                        </Button>
+                      </AlertDialogTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent>Clear conversation</TooltipContent>
+                  </Tooltip>
+                  <AlertDialogContent className='bg-[#111114] border-[#1c1c22]'>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle className='text-[--foreground]'>
+                        Clear conversation?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription className='text-[--foreground-secondary]'>
+                        This will permanently delete all messages in this
+                        thread. This action cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel className='bg-[#1a1a1f] border-[#1c1c22] text-[--foreground-secondary] hover:bg-[#222226] hover:text-[--foreground]'>
+                        Cancel
+                      </AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={handleClearHistory}
+                        className='bg-red-600 text-white hover:bg-red-700'
+                      >
+                        Clear
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
+
+              {isStreaming ? (
+                <Badge
+                  variant='outline'
+                  className='gap-1.5 border-[--primary]/20 bg-[--primary]/10 text-[--primary] font-mono text-[10px] px-3 py-1'
+                >
+                  <span className='w-1.5 h-1.5 rounded-full bg-[--primary] animate-bounce [animation-delay:0ms]' />
+                  <span className='w-1.5 h-1.5 rounded-full bg-[--primary] animate-bounce [animation-delay:150ms]' />
+                  <span className='w-1.5 h-1.5 rounded-full bg-[--primary] animate-bounce [animation-delay:300ms]' />
+                  Thinking
+                </Badge>
+              ) : (
+                <Badge
+                  variant='outline'
+                  className='border-green-900/40 bg-[#0f1a10] text-green-400 font-mono text-[10px] px-3 py-1'
+                >
+                  ● Active
+                </Badge>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* 
+          Messages area — THIS is the scrollable region.
+          
+          The fix: replace <ScrollArea> (shadcn) with a plain <div> using:
+            - flex-1        → takes all remaining vertical space
+            - min-h-0       → CRITICAL: without this, flex children don't shrink 
+                              below their content size, breaking scroll in flex containers
+            - overflow-y-auto → native browser scroll, reliable and smooth
+        */}
+        <div
+          ref={scrollContainerRef}
+          className='flex-1 min-h-0 overflow-y-auto'
+        >
+          <div className='max-w-3xl mx-auto'>
+            {messages.length === 0 ? (
+              <div className='flex flex-col items-center justify-center min-h-[70vh] px-6 py-12'>
+                <div className='w-16 h-16 rounded-2xl bg-[--primary] flex items-center justify-center mb-6'>
+                  <Zap
+                    className='w-8 h-8 text-[--primary-foreground]'
+                    strokeWidth={2}
+                  />
+                </div>
+                <h2 className='font-display text-3xl font-bold text-[--foreground] mb-2 text-center'>
+                  What can I help with?
+                </h2>
+                <p className='text-sm text-[--foreground-secondary] text-center max-w-sm mb-10'>
+                  Ask about spending, add expenses, get charts, or get
+                  personalized financial advice.
+                </p>
+                <div className='grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-lg'>
+                  {SUGGESTIONS.map(({ icon: Icon, text }) => (
+                    <Button
+                      key={text}
+                      variant='outline'
+                      onClick={() => handleSubmit(text)}
+                      className='justify-start gap-3 h-auto px-3 py-3 rounded-xl bg-[#111114] border-[#1c1c22] text-[--foreground-secondary] hover:text-[--foreground] hover:border-[--primary]/30 hover:bg-[#161619] transition-all duration-150'
+                    >
+                      <Icon className='w-4 h-4 text-[--primary] shrink-0' />
+                      <span className='text-sm text-left'>{text}</span>
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className='divide-y divide-[#1c1c22]'>
+                {messages.map((msg) => (
+                  <ChatMessage key={msg.id} message={msg} />
+                ))}
+                {isStreaming && (
+                  <div className='flex gap-4 py-5 px-6'>
+                    <div className='shrink-0 w-7 h-7 rounded-lg bg-[--primary] flex items-center justify-center'>
+                      <span className='text-xs font-mono font-bold text-[--primary-foreground]'>
+                        AI
+                      </span>
+                    </div>
+                    <div className='flex items-center gap-1.5 pt-2'>
+                      <span className='w-1.5 h-1.5 rounded-full bg-[--primary] animate-bounce [animation-delay:0ms]' />
+                      <span className='w-1.5 h-1.5 rounded-full bg-[--primary] animate-bounce [animation-delay:150ms]' />
+                      <span className='w-1.5 h-1.5 rounded-full bg-[--primary] animate-bounce [animation-delay:300ms]' />
+                    </div>
+                  </div>
+                )}
+                {/* Scroll anchor */}
+                <div ref={messageEndRef} className='h-4' />
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Footer — fixed height, never shrinks */}
+        <Separator className='bg-[#1c1c22] shrink-0' />
+        <ChatInput onSubmit={handleSubmit} disabled={isStreaming} />
+      </div>
+    </TooltipProvider>
+  );
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\components\ChatInput.tsx
+==============================
+
+import { useState, useRef, useEffect, type KeyboardEvent } from 'react';
+import { ArrowUp, Mic } from 'lucide-react';
+import { Textarea } from '@/components/ui/textarea';
+import { Button } from '@/components/ui/button';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+
+interface ChatInputProps {
+  onSubmit: (value: string) => void;
+  disabled?: boolean;
+}
+
+export function ChatInput({ onSubmit, disabled }: ChatInputProps) {
+  const [value, setValue] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-resize textarea height
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, [value]);
+
+  const handleSubmit = () => {
+    const trimmed = value.trim();
+    if (!trimmed || disabled) return;
+    onSubmit(trimmed);
+    setValue('');
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+  };
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  };
+
+  const canSubmit = value.trim().length > 0 && !disabled;
+
+  return (
+    <TooltipProvider>
+      <div className='shrink-0 border-t border-[#1c1c22] bg-[#0a0a0c] px-4 py-4'>
+        <div className='max-w-3xl mx-auto'>
+          <div
+            className={[
+              'flex items-end gap-2 rounded-2xl border bg-[#111114] transition-all duration-200',
+              disabled
+                ? 'border-[#1c1c22] opacity-60'
+                : 'border-[#1c1c22] focus-within:border-[--primary]/40 focus-within:ring-1 focus-within:ring-[--primary]/10',
+            ].join(' ')}
+          >
+            <Textarea
+              ref={textareaRef}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={disabled}
+              placeholder={
+                disabled
+                  ? 'AI is thinking…'
+                  : 'Ask about your finances, add expenses, get insights…'
+              }
+              rows={1}
+              className='
+                flex-1 resize-none border-0 bg-transparent shadow-none
+                text-[--foreground] placeholder:text-[--foreground-secondary]/50
+                text-sm px-4 py-3.5 min-h-[52px] max-h-[200px]
+                focus-visible:ring-0 focus-visible:ring-offset-0
+                leading-relaxed disabled:cursor-not-allowed
+              '
+            />
+
+            <div className='flex items-center gap-1 p-2.5'>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    size='icon'
+                    className='h-8 w-8 hidden sm:inline-flex text-[--foreground-secondary]/40 hover:text-[--foreground-secondary] hover:bg-[#1a1a1f]'
+                  >
+                    <Mic className='h-4 w-4' />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side='top'>
+                  <p>Voice input (coming soon)</p>
+                </TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type='button'
+                    size='icon'
+                    disabled={!canSubmit}
+                    onClick={handleSubmit}
+                    className={[
+                      'h-8 w-8 shrink-0 rounded-lg transition-all duration-150',
+                      canSubmit
+                        ? 'bg-[--primary] text-[--primary-foreground] hover:bg-[--primary]/90 shadow-sm'
+                        : 'bg-[#1a1a1f] text-[--foreground-secondary]/30',
+                    ].join(' ')}
+                  >
+                    <ArrowUp className='h-4 w-4' strokeWidth={2.5} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side='top'>
+                  <p>Send (Enter)</p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          </div>
+
+          <p className='text-center text-[10px] font-mono text-[--foreground-secondary]/30 mt-2 tracking-wide'>
+            <kbd className='font-sans'>Enter</kbd> to send ·{' '}
+            <kbd className='font-sans'>Shift+Enter</kbd> for new line
+          </p>
+        </div>
+      </div>
+    </TooltipProvider>
+  );
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\components\ChatMessage.tsx
+==============================
+
+import { useState } from 'react';
+import {
+  User,
+  Zap,
+  AlertTriangle,
+  Wrench,
+  ChevronDown,
+  ChevronRight,
+} from 'lucide-react';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  Cell,
+  PieChart,
+  Pie,
+  LineChart,
+  Line,
+} from 'recharts';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
+import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
+import type { StreamMessage } from '@/types/StreamMessage.types';
+
+interface ChatMessageProps {
+  message: StreamMessage;
+}
+
+// ─── Category colors ──────────────────────────────────────────────────────────
+const CATEGORY_COLORS: Record<string, string> = {
+  DINING: '#ec4899',
+  SHOPPING: '#a855f7',
+  TRANSPORT: '#06b6d4',
+  ENTERTAINMENT: '#f59e0b',
+  UTILITIES: '#22c55e',
+  HEALTH: '#f43f5e',
+  EDUCATION: '#3b82f6',
+  OTHER: '#6b7280',
+};
+const CHART_PALETTE = [
+  '#d4ff4f',
+  '#a855f7',
+  '#06b6d4',
+  '#f59e0b',
+  '#22c55e',
+  '#f43f5e',
+  '#3b82f6',
+  '#6b7280',
+];
+
+// ─── Chart detection from tool result ────────────────────────────────────────
+type ChartShape =
+  | { kind: 'bar'; data: { label: string; amount: number; color?: string }[] }
+  | { kind: 'pie'; data: { name: string; value: number; color: string }[] }
+  | { kind: 'line'; data: { month: string; amount: number }[] }
+  | null;
+
+function detectChart(result: Record<string, unknown>): ChartShape {
+  // --- byCategory array (stats result) → Bar + Pie
+  if (Array.isArray(result.byCategory) && result.byCategory.length > 0) {
+    const cats = result.byCategory as Array<{
+      category: string;
+      amount: number;
+      count?: number;
+    }>;
+    return {
+      kind: 'bar',
+      data: cats.map((c) => ({
+        label: c.category,
+        amount: Math.round(c.amount),
+        color: CATEGORY_COLORS[c.category] ?? '#d4ff4f',
+      })),
+    };
+  }
+
+  // --- expenses array → bar chart by date or category
+  if (Array.isArray(result.expenses) && result.expenses.length > 0) {
+    const exps = result.expenses as Array<{
+      date: string;
+      amount: number;
+      category?: string;
+    }>;
+
+    // Group by month for line chart if spanning > 1 month
+    const monthSet = new Set(exps.map((e) => e.date.slice(0, 7)));
+    if (monthSet.size > 1) {
+      const monthMap: Record<string, number> = {};
+      for (const e of exps) {
+        const key = e.date.slice(0, 7);
+        monthMap[key] = (monthMap[key] ?? 0) + e.amount;
+      }
+      const lineData = Object.entries(monthMap)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([month, amount]) => ({
+          month: new Date(month + '-01').toLocaleString('en', {
+            month: 'short',
+          }),
+          amount: Math.round(amount),
+        }));
+      return { kind: 'line', data: lineData };
+    }
+
+    // Single month → bar chart by date
+    const dateMap: Record<string, number> = {};
+    for (const e of exps) {
+      const key = e.date.slice(5); // MM-DD
+      dateMap[key] = (dateMap[key] ?? 0) + e.amount;
+    }
+    return {
+      kind: 'bar',
+      data: Object.entries(dateMap)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([label, amount]) => ({ label, amount, color: '#d4ff4f' })),
+    };
+  }
+
+  // --- data array with amount/total + label/category/month
+  if (Array.isArray(result.data) && result.data.length > 0) {
+    const rows = result.data as Array<Record<string, unknown>>;
+    const labelKey = ['label', 'category', 'month', 'date', 'name'].find(
+      (k) => k in rows[0],
+    );
+    const valueKey = ['amount', 'total', 'value', 'count'].find(
+      (k) => k in rows[0],
+    );
+    if (labelKey && valueKey) {
+      return {
+        kind: 'bar',
+        data: rows.map((r, i) => ({
+          label: String(r[labelKey]),
+          amount: Math.round(Number(r[valueKey])),
+          color:
+            CATEGORY_COLORS[String(r[labelKey])] ??
+            CHART_PALETTE[i % CHART_PALETTE.length],
+        })),
+      };
+    }
+  }
+
+  return null;
+}
+
+// ─── Custom tooltip ───────────────────────────────────────────────────────────
+function ChartTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: Array<{ value: number }>;
+  label?: string;
+}) {
+  if (!active || !payload?.length) return null;
+  return (
+    <Card className='border-[#1c1c22] bg-[#111114] shadow-xl p-0'>
+      <CardContent className='px-4 py-3'>
+        <p className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest mb-1'>
+          {label}
+        </p>
+        <p className='text-base font-bold text-[--foreground]'>
+          Rs.{Number(payload[0].value).toLocaleString('en-IN')}
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Rendered chart component ─────────────────────────────────────────────────
+function RenderedChart({ chart }: { chart: NonNullable<ChartShape> }) {
+  if (chart.kind === 'bar') {
+    const maxAmt = Math.max(...chart.data.map((d) => d.amount));
+    return (
+      <div className='mt-3 space-y-2'>
+        <p className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+          Spending Chart
+        </p>
+        <ResponsiveContainer width='100%' height={200}>
+          <BarChart
+            data={chart.data}
+            margin={{ top: 4, right: 4, left: -16, bottom: 0 }}
+            barCategoryGap='28%'
+          >
+            <CartesianGrid
+              strokeDasharray='3 3'
+              stroke='#1c1c22'
+              vertical={false}
+            />
+            <XAxis
+              dataKey='label'
+              stroke='#3a3a46'
+              tick={{ fontSize: 10, fill: '#5c5c6e', fontFamily: 'monospace' }}
+              tickLine={false}
+              axisLine={false}
+            />
+            <YAxis
+              stroke='#3a3a46'
+              tick={{ fontSize: 10, fill: '#5c5c6e', fontFamily: 'monospace' }}
+              tickLine={false}
+              axisLine={false}
+              tickFormatter={(v) =>
+                v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)
+              }
+            />
+            <Tooltip
+              content={<ChartTooltip />}
+              cursor={{ fill: '#ffffff05' }}
+            />
+            <Bar dataKey='amount' radius={[6, 6, 0, 0]} maxBarSize={48}>
+              {chart.data.map((entry, i) => (
+                <Cell
+                  key={i}
+                  fill={entry.color ?? '#d4ff4f'}
+                  opacity={
+                    entry.amount === maxAmt
+                      ? 1
+                      : 0.5 + (entry.amount / maxAmt) * 0.4
+                  }
+                />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+        <div className='flex flex-wrap gap-1.5 pt-1'>
+          {chart.data.map((d) => (
+            <Badge
+              key={d.label}
+              variant='outline'
+              className='border-[#1c1c22] bg-[#111114] text-[--foreground-secondary] font-mono text-[10px] gap-1.5'
+            >
+              <span
+                className='w-1.5 h-1.5 rounded-full shrink-0'
+                style={{ backgroundColor: d.color ?? '#d4ff4f' }}
+              />
+              {d.label}
+            </Badge>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (chart.kind === 'pie') {
+    return (
+      <div className='mt-3 space-y-2'>
+        <p className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+          Category Breakdown
+        </p>
+        <ResponsiveContainer width='100%' height={200}>
+          <PieChart>
+            <Pie
+              data={chart.data}
+              cx='50%'
+              cy='50%'
+              outerRadius={80}
+              dataKey='value'
+              label={({ name, value }) => `${name} Rs.${value}`}
+              labelLine={{ stroke: '#2a2a32' }}
+            >
+              {chart.data.map((entry, i) => (
+                <Cell key={i} fill={entry.color} />
+              ))}
+            </Pie>
+            <Tooltip
+              contentStyle={{
+                backgroundColor: '#111114',
+                border: '1px solid #1c1c22',
+                borderRadius: '8px',
+                fontSize: '12px',
+              }}
+              itemStyle={{ color: '#f0eee8' }}
+            />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  if (chart.kind === 'line') {
+    return (
+      <div className='mt-3 space-y-2'>
+        <p className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+          Monthly Trend
+        </p>
+        <ResponsiveContainer width='100%' height={200}>
+          <LineChart
+            data={chart.data}
+            margin={{ top: 4, right: 4, left: -16, bottom: 0 }}
+          >
+            <CartesianGrid strokeDasharray='3 3' stroke='#1c1c22' />
+            <XAxis dataKey='month' stroke='#5c5c6e' tick={{ fontSize: 10 }} />
+            <YAxis stroke='#5c5c6e' tick={{ fontSize: 10 }} />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: '#111114',
+                border: '1px solid #1c1c22',
+                borderRadius: '8px',
+                fontSize: '12px',
+              }}
+              itemStyle={{ color: '#d4ff4f' }}
+            />
+            <Line
+              type='monotone'
+              dataKey='amount'
+              stroke='#d4ff4f'
+              strokeWidth={2}
+              dot={{ fill: '#d4ff4f', r: 3 }}
+              activeDot={{ r: 5 }}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// ─── Tool call block (collapsible, amber) ─────────────────────────────────────
+function ToolCallBlock({
+  name,
+  args,
+}: {
+  name: string;
+  args?: Record<string, unknown>;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <div className='rounded-lg border border-[#1c1c22] bg-[#0d0d10] overflow-hidden'>
+        <CollapsibleTrigger asChild>
+          <Button
+            variant='ghost'
+            className='w-full flex items-center justify-start gap-2.5 px-3 py-2 h-auto rounded-none hover:bg-[#111114] text-left'
+          >
+            <Wrench className='h-3 w-3 text-amber-400 shrink-0' />
+            <Badge
+              variant='outline'
+              className='border-amber-900/40 bg-amber-950/20 text-amber-400 font-mono text-[10px] px-1.5 py-0'
+            >
+              tool
+            </Badge>
+            <span className='text-xs font-mono text-amber-400 flex-1 truncate'>
+              {name}
+            </span>
+            {open ? (
+              <ChevronDown className='h-3 w-3 text-[--foreground-secondary] shrink-0' />
+            ) : (
+              <ChevronRight className='h-3 w-3 text-[--foreground-secondary] shrink-0' />
+            )}
+          </Button>
+        </CollapsibleTrigger>
+        {args && (
+          <CollapsibleContent>
+            <ScrollArea className='max-h-48'>
+              <pre className='px-3 pb-3 pt-1 text-[11px] font-mono text-[--foreground-secondary] leading-relaxed'>
+                {JSON.stringify(args, null, 2)}
+              </pre>
+              <ScrollBar orientation='horizontal' />
+            </ScrollArea>
+          </CollapsibleContent>
+        )}
+      </div>
+    </Collapsible>
+  );
+}
+
+// ─── Tool result block — auto-renders charts when detected ────────────────────
+function ToolResultBlock({
+  name,
+  result,
+}: {
+  name: string;
+  result: Record<string, unknown>;
+}) {
+  const [open, setOpen] = useState(false);
+  const chart = detectChart(result);
+
+  return (
+    <div className='space-y-2'>
+      <Collapsible open={open} onOpenChange={setOpen}>
+        <div className='rounded-lg border border-green-900/30 bg-green-950/10 overflow-hidden'>
+          <CollapsibleTrigger asChild>
+            <Button
+              variant='ghost'
+              className='w-full flex items-center justify-start gap-2.5 px-3 py-2 h-auto rounded-none hover:bg-green-950/20 text-left'
+            >
+              <span className='w-1.5 h-1.5 rounded-full bg-green-400 shrink-0' />
+              <Badge
+                variant='outline'
+                className='border-green-900/40 bg-green-950/20 text-green-400 font-mono text-[10px] px-1.5 py-0'
+              >
+                result
+              </Badge>
+              <span className='text-xs font-mono text-green-400 flex-1 truncate'>
+                {name}
+              </span>
+              {open ? (
+                <ChevronDown className='h-3 w-3 text-green-400/50 shrink-0' />
+              ) : (
+                <ChevronRight className='h-3 w-3 text-green-400/50 shrink-0' />
+              )}
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <ScrollArea className='max-h-48'>
+              <pre className='px-3 pb-3 pt-1 text-[11px] font-mono text-green-400/70 leading-relaxed'>
+                {JSON.stringify(result, null, 2)}
+              </pre>
+              <ScrollBar orientation='horizontal' />
+            </ScrollArea>
+          </CollapsibleContent>
+        </div>
+      </Collapsible>
+
+      {/* Auto-render chart if data is chart-compatible */}
+      {chart && (
+        <div className='rounded-lg border border-[#1c1c22] bg-[#0d0d10] px-4 pb-4 pt-2'>
+          <RenderedChart chart={chart} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Inline markdown renderer ─────────────────────────────────────────────────
+function renderInline(text: string): React.ReactNode {
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return (
+        <strong key={i} className='font-semibold text-[--foreground]'>
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return (
+        <code
+          key={i}
+          className='px-1.5 py-0.5 rounded bg-[#1a1a1f] text-[--primary] text-[11px] font-mono'
+        >
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    return part;
+  });
+}
+
+// ─── AI text content with light markdown ─────────────────────────────────────
+function AiTextContent({ text }: { text: string }) {
+  const lines = text.split('\n');
+
+  return (
+    <div className='text-sm text-[--foreground] leading-relaxed space-y-1.5'>
+      {lines.map((line, i) => {
+        if (line.startsWith('### ')) {
+          return (
+            <h3
+              key={i}
+              className='font-semibold text-[--foreground] text-sm mt-3 mb-0.5'
+            >
+              {line.slice(4)}
+            </h3>
+          );
+        }
+        if (line.startsWith('## ')) {
+          return (
+            <h2
+              key={i}
+              className='font-bold text-[--foreground] text-base mt-4 mb-1'
+            >
+              {line.slice(3)}
+            </h2>
+          );
+        }
+        if (line.startsWith('- ') || line.startsWith('• ')) {
+          return (
+            <div key={i} className='flex gap-2 items-start'>
+              <span className='text-[--primary] mt-[5px] text-[8px] shrink-0'>
+                ◆
+              </span>
+              <span>{renderInline(line.slice(2))}</span>
+            </div>
+          );
+        }
+        if (line.trim() === '') return <div key={i} className='h-1' />;
+        return <p key={i}>{renderInline(line)}</p>;
+      })}
+    </div>
+  );
+}
+
+// ─── Main component ────────────────────────────────────────────────────────────
+export function ChatMessage({ message }: ChatMessageProps) {
+  if (message.type === 'user') {
+    return (
+      <div className='flex gap-4 py-5 px-6 justify-end'>
+        <div className='max-w-[75%]'>
+          <div className='bg-[--primary] rounded-2xl rounded-tr-sm px-4 py-3 shadow-sm'>
+            <p className='text-sm text-[--primary-foreground] leading-relaxed'>
+              {message.payload.text}
+            </p>
+          </div>
+        </div>
+        <div className='shrink-0 w-7 h-7 rounded-lg bg-[#1c1c22] border border-[#2a2a32] flex items-center justify-center mt-0.5'>
+          <User className='h-3.5 w-3.5 text-[--foreground-secondary]' />
+        </div>
+      </div>
+    );
+  }
+
+  if (message.type === 'toolCall:start') {
+    return (
+      <div className='flex gap-4 py-3 px-6'>
+        <div className='shrink-0 w-7 h-7 rounded-lg bg-amber-950/20 border border-amber-900/20 flex items-center justify-center mt-0.5'>
+          <Wrench className='h-3.5 w-3.5 text-amber-400' />
+        </div>
+        <div className='flex-1 pt-0.5'>
+          <ToolCallBlock
+            name={message.payload.name}
+            args={message.payload.args}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (message.type === 'tool') {
+    return (
+      <div className='flex gap-4 py-3 px-6'>
+        <div className='shrink-0 w-7 h-7 rounded-lg bg-green-950/20 border border-green-900/20 flex items-center justify-center mt-0.5'>
+          <Zap className='h-3.5 w-3.5 text-green-400' />
+        </div>
+        <div className='flex-1 pt-0.5'>
+          <ToolResultBlock
+            name={message.payload.name}
+            result={message.payload.result}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (message.type === 'error') {
+    return (
+      <div className='flex gap-4 py-5 px-6'>
+        <div className='shrink-0 w-7 h-7 rounded-lg bg-red-950/30 border border-red-900/30 flex items-center justify-center mt-0.5'>
+          <AlertTriangle className='h-3.5 w-3.5 text-red-400' />
+        </div>
+        <div className='flex-1 pt-1'>
+          <div className='bg-red-950/20 border border-red-900/20 rounded-xl px-4 py-3'>
+            <p className='text-sm text-red-400 leading-relaxed'>
+              {message.payload.text}
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (message.type === 'ai') {
+    return (
+      <div className='flex gap-4 py-5 px-6'>
+        <div className='shrink-0 w-7 h-7 rounded-lg bg-[--primary] flex items-center justify-center mt-0.5'>
+          <span className='text-[10px] font-mono font-bold text-[--primary-foreground]'>
+            AI
+          </span>
+        </div>
+        <div className='flex-1 pt-0.5 min-w-0'>
+          <AiTextContent text={message.payload.text} />
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\components\ExpenseChart.tsx
+==============================
+
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  Cell,
+  type TooltipProps,
+} from 'recharts';
+import { Card, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
+
+interface ChartDataItem {
+  amount: number;
+  [key: string]: string | number;
+}
+
+interface ExpenseChartProps {
+  chartData: ChartDataItem[];
+  labelKey: string;
+}
+
+const CATEGORY_COLORS: Record<string, string> = {
+  DINING: '#ec4899',
+  SHOPPING: '#a855f7',
+  TRANSPORT: '#06b6d4',
+  ENTERTAINMENT: '#f59e0b',
+  UTILITIES: '#22c55e',
+  HEALTH: '#f43f5e',
+  EDUCATION: '#3b82f6',
+  OTHER: '#6b7280',
+};
+
+const DEFAULT_BAR_COLOR = '#d4ff4f';
+
+function CustomTooltip({
+  active,
+  payload,
+  label,
+}: TooltipProps<number, string>) {
+  if (!active || !payload?.length) return null;
+
+  return (
+    <Card className='border-[#1c1c22] bg-[#111114] shadow-xl p-0'>
+      <CardContent className='px-4 py-3'>
+        <p className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest mb-1'>
+          {label}
+        </p>
+        <p className='text-base font-bold text-[--foreground]'>
+          Rs.{Number(payload[0].value).toLocaleString('en-IN')}
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+export function ExpenseChart({ chartData, labelKey }: ExpenseChartProps) {
+  if (!chartData || chartData.length === 0) {
+    return (
+      <div className='flex flex-col items-center justify-center h-40 gap-2'>
+        <p className='text-sm text-[--foreground-secondary]'>
+          No data available
+        </p>
+        <Badge
+          variant='outline'
+          className='border-[#1c1c22] text-[--foreground-secondary] font-mono text-[10px]'
+        >
+          Add expenses to see charts
+        </Badge>
+      </div>
+    );
+  }
+
+  const isCategoryChart = labelKey === 'category';
+  const maxAmount = Math.max(...chartData.map((d) => d.amount));
+
+  return (
+    <div className='space-y-3'>
+      <ResponsiveContainer width='100%' height={220}>
+        <BarChart
+          data={chartData}
+          margin={{ top: 4, right: 4, left: -16, bottom: 0 }}
+          barCategoryGap='28%'
+        >
+          <CartesianGrid
+            strokeDasharray='3 3'
+            stroke='#1c1c22'
+            vertical={false}
+          />
+          <XAxis
+            dataKey={labelKey}
+            stroke='#3a3a46'
+            tick={{ fontSize: 11, fill: '#5c5c6e', fontFamily: 'monospace' }}
+            tickLine={false}
+            axisLine={false}
+          />
+          <YAxis
+            stroke='#3a3a46'
+            tick={{ fontSize: 11, fill: '#5c5c6e', fontFamily: 'monospace' }}
+            tickLine={false}
+            axisLine={false}
+            tickFormatter={(v) =>
+              v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)
+            }
+          />
+          <Tooltip content={<CustomTooltip />} cursor={{ fill: '#ffffff05' }} />
+          <Bar dataKey='amount' radius={[6, 6, 0, 0]} maxBarSize={48}>
+            {chartData.map((entry, index) => {
+              const label = String(entry[labelKey]);
+              const color = isCategoryChart
+                ? (CATEGORY_COLORS[label] ?? DEFAULT_BAR_COLOR)
+                : DEFAULT_BAR_COLOR;
+              const opacity =
+                entry.amount === maxAmount
+                  ? 1
+                  : 0.5 + (entry.amount / maxAmount) * 0.4;
+              return (
+                <Cell key={`cell-${index}`} fill={color} opacity={opacity} />
+              );
+            })}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+
+      {/* Legend for category charts */}
+      {isCategoryChart && chartData.length > 0 && (
+        <>
+          <Separator className='bg-[#1c1c22]' />
+          <div className='flex flex-wrap gap-2 pt-1'>
+            {chartData.map((entry) => {
+              const label = String(entry[labelKey]);
+              const color = CATEGORY_COLORS[label] ?? DEFAULT_BAR_COLOR;
+              return (
+                <Badge
+                  key={label}
+                  variant='outline'
+                  className='border-[#1c1c22] bg-[#111114] text-[--foreground-secondary] font-mono text-[10px] gap-1.5'
+                >
+                  <span
+                    className='w-1.5 h-1.5 rounded-full shrink-0'
+                    style={{ backgroundColor: color }}
+                  />
+                  {label}
+                </Badge>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\components\ProtectedRoute.tsx
+==============================
+
+import { Navigate, Outlet } from 'react-router-dom';
+import { useAuthStore } from '@/store/auth.store';
+
+export function ProtectedRoute() {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const isLoading = useAuthStore((s) => s.isLoading);
+
+  if (isLoading) {
+    return (
+      <div className='flex items-center justify-center h-screen bg-[#09090b]'>
+        <div className='flex flex-col items-center gap-3'>
+          <div className='w-8 h-8 border-2 border-[--primary] border-t-transparent rounded-full animate-spin' />
+          <p className='text-xs font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+            Loading…
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) return <Navigate to='/login' replace />;
+  return <Outlet />;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\components\Sidebar.tsx
+==============================
+
+import { NavLink, useLocation } from 'react-router-dom';
+import {
+  LayoutDashboard,
+  MessageSquare,
+  PieChart,
+  Settings,
+  TrendingUp,
+  Zap,
+  LogOut,
+  User,
+} from 'lucide-react';
+import { useAuthStore } from '@/store/auth.store';
+import { useSignOut } from '@/services/auth.service';
+import { Button } from '@/components/ui/button';
+import { Separator } from '@/components/ui/separator';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import { Badge } from '@/components/ui/badge';
+
+const navItems = [
+  { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/chat', label: 'AI Chat', icon: MessageSquare },
+  { href: '/expenses', label: 'Expenses', icon: PieChart },
+  { href: '/insights', label: 'Insights', icon: TrendingUp },
+  { href: '/settings', label: 'Settings', icon: Settings },
+];
+
+export function Sidebar() {
+  const location = useLocation();
+  const user = useAuthStore((s) => s.user);
+  const { mutate: signOut, isPending } = useSignOut();
+
+  return (
+    <TooltipProvider>
+      <aside className='w-64 flex flex-col h-screen bg-[#0a0a0c] border-r border-[#1c1c22]'>
+        {/* Logo */}
+        <div className='p-6'>
+          <div className='flex items-center gap-3'>
+            <div className='w-10 h-10 rounded-xl bg-[--primary] flex items-center justify-center shadow-lg shrink-0'>
+              <Zap
+                className='w-5 h-5 text-[--primary-foreground]'
+                strokeWidth={2.5}
+              />
+            </div>
+            <div>
+              <h1 className='font-display text-lg font-bold text-[--foreground] tracking-tight'>
+                ExpenseAI
+              </h1>
+              <p className='text-[10px] text-[--foreground-secondary] font-mono uppercase tracking-widest'>
+                Smart Tracking
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <Separator className='bg-[#1c1c22]' />
+
+        {/* Nav */}
+        <nav className='flex-1 px-3 py-5 space-y-0.5'>
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const isActive =
+              item.href === '/'
+                ? location.pathname === '/'
+                : location.pathname.startsWith(item.href);
+
+            return (
+              <Tooltip key={item.href}>
+                <TooltipTrigger asChild>
+                  <NavLink to={item.href} tabIndex={-1}>
+                    <Button
+                      variant='ghost'
+                      className={[
+                        'w-full justify-start gap-3 px-3 py-2.5 h-auto text-sm font-medium rounded-lg transition-all duration-150',
+                        isActive
+                          ? 'bg-[--primary] text-[--primary-foreground] hover:bg-[--primary]/90'
+                          : 'text-[--foreground-secondary] hover:text-[--foreground] hover:bg-[#161619]',
+                      ].join(' ')}
+                    >
+                      <Icon
+                        className='w-4 h-4 shrink-0'
+                        strokeWidth={isActive ? 2.5 : 2}
+                      />
+                      <span>{item.label}</span>
+                      {isActive && (
+                        <span className='ml-auto w-1.5 h-1.5 rounded-full bg-[--primary-foreground] opacity-70' />
+                      )}
+                    </Button>
+                  </NavLink>
+                </TooltipTrigger>
+                <TooltipContent side='right' className='hidden'>
+                  {item.label}
+                </TooltipContent>
+              </Tooltip>
+            );
+          })}
+        </nav>
+
+        <Separator className='bg-[#1c1c22]' />
+
+        {/* User + Sign out */}
+        <div className='p-4 space-y-2'>
+          {user && (
+            <div className='px-3 py-3 rounded-lg bg-[#111114] flex items-center gap-3'>
+              <Avatar className='w-7 h-7 rounded-lg shrink-0'>
+                <AvatarFallback className='rounded-lg bg-[--primary]/20 border border-[--primary]/30 text-[--primary] text-[10px] font-bold'>
+                  {user.name.charAt(0).toUpperCase()}
+                </AvatarFallback>
+              </Avatar>
+              <div className='min-w-0 flex-1'>
+                <p className='text-xs font-medium text-[--foreground] truncate'>
+                  {user.name}
+                </p>
+                <p className='text-[10px] text-[--foreground-secondary] truncate font-mono'>
+                  {user.email}
+                </p>
+              </div>
+              <Badge
+                variant='outline'
+                className='border-green-900/40 bg-[#0f1a10] text-green-400 text-[9px] font-mono px-1.5 shrink-0'
+              >
+                {user.role}
+              </Badge>
+            </div>
+          )}
+
+          <Button
+            variant='ghost'
+            onClick={() => signOut()}
+            disabled={isPending}
+            className='w-full justify-start gap-3 px-3 py-2.5 h-auto text-sm text-[--foreground-secondary] hover:text-red-400 hover:bg-red-950/20 transition-all duration-150'
+          >
+            <LogOut className='w-4 h-4 shrink-0' />
+            <span>{isPending ? 'Signing out…' : 'Sign Out'}</span>
+          </Button>
+        </div>
+      </aside>
+    </TooltipProvider>
+  );
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\config\api.ts
+==============================
+
+// Central API client — all backend calls go through here
+
+const BASE_URL = import.meta.env.VITE_API_URL ?? '/api';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface Expense {
+  id: number;
+  title: string;
+  amount: number;
+  category: string;
+  date: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExpenseStats {
+  total: number;
+  count: number;
+  average: number;
+  byCategory: Array<{ category: string; amount: number; count: number }>;
+}
+
+export interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  message?: string;
+}
+
+export interface ExpenseFilters {
+  from?: string;
+  to?: string;
+  category?: string;
+  search?: string;
+}
+
+export interface CreateExpenseInput {
+  title: string;
+  amount: number;
+  category?: string;
+  date?: string;
+}
+
+export interface UpdateExpenseInput {
+  title?: string;
+  amount?: number;
+  category?: string;
+  date?: string;
+}
+
+// ─── HTTP helpers ─────────────────────────────────────────────────────────────
+
+async function request<T>(
+  path: string,
+  options?: RequestInit,
+): Promise<ApiResponse<T>> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    return { success: false, error: body.error ?? `HTTP ${res.status}` };
+  }
+
+  return res.json();
+}
+
+// ─── Expenses API ─────────────────────────────────────────────────────────────
+
+export const expensesApi = {
+  list: (filters?: ExpenseFilters) => {
+    const params = new URLSearchParams();
+    if (filters?.from) params.set('from', filters.from);
+    if (filters?.to) params.set('to', filters.to);
+    if (filters?.category) params.set('category', filters.category);
+    if (filters?.search) params.set('search', filters.search);
+    const qs = params.toString();
+    return request<Expense[]>(`/expenses${qs ? `?${qs}` : ''}`);
+  },
+
+  stats: (from?: string, to?: string) => {
+    const params = new URLSearchParams();
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    const qs = params.toString();
+    return request<ExpenseStats>(`/expenses/stats${qs ? `?${qs}` : ''}`);
+  },
+
+  get: (id: number) => request<Expense>(`/expenses/${id}`),
+
+  create: (data: CreateExpenseInput) =>
+    request<Expense>('/expenses', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  update: (id: number, data: UpdateExpenseInput) =>
+    request<Expense>(`/expenses/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  delete: (id: number) =>
+    request<void>(`/expenses/${id}`, { method: 'DELETE' }),
+};
+
+// ─── Chat SSE API ─────────────────────────────────────────────────────────────
+
+export type StreamMessageType =
+  | { type: 'ai'; payload: { text: string } }
+  | {
+      type: 'toolCall:start';
+      payload: { name: string; args: Record<string, unknown> };
+    }
+  | {
+      type: 'tool';
+      payload: { name: string; result: Record<string, unknown> };
+    };
+
+interface ChatStreamCallbacks {
+  onMessage: (msg: StreamMessageType) => void;
+  onError?: (err: Error) => void;
+  onDone?: () => void;
+}
+
+export function streamChat(
+  query: string,
+  threadId: string,
+  callbacks: ChatStreamCallbacks,
+): () => void {
+  let isCancelled = false;
+
+  (async () => {
+    try {
+      const res = await fetch(`${BASE_URL}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, threadId }),
+      });
+
+      if (!res.ok || !res.body) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (!isCancelled) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        let pendingData = '';
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            pendingData = line.slice(6);
+          } else if (line === '' && pendingData) {
+            try {
+              const parsed = JSON.parse(pendingData) as StreamMessageType;
+              if (parsed.type) callbacks.onMessage(parsed);
+            } catch {
+              // skip malformed
+            }
+            pendingData = '';
+          }
+        }
+      }
+
+      callbacks.onDone?.();
+    } catch (err) {
+      if (!isCancelled) {
+        callbacks.onError?.(
+          err instanceof Error ? err : new Error(String(err)),
+        );
+      }
+    }
+  })();
+
+  return () => {
+    isCancelled = true;
+  };
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\hooks\use-mobile.ts
+==============================
+
+import * as React from "react"
+
+const MOBILE_BREAKPOINT = 768
+
+export function useIsMobile() {
+  const [isMobile, setIsMobile] = React.useState<boolean | undefined>(undefined)
+
+  React.useEffect(() => {
+    const mql = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`)
+    const onChange = () => {
+      setIsMobile(window.innerWidth < MOBILE_BREAKPOINT)
+    }
+    mql.addEventListener("change", onChange)
+    setIsMobile(window.innerWidth < MOBILE_BREAKPOINT)
+    return () => mql.removeEventListener("change", onChange)
+  }, [])
+
+  return !!isMobile
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\index.css
+==============================
+
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* ─── Shadcn dark-mode variant ─────────────────────────────────────────────── */
+@custom-variant dark (&:is(.dark *));
+
+/* ─── Design tokens (permanently dark theme) ───────────────────────────────── */
+/*
+ * This app uses a fixed dark aesthetic — backgrounds like #09090b / #111114.
+ * Dark-mode tokens live directly on :root so they always apply, regardless of
+ * whether a .dark class is present. The .dark block keeps shadcn components
+ * (Tooltip, Select, AlertDialog, etc.) looking correct since they read from
+ * the same CSS variables through @custom-variant dark.
+ */
+:root {
+  --radius: 0.625rem;
+
+  /* ── Core palette (dark) ── */
+  --background:           oklch(0.12 0 0);        /* #0a0a0c equivalent      */
+  --foreground:           oklch(0.95 0 0);        /* near-white               */
+  --foreground-secondary: oklch(0.65 0 0);        /* muted text               */
+
+  /* ── Card / Popover ── */
+  --card:                 oklch(0.15 0 0);
+  --card-foreground:      oklch(0.95 0 0);
+  --popover:              oklch(0.15 0 0);
+  --popover-foreground:   oklch(0.95 0 0);
+
+  /* ── Primary — blue ── */
+  --primary:              oklch(0.65 0.18 260);
+  --primary-foreground:   oklch(0.12 0 0);
+  --primary-dark:         oklch(0.55 0.18 260);
+
+  /* ── Secondary / Muted / Accent ── */
+  --secondary:            oklch(0.25 0 0);
+  --secondary-foreground: oklch(0.95 0 0);
+  --muted:                oklch(0.25 0 0);
+  --muted-foreground:     oklch(0.65 0 0);
+  --accent:               oklch(0.65 0.18 260);
+  --accent-foreground:    oklch(0.12 0 0);
+
+  /* ── Destructive ── */
+  --destructive:          oklch(0.396 0.141 25.723);
+  --destructive-foreground: oklch(0.637 0.237 25.331);
+
+  /* ── Border / Input / Ring ── */
+  --border:               oklch(0.25 0 0);
+  --input:                oklch(0.2 0 0);
+  --ring:                 oklch(0.65 0.18 260);
+
+  /* ── Charts ── */
+  --chart-1:              oklch(0.488 0.243 264.376);
+  --chart-2:              oklch(0.696 0.17 162.48);
+  --chart-3:              oklch(0.769 0.188 70.08);
+  --chart-4:              oklch(0.627 0.265 303.9);
+  --chart-5:              oklch(0.645 0.246 16.439);
+
+  /* ── Sidebar ── */
+  --sidebar:                      oklch(0.12 0 0);
+  --sidebar-foreground:           oklch(0.95 0 0);
+  --sidebar-primary:              oklch(0.65 0.18 260);
+  --sidebar-primary-foreground:   oklch(0.12 0 0);
+  --sidebar-accent:               oklch(0.25 0 0);
+  --sidebar-accent-foreground:    oklch(0.95 0 0);
+  --sidebar-border:               oklch(0.25 0 0);
+  --sidebar-ring:                 oklch(0.65 0.18 260);
+
+  /* ── Surface helpers (used by chat/card components) ── */
+  --surface:              oklch(0.15 0 0);
+  --surface-secondary:    oklch(0.12 0 0);
+}
+
+/*
+ * .dark mirrors :root exactly so shadcn primitives (Tooltip, Select, Dialog…)
+ * that scope their own styles under .dark still resolve correctly when
+ * <html class="dark"> is present.
+ */
+.dark {
+  --background:           oklch(0.12 0 0);
+  --foreground:           oklch(0.95 0 0);
+  --foreground-secondary: oklch(0.65 0 0);
+
+  --card:                 oklch(0.15 0 0);
+  --card-foreground:      oklch(0.95 0 0);
+  --popover:              oklch(0.15 0 0);
+  --popover-foreground:   oklch(0.95 0 0);
+
+  --primary:              oklch(0.65 0.18 260);
+  --primary-foreground:   oklch(0.12 0 0);
+  --primary-dark:         oklch(0.55 0.18 260);
+
+  --secondary:            oklch(0.25 0 0);
+  --secondary-foreground: oklch(0.95 0 0);
+  --muted:                oklch(0.25 0 0);
+  --muted-foreground:     oklch(0.65 0 0);
+  --accent:               oklch(0.65 0.18 260);
+  --accent-foreground:    oklch(0.12 0 0);
+
+  --destructive:          oklch(0.396 0.141 25.723);
+  --destructive-foreground: oklch(0.637 0.237 25.331);
+
+  --border:               oklch(0.25 0 0);
+  --input:                oklch(0.2 0 0);
+  --ring:                 oklch(0.65 0.18 260);
+
+  --chart-1:              oklch(0.488 0.243 264.376);
+  --chart-2:              oklch(0.696 0.17 162.48);
+  --chart-3:              oklch(0.769 0.188 70.08);
+  --chart-4:              oklch(0.627 0.265 303.9);
+  --chart-5:              oklch(0.645 0.246 16.439);
+
+  --sidebar:                      oklch(0.12 0 0);
+  --sidebar-foreground:           oklch(0.95 0 0);
+  --sidebar-primary:              oklch(0.65 0.18 260);
+  --sidebar-primary-foreground:   oklch(0.12 0 0);
+  --sidebar-accent:               oklch(0.25 0 0);
+  --sidebar-accent-foreground:    oklch(0.95 0 0);
+  --sidebar-border:               oklch(0.25 0 0);
+  --sidebar-ring:                 oklch(0.65 0.18 260);
+
+  --surface:              oklch(0.15 0 0);
+  --surface-secondary:    oklch(0.12 0 0);
+}
+
+/* ─── Tailwind v4 @theme mapping ────────────────────────────────────────────── */
+@theme inline {
+  /* Fonts */
+  --font-sans: "Geist", "Geist Fallback";
+  --font-mono: "Geist Mono", "Geist Mono Fallback";
+  --font-display: "Geist", "Geist Fallback";
+
+  /* Radius scale */
+  --radius-sm:  calc(var(--radius) - 4px);
+  --radius-md:  calc(var(--radius) - 2px);
+  --radius-lg:  var(--radius);
+  --radius-xl:  calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+
+  /* Core colors */
+  --color-background:           var(--background);
+  --color-foreground:           var(--foreground);
+  --color-foreground-secondary: var(--foreground-secondary);
+
+  --color-card:                 var(--card);
+  --color-card-foreground:      var(--card-foreground);
+
+  --color-popover:              var(--popover);
+  --color-popover-foreground:   var(--popover-foreground);
+
+  --color-primary:              var(--primary);
+  --color-primary-foreground:   var(--primary-foreground);
+  --color-primary-dark:         var(--primary-dark);
+
+  --color-secondary:            var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-muted:                var(--muted);
+  --color-muted-foreground:     var(--muted-foreground);
+
+  --color-accent:               var(--accent);
+  --color-accent-foreground:    var(--accent-foreground);
+
+  --color-destructive:              var(--destructive);
+  --color-destructive-foreground:   var(--destructive-foreground);
+
+  --color-border:               var(--border);
+  --color-input:                var(--input);
+  --color-ring:                 var(--ring);
+
+  /* Charts */
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  /* Sidebar */
+  --color-sidebar:                    var(--sidebar);
+  --color-sidebar-foreground:         var(--sidebar-foreground);
+  --color-sidebar-primary:            var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent:             var(--sidebar-accent);
+  --color-sidebar-accent-foreground:  var(--sidebar-accent-foreground);
+  --color-sidebar-border:             var(--sidebar-border);
+  --color-sidebar-ring:               var(--sidebar-ring);
+
+  /* Surface */
+  --color-surface:          var(--surface);
+  --color-surface-secondary: var(--surface-secondary);
+}
+
+/* ─── Base reset ────────────────────────────────────────────────────────────── */
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\lib\utils.ts
+==============================
+
+import { clsx, type ClassValue } from "clsx"
+import { twMerge } from "tailwind-merge"
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\main.tsx
+==============================
+
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import './index.css'
+import App from './App.tsx'
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\pages\ChatPage.tsx
+==============================
+
+import { ChatContainer } from '@/components/ChatContainer';
+
+export default function ChatPage() {
+  return <ChatContainer />;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\pages\Dashboard.tsx
+==============================
+
+import { useExpenseStats, useExpenses } from '@/services/expenses.service';
+import { useAuthStore } from '@/store/auth.store';
+import { ExpenseChart } from '@/components/ExpenseChart';
+import { TrendingDown, TrendingUp, DollarSign, BarChart2 } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
+
+const now = new Date();
+const CURRENT_MONTH_FROM = new Date(now.getFullYear(), now.getMonth(), 1)
+  .toISOString()
+  .split('T')[0];
+const CURRENT_MONTH_TO = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+  .toISOString()
+  .split('T')[0];
+
+function StatCard({
+  label,
+  value,
+  icon: Icon,
+  sub,
+  subClassName,
+  isLoading,
+}: {
+  label: string;
+  value: string;
+  icon: React.ElementType;
+  sub: React.ReactNode;
+  subClassName?: string;
+  isLoading: boolean;
+}) {
+  return (
+    <Card className='bg-[#0f0f12] border-[#1c1c22]'>
+      <CardContent className='p-5'>
+        <div className='flex items-start justify-between'>
+          <div className='space-y-1'>
+            <p className='text-xs font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+              {label}
+            </p>
+            {isLoading ? (
+              <Skeleton className='h-9 w-32 bg-[#1a1a1f]' />
+            ) : (
+              <p className='text-3xl font-display font-bold text-[--foreground]'>
+                {value}
+              </p>
+            )}
+          </div>
+          <div className='w-9 h-9 rounded-lg bg-[#1a1a1f] flex items-center justify-center shrink-0'>
+            <Icon className='w-4 h-4 text-[--primary]' />
+          </div>
+        </div>
+        <div
+          className={`text-xs mt-3 flex items-center gap-1 ${subClassName ?? 'text-[--foreground-secondary]'}`}
+        >
+          {isLoading ? <Skeleton className='h-3 w-24 bg-[#1a1a1f]' /> : sub}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+export default function Dashboard() {
+  const user = useAuthStore((s) => s.user);
+  const { data: statsData, isLoading: statsLoading } = useExpenseStats(
+    CURRENT_MONTH_FROM,
+    CURRENT_MONTH_TO,
+  );
+  const { data: expData, isLoading: expLoading } = useExpenses({
+    from: CURRENT_MONTH_FROM,
+    to: CURRENT_MONTH_TO,
+  });
+
+  const isLoading = statsLoading || expLoading;
+  const expenses = expData?.expenses ?? [];
+  const stats = statsData;
+
+  const chartData = expenses
+    .slice(0, 14)
+    .map((e) => ({ date: e.date.slice(5), amount: e.amount }));
+  const categoryChartData = (stats?.byCategory ?? []).map((c) => ({
+    category: c.category,
+    amount: c.amount,
+  }));
+
+  return (
+    <div className='flex flex-col h-full overflow-hidden bg-[--background]'>
+      {/* Header */}
+      <div className='shrink-0 border-b border-[#1c1c22] bg-[#0a0a0c] px-8 py-6'>
+        <div className='flex items-center justify-between'>
+          <div>
+            <h1 className='font-display text-2xl font-bold text-[--foreground]'>
+              {user ? `Welcome back, ${user.name.split(' ')[0]}` : 'Dashboard'}
+            </h1>
+            <p className='text-sm text-[--foreground-secondary] mt-0.5 font-mono'>
+              {new Date().toLocaleDateString('en-IN', {
+                month: 'long',
+                year: 'numeric',
+              })}{' '}
+              Overview
+            </p>
+          </div>
+          {isLoading && (
+            <Badge
+              variant='outline'
+              className='border-[--primary]/20 bg-[--primary]/10 text-[--primary] font-mono text-[10px] gap-1.5 animate-pulse'
+            >
+              Loading…
+            </Badge>
+          )}
+        </div>
+      </div>
+
+      {/* Scrollable content */}
+      <div className='flex-1 min-h-0 overflow-y-auto'>
+        <div className='px-8 py-6 space-y-6'>
+          {/* Stat cards */}
+          <div className='grid grid-cols-1 md:grid-cols-3 gap-4'>
+            <StatCard
+              label='Total Spent'
+              value={`Rs.${(stats?.total ?? 0).toLocaleString('en-IN')}`}
+              icon={DollarSign}
+              isLoading={isLoading}
+              sub={
+                <span className='flex items-center gap-1 text-green-400'>
+                  <TrendingDown className='w-3 h-3' /> This month
+                </span>
+              }
+            />
+            <StatCard
+              label='Avg Transaction'
+              value={`Rs.${Math.round(stats?.average ?? 0).toLocaleString('en-IN')}`}
+              icon={BarChart2}
+              isLoading={isLoading}
+              sub={`${stats?.count ?? 0} transactions`}
+            />
+            <Card className='bg-[#0f0f12] border-[#1c1c22]'>
+              <CardContent className='p-5'>
+                <div className='flex items-start justify-between'>
+                  <div className='space-y-1'>
+                    <p className='text-xs font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                      Top Category
+                    </p>
+                    {isLoading ? (
+                      <Skeleton className='h-9 w-32 bg-[#1a1a1f]' />
+                    ) : (
+                      <p className='text-3xl font-display font-bold text-[--primary]'>
+                        {stats?.byCategory[0]?.category ?? 'None'}
+                      </p>
+                    )}
+                  </div>
+                  <div className='w-9 h-9 rounded-lg bg-[#1a1a1f] flex items-center justify-center shrink-0'>
+                    <TrendingUp className='w-4 h-4 text-[--primary]' />
+                  </div>
+                </div>
+                <p className='text-xs text-[--primary] mt-3'>
+                  {isLoading ? (
+                    <Skeleton className='h-3 w-24 bg-[#1a1a1f]' />
+                  ) : (
+                    `Rs.${(stats?.byCategory[0]?.amount ?? 0).toLocaleString('en-IN')} spent`
+                  )}
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Recent expenses chart */}
+          {expenses.length > 0 && (
+            <Card className='bg-[#0f0f12] border-[#1c1c22]'>
+              <CardHeader className='pb-2'>
+                <CardTitle className='text-sm font-mono text-[--foreground-secondary] uppercase tracking-widest font-normal'>
+                  Recent Expenses
+                </CardTitle>
+              </CardHeader>
+              <Separator className='bg-[#1c1c22] mb-4' />
+              <CardContent>
+                <ExpenseChart chartData={chartData} labelKey='date' />
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Category chart */}
+          {categoryChartData.length > 0 && (
+            <Card className='bg-[#0f0f12] border-[#1c1c22]'>
+              <CardHeader className='pb-2'>
+                <CardTitle className='text-sm font-mono text-[--foreground-secondary] uppercase tracking-widest font-normal'>
+                  By Category
+                </CardTitle>
+              </CardHeader>
+              <Separator className='bg-[#1c1c22] mb-4' />
+              <CardContent>
+                <ExpenseChart
+                  chartData={categoryChartData}
+                  labelKey='category'
+                />
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Empty state */}
+          {!isLoading && expenses.length === 0 && (
+            <div className='flex flex-col items-center justify-center py-16 text-center'>
+              <p className='text-[--foreground-secondary] text-sm'>
+                No expenses this month.
+              </p>
+              <p className='text-[--foreground-secondary] text-xs mt-1'>
+                Head to the AI Chat to add your first expense!
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\pages\ExpensesPage.tsx
+==============================
+
+import { useState } from 'react';
+import {
+  Plus,
+  Trash2,
+  Download,
+  Edit2,
+  Save,
+  X,
+  Search,
+  Loader2,
+} from 'lucide-react';
+import {
+  useExpenses,
+  useCreateExpense,
+  useUpdateExpense,
+  useDeleteExpense,
+} from '@/services/expenses.service';
+import type {
+  Category,
+  Expense,
+  ExpenseFilters,
+  CreateExpenseInput,
+} from '@/api/expenses.api';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+
+const CATEGORIES: Category[] = [
+  'DINING',
+  'SHOPPING',
+  'TRANSPORT',
+  'ENTERTAINMENT',
+  'UTILITIES',
+  'HEALTH',
+  'EDUCATION',
+  'OTHER',
+];
+const CATEGORY_LABEL: Record<Category, string> = {
+  DINING: 'Dining',
+  SHOPPING: 'Shopping',
+  TRANSPORT: 'Transport',
+  ENTERTAINMENT: 'Entertainment',
+  UTILITIES: 'Utilities',
+  HEALTH: 'Health',
+  EDUCATION: 'Education',
+  OTHER: 'Other',
+};
+const CATEGORY_COLORS: Record<Category, string> = {
+  DINING: 'border-pink-900/40 bg-pink-950/40 text-pink-400',
+  SHOPPING: 'border-purple-900/40 bg-purple-950/40 text-purple-400',
+  TRANSPORT: 'border-cyan-900/40 bg-cyan-950/40 text-cyan-400',
+  ENTERTAINMENT: 'border-amber-900/40 bg-amber-950/40 text-amber-400',
+  UTILITIES: 'border-green-900/40 bg-green-950/40 text-green-400',
+  HEALTH: 'border-rose-900/40 bg-rose-950/40 text-rose-400',
+  EDUCATION: 'border-blue-900/40 bg-blue-950/40 text-blue-400',
+  OTHER: 'border-zinc-800 bg-zinc-900 text-zinc-400',
+};
+const EMPTY_FORM = {
+  title: '',
+  category: 'OTHER' as Category,
+  amount: '',
+  date: new Date().toISOString().split('T')[0],
+  notes: '',
+};
+
+export default function ExpensesPage() {
+  const [filters, setFilters] = useState<ExpenseFilters>({});
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<Category | null>(
+    null,
+  );
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [formData, setFormData] = useState(EMPTY_FORM);
+  const [formError, setFormError] = useState('');
+
+  const { data, isLoading } = useExpenses(filters);
+  const { mutateAsync: createExpense, isPending: isCreating } =
+    useCreateExpense();
+  const { mutateAsync: updateExpense, isPending: isUpdating } =
+    useUpdateExpense();
+  const { mutateAsync: deleteExpense } = useDeleteExpense();
+
+  const expenses = data?.expenses ?? [];
+  const isSaving = isCreating || isUpdating;
+
+  const handleCategorySelect = (cat: Category | null) => {
+    setSelectedCategory(cat);
+    setFilters((p) => ({ ...p, category: cat ?? undefined }));
+  };
+  const handleSearch = (q: string) => {
+    setSearchQuery(q);
+    setFilters((p) => ({ ...p, search: q || undefined }));
+  };
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.title || !formData.amount) {
+      setFormError('Title and amount are required.');
+      return;
+    }
+    setFormError('');
+    const payload: CreateExpenseInput = {
+      title: formData.title,
+      amount: parseFloat(formData.amount),
+      category: formData.category,
+      date: formData.date,
+      notes: formData.notes || undefined,
+    };
+    try {
+      if (editingId) {
+        await updateExpense({ id: editingId, data: payload });
+      } else {
+        await createExpense(payload);
+      }
+      setShowForm(false);
+      setEditingId(null);
+      setFormData(EMPTY_FORM);
+    } catch (err: any) {
+      setFormError(err.message ?? 'Something went wrong');
+    }
+  };
+  const handleEdit = (exp: Expense) => {
+    setFormData({
+      title: exp.title,
+      category: exp.category,
+      amount: exp.amount.toString(),
+      date: exp.date,
+      notes: exp.notes ?? '',
+    });
+    setEditingId(exp.id);
+    setShowForm(true);
+  };
+  const handleDelete = async (id: number) => {
+    await deleteExpense(id);
+  };
+  const handleExport = () => {
+    const rows = expenses.map((e) =>
+      [e.title, e.category, e.amount, e.date].join(','),
+    );
+    const csv = ['Title,Category,Amount,Date', ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'expenses.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const totalAmount = expenses.reduce((s, e) => s + e.amount, 0);
+
+  return (
+    <TooltipProvider>
+      <div className='flex flex-col h-full bg-[--background]'>
+        {/* Header */}
+        <div className='shrink-0 border-b border-[#1c1c22] bg-[#0a0a0c] px-8 py-6'>
+          <div className='flex items-center justify-between'>
+            <div>
+              <h1 className='font-display text-2xl font-bold text-[--foreground]'>
+                Expenses
+              </h1>
+              <p className='text-sm text-[--foreground-secondary] mt-0.5 font-mono'>
+                {isLoading
+                  ? 'Loading…'
+                  : `${expenses.length} transactions · Rs.${totalAmount.toLocaleString('en-IN')}`}
+              </p>
+            </div>
+            <div className='flex gap-2'>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant='outline'
+                    size='sm'
+                    onClick={handleExport}
+                    className='gap-2 bg-[#111114] border-[#1c1c22] text-[--foreground-secondary] hover:text-[--foreground] hover:bg-[#161619]'
+                  >
+                    <Download className='h-4 w-4' /> Export
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Export as CSV</TooltipContent>
+              </Tooltip>
+              <Button
+                size='sm'
+                onClick={() => {
+                  setEditingId(null);
+                  setFormData(EMPTY_FORM);
+                  setShowForm((v) => !v);
+                }}
+                className='gap-2 bg-[--primary] text-[--primary-foreground] hover:bg-[--primary]/90'
+              >
+                <Plus className='h-4 w-4' /> Add Expense
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <ScrollArea className='flex-1'>
+          <div className='px-8 py-6 space-y-6'>
+            {/* Add / Edit form */}
+            {showForm && (
+              <Card className='bg-[#0f0f12] border-[#1c1c22]'>
+                <CardHeader className='pb-2'>
+                  <CardTitle className='text-sm font-mono text-[--foreground-secondary] uppercase tracking-widest font-normal'>
+                    {editingId ? 'Edit Expense' : 'New Expense'}
+                  </CardTitle>
+                </CardHeader>
+                <Separator className='bg-[#1c1c22]' />
+                <CardContent className='pt-5'>
+                  {formError && (
+                    <p className='text-red-400 text-xs mb-4 bg-red-950/20 border border-red-900/30 rounded-lg px-3 py-2'>
+                      {formError}
+                    </p>
+                  )}
+                  <form
+                    onSubmit={handleSubmit}
+                    className='grid grid-cols-1 md:grid-cols-2 gap-4'
+                  >
+                    <div className='space-y-2'>
+                      <Label className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                        Title
+                      </Label>
+                      <Input
+                        placeholder='e.g., Coffee'
+                        value={formData.title}
+                        onChange={(e) =>
+                          setFormData((p) => ({ ...p, title: e.target.value }))
+                        }
+                        className='bg-[#111114] border-[#1c1c22] text-[--foreground] placeholder:text-[--foreground-secondary]/50 focus-visible:ring-[--primary]/30'
+                      />
+                    </div>
+                    <div className='space-y-2'>
+                      <Label className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                        Amount (Rs.)
+                      </Label>
+                      <Input
+                        type='number'
+                        step='0.01'
+                        placeholder='0.00'
+                        value={formData.amount}
+                        onChange={(e) =>
+                          setFormData((p) => ({ ...p, amount: e.target.value }))
+                        }
+                        className='bg-[#111114] border-[#1c1c22] text-[--foreground] placeholder:text-[--foreground-secondary]/50 focus-visible:ring-[--primary]/30'
+                      />
+                    </div>
+                    <div className='space-y-2'>
+                      <Label className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                        Category
+                      </Label>
+                      <Select
+                        value={formData.category}
+                        onValueChange={(v) =>
+                          setFormData((p) => ({
+                            ...p,
+                            category: v as Category,
+                          }))
+                        }
+                      >
+                        <SelectTrigger className='bg-[#111114] border-[#1c1c22] text-[--foreground] focus:ring-[--primary]/30'>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className='bg-[#111114] border-[#1c1c22]'>
+                          {CATEGORIES.map((c) => (
+                            <SelectItem
+                              key={c}
+                              value={c}
+                              className='text-[--foreground] focus:bg-[#1a1a1f] focus:text-[--foreground]'
+                            >
+                              {CATEGORY_LABEL[c]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className='space-y-2'>
+                      <Label className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                        Date
+                      </Label>
+                      <Input
+                        type='date'
+                        value={formData.date}
+                        onChange={(e) =>
+                          setFormData((p) => ({ ...p, date: e.target.value }))
+                        }
+                        className='bg-[#111114] border-[#1c1c22] text-[--foreground] focus-visible:ring-[--primary]/30'
+                      />
+                    </div>
+                    <div className='md:col-span-2 space-y-2'>
+                      <Label className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                        Notes (optional)
+                      </Label>
+                      <Input
+                        placeholder='Any extra context…'
+                        value={formData.notes}
+                        onChange={(e) =>
+                          setFormData((p) => ({ ...p, notes: e.target.value }))
+                        }
+                        className='bg-[#111114] border-[#1c1c22] text-[--foreground] placeholder:text-[--foreground-secondary]/50 focus-visible:ring-[--primary]/30'
+                      />
+                    </div>
+                    <div className='md:col-span-2 flex gap-2 pt-2'>
+                      <Button
+                        type='submit'
+                        disabled={isSaving}
+                        className='gap-2 bg-[--primary] text-[--primary-foreground] hover:bg-[--primary]/90 disabled:opacity-50'
+                      >
+                        {isSaving ? (
+                          <Loader2 className='h-4 w-4 animate-spin' />
+                        ) : (
+                          <Save className='h-4 w-4' />
+                        )}
+                        {editingId ? 'Update' : 'Add'} Expense
+                      </Button>
+                      <Button
+                        type='button'
+                        variant='outline'
+                        onClick={() => {
+                          setShowForm(false);
+                          setEditingId(null);
+                        }}
+                        className='gap-2 border-[#1c1c22] bg-transparent text-[--foreground-secondary] hover:text-[--foreground] hover:bg-[#161619]'
+                      >
+                        <X className='h-4 w-4' /> Cancel
+                      </Button>
+                    </div>
+                  </form>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Filters */}
+            <div className='space-y-3'>
+              <div className='flex gap-2 flex-wrap'>
+                <Button
+                  variant='outline'
+                  size='sm'
+                  onClick={() => handleCategorySelect(null)}
+                  className={[
+                    'text-xs font-mono h-8 rounded-lg transition-all',
+                    selectedCategory === null
+                      ? 'bg-[--primary] text-[--primary-foreground] border-[--primary] hover:bg-[--primary]/90'
+                      : 'bg-[#111114] border-[#1c1c22] text-[--foreground-secondary] hover:text-[--foreground] hover:bg-[#161619]',
+                  ].join(' ')}
+                >
+                  All
+                </Button>
+                {CATEGORIES.map((cat) => (
+                  <Button
+                    key={cat}
+                    variant='outline'
+                    size='sm'
+                    onClick={() => handleCategorySelect(cat)}
+                    className={[
+                      'text-xs font-mono h-8 rounded-lg transition-all',
+                      selectedCategory === cat
+                        ? 'bg-[--primary] text-[--primary-foreground] border-[--primary] hover:bg-[--primary]/90'
+                        : 'bg-[#111114] border-[#1c1c22] text-[--foreground-secondary] hover:text-[--foreground] hover:bg-[#161619]',
+                    ].join(' ')}
+                  >
+                    {CATEGORY_LABEL[cat]}
+                  </Button>
+                ))}
+              </div>
+              <div className='relative'>
+                <Search className='h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-[--foreground-secondary]' />
+                <Input
+                  placeholder='Search expenses…'
+                  value={searchQuery}
+                  onChange={(e) => handleSearch(e.target.value)}
+                  className='pl-10 bg-[#111114] border-[#1c1c22] text-[--foreground] placeholder:text-[--foreground-secondary]/50 focus-visible:ring-[--primary]/30'
+                />
+              </div>
+            </div>
+
+            {/* Table */}
+            <Card className='bg-[#0f0f12] border-[#1c1c22] overflow-hidden'>
+              <Table>
+                <TableHeader>
+                  <TableRow className='border-[#1c1c22] hover:bg-transparent'>
+                    {['Title', 'Category', 'Amount', 'Date', 'Actions'].map(
+                      (h) => (
+                        <TableHead
+                          key={h}
+                          className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'
+                        >
+                          {h}
+                        </TableHead>
+                      ),
+                    )}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {isLoading ? (
+                    <TableRow className='border-[#1c1c22]'>
+                      <TableCell
+                        colSpan={5}
+                        className='text-center py-10 text-sm text-[--foreground-secondary]'
+                      >
+                        Loading…
+                      </TableCell>
+                    </TableRow>
+                  ) : expenses.length === 0 ? (
+                    <TableRow className='border-[#1c1c22]'>
+                      <TableCell
+                        colSpan={5}
+                        className='text-center py-10 text-sm text-[--foreground-secondary]'
+                      >
+                        No expenses found
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    expenses.map((exp) => (
+                      <TableRow
+                        key={exp.id}
+                        className='border-[#1c1c22] hover:bg-[#111114] transition-colors'
+                      >
+                        <TableCell className='text-sm text-[--foreground] font-medium'>
+                          {exp.title}
+                        </TableCell>
+                        <TableCell>
+                          <Badge
+                            variant='outline'
+                            className={`text-xs font-mono ${CATEGORY_COLORS[exp.category] ?? CATEGORY_COLORS.OTHER}`}
+                          >
+                            {CATEGORY_LABEL[exp.category]}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className='text-sm font-mono text-[--primary]'>
+                          Rs.{exp.amount.toLocaleString('en-IN')}
+                        </TableCell>
+                        <TableCell className='text-sm font-mono text-[--foreground-secondary]'>
+                          {new Date(exp.date).toLocaleDateString('en-IN', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })}
+                        </TableCell>
+                        <TableCell>
+                          <div className='flex gap-1'>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant='ghost'
+                                  size='icon'
+                                  className='h-7 w-7 text-blue-500 hover:text-blue-400 hover:bg-blue-950/20'
+                                  onClick={() => handleEdit(exp)}
+                                >
+                                  <Edit2 className='h-3.5 w-3.5' />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Edit</TooltipContent>
+                            </Tooltip>
+
+                            <AlertDialog>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <AlertDialogTrigger asChild>
+                                    <Button
+                                      variant='ghost'
+                                      size='icon'
+                                      className='h-7 w-7 text-red-500 hover:text-red-400 hover:bg-red-950/20'
+                                    >
+                                      <Trash2 className='h-3.5 w-3.5' />
+                                    </Button>
+                                  </AlertDialogTrigger>
+                                </TooltipTrigger>
+                                <TooltipContent>Delete</TooltipContent>
+                              </Tooltip>
+                              <AlertDialogContent className='bg-[#111114] border-[#1c1c22]'>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle className='text-[--foreground]'>
+                                    Delete expense?
+                                  </AlertDialogTitle>
+                                  <AlertDialogDescription className='text-[--foreground-secondary]'>
+                                    <span className='font-medium text-[--foreground]'>
+                                      {exp.title}
+                                    </span>{' '}
+                                    (Rs.{exp.amount.toLocaleString('en-IN')})
+                                    will be permanently deleted.
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel className='bg-[#1a1a1f] border-[#1c1c22] text-[--foreground-secondary] hover:bg-[#222226] hover:text-[--foreground]'>
+                                    Cancel
+                                  </AlertDialogCancel>
+                                  <AlertDialogAction
+                                    onClick={() => handleDelete(exp.id)}
+                                    className='bg-red-600 text-white hover:bg-red-700'
+                                  >
+                                    Delete
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </Card>
+          </div>
+        </ScrollArea>
+      </div>
+    </TooltipProvider>
+  );
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\pages\InsightsPage.tsx
+==============================
+
+import { useExpenses, useExpenseStats } from '@/services/expenses.service';
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+} from 'recharts';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Separator } from '@/components/ui/separator';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
+
+const COLORS = [
+  '#d4ff4f',
+  '#a855f7',
+  '#06b6d4',
+  '#f59e0b',
+  '#22c55e',
+  '#6b7280',
+  '#ec4899',
+  '#3b82f6',
+];
+
+const TOOLTIP_STYLE = {
+  contentStyle: {
+    backgroundColor: '#111114',
+    border: '1px solid #1c1c22',
+    borderRadius: '8px',
+    fontSize: '12px',
+  },
+  labelStyle: { color: '#f0eee8' },
+  itemStyle: { color: '#d4ff4f' },
+};
+
+export default function InsightsPage() {
+  const now = new Date();
+  const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1)
+    .toISOString()
+    .split('T')[0];
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+    .toISOString()
+    .split('T')[0];
+
+  const { data: statsData, isLoading: statsLoading } = useExpenseStats(
+    sixMonthsAgo,
+    monthEnd,
+  );
+  const { data: expData, isLoading: expLoading } = useExpenses({
+    from: sixMonthsAgo,
+    to: monthEnd,
+  });
+
+  const isLoading = statsLoading || expLoading;
+  const stats = statsData;
+  const expenses = expData?.expenses ?? [];
+
+  const monthlyMap: Record<string, number> = {};
+  for (const exp of expenses) {
+    const key = exp.date.slice(0, 7);
+    monthlyMap[key] = (monthlyMap[key] ?? 0) + exp.amount;
+  }
+  const trendData = Object.entries(monthlyMap)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, amount]) => ({
+      month: new Date(month + '-01').toLocaleString('en', { month: 'short' }),
+      amount: Math.round(amount),
+    }));
+  const pieData = (stats?.byCategory ?? []).map((c, i) => ({
+    name: c.category,
+    value: Math.round(c.amount),
+    color: COLORS[i % COLORS.length],
+  }));
+
+  const summaryCards = [
+    {
+      label: 'Total Spent',
+      value: `Rs.${Math.round(stats?.total ?? 0).toLocaleString('en-IN')}`,
+      sub: '6 months',
+    },
+    {
+      label: 'Transactions',
+      value: String(stats?.count ?? '—'),
+      sub: 'Total count',
+    },
+    {
+      label: 'Avg Transaction',
+      value: `Rs.${Math.round(stats?.average ?? 0).toLocaleString('en-IN')}`,
+      sub: 'Per expense',
+    },
+    {
+      label: 'Top Category',
+      value: stats?.byCategory[0]?.category ?? '—',
+      sub: `Rs.${Math.round(stats?.byCategory[0]?.amount ?? 0).toLocaleString('en-IN')}`,
+    },
+  ];
+
+  return (
+    <div className='flex flex-col h-full bg-[--background]'>
+      {/* Header */}
+      <div className='shrink-0 border-b border-[#1c1c22] bg-[#0a0a0c] px-8 py-6'>
+        <h1 className='font-display text-2xl font-bold text-[--foreground]'>
+          Insights
+        </h1>
+        <p className='text-sm text-[--foreground-secondary] mt-0.5 font-mono'>
+          AI-powered spending analysis · Last 6 months
+        </p>
+      </div>
+
+      <ScrollArea className='flex-1'>
+        <div className='px-8 py-6 space-y-6'>
+          {/* Summary stat cards */}
+          <div className='grid grid-cols-2 md:grid-cols-4 gap-4'>
+            {summaryCards.map((card) => (
+              <Card key={card.label} className='bg-[#0f0f12] border-[#1c1c22]'>
+                <CardContent className='p-5'>
+                  <p className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                    {card.label}
+                  </p>
+                  {isLoading ? (
+                    <Skeleton className='h-8 w-28 mt-2 bg-[#1a1a1f]' />
+                  ) : (
+                    <p className='text-2xl font-display font-bold text-[--foreground] mt-2'>
+                      {card.value}
+                    </p>
+                  )}
+                  <p className='text-xs text-[--foreground-secondary] mt-1'>
+                    {card.sub}
+                  </p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+
+          {/* Charts */}
+          <div className='grid grid-cols-1 lg:grid-cols-2 gap-6'>
+            {/* Line chart */}
+            <Card className='bg-[#0f0f12] border-[#1c1c22]'>
+              <CardHeader className='pb-2'>
+                <CardTitle className='text-sm font-mono text-[--foreground-secondary] uppercase tracking-widest font-normal'>
+                  Monthly Trend
+                </CardTitle>
+              </CardHeader>
+              <Separator className='bg-[#1c1c22]' />
+              <CardContent className='pt-5'>
+                {isLoading ? (
+                  <Skeleton className='h-64 w-full bg-[#1a1a1f]' />
+                ) : (
+                  <ResponsiveContainer width='100%' height={260}>
+                    <LineChart data={trendData}>
+                      <CartesianGrid strokeDasharray='3 3' stroke='#1c1c22' />
+                      <XAxis
+                        dataKey='month'
+                        stroke='#5c5c6e'
+                        tick={{ fontSize: 11 }}
+                      />
+                      <YAxis stroke='#5c5c6e' tick={{ fontSize: 11 }} />
+                      <Tooltip {...TOOLTIP_STYLE} />
+                      <Line
+                        type='monotone'
+                        dataKey='amount'
+                        stroke='#d4ff4f'
+                        strokeWidth={2}
+                        dot={{ fill: '#d4ff4f', r: 3 }}
+                        activeDot={{ r: 5 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Pie chart */}
+            <Card className='bg-[#0f0f12] border-[#1c1c22]'>
+              <CardHeader className='pb-2'>
+                <CardTitle className='text-sm font-mono text-[--foreground-secondary] uppercase tracking-widest font-normal'>
+                  By Category
+                </CardTitle>
+              </CardHeader>
+              <Separator className='bg-[#1c1c22]' />
+              <CardContent className='pt-5'>
+                {isLoading ? (
+                  <Skeleton className='h-64 w-full bg-[#1a1a1f]' />
+                ) : pieData.length > 0 ? (
+                  <ResponsiveContainer width='100%' height={260}>
+                    <PieChart>
+                      <Pie
+                        data={pieData}
+                        cx='50%'
+                        cy='50%'
+                        outerRadius={90}
+                        dataKey='value'
+                        label={({ name, value }) => `${name} Rs.${value}`}
+                        labelLine={{ stroke: '#2a2a32' }}
+                      >
+                        {pieData.map((entry, i) => (
+                          <Cell key={i} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        contentStyle={TOOLTIP_STYLE.contentStyle}
+                        itemStyle={{ color: '#f0eee8' }}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className='flex flex-col items-center justify-center h-64 gap-2'>
+                    <p className='text-[--foreground-secondary] text-sm'>
+                      No data yet
+                    </p>
+                    <Badge
+                      variant='outline'
+                      className='border-[#1c1c22] text-[--foreground-secondary] font-mono text-[10px]'
+                    >
+                      Add expenses to see breakdown
+                    </Badge>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Category breakdown with progress bars */}
+          {stats && stats.byCategory.length > 0 && (
+            <Card className='bg-[#0f0f12] border-[#1c1c22]'>
+              <CardHeader className='pb-2'>
+                <CardTitle className='text-sm font-mono text-[--foreground-secondary] uppercase tracking-widest font-normal'>
+                  Category Breakdown
+                </CardTitle>
+              </CardHeader>
+              <Separator className='bg-[#1c1c22]' />
+              <CardContent className='pt-5 space-y-4'>
+                {stats.byCategory.map((cat, i) => {
+                  const pct =
+                    stats.total > 0 ? (cat.amount / stats.total) * 100 : 0;
+                  const color = COLORS[i % COLORS.length];
+                  return (
+                    <div key={cat.category} className='space-y-1.5'>
+                      <div className='flex justify-between items-center'>
+                        <div className='flex items-center gap-2'>
+                          <span
+                            className='w-2 h-2 rounded-full shrink-0'
+                            style={{ backgroundColor: color }}
+                          />
+                          <span className='text-sm text-[--foreground]'>
+                            {cat.category}
+                          </span>
+                        </div>
+                        <div className='flex items-center gap-2'>
+                          <Badge
+                            variant='outline'
+                            className='border-[#1c1c22] bg-[#111114] text-[--foreground-secondary] font-mono text-[10px]'
+                          >
+                            {Math.round(pct)}%
+                          </Badge>
+                          <span className='text-sm font-mono text-[--foreground-secondary]'>
+                            Rs.{Math.round(cat.amount).toLocaleString('en-IN')}
+                          </span>
+                        </div>
+                      </div>
+                      {/* shadcn Progress — override the indicator color via inline style trick */}
+                      <div className='w-full bg-[#1a1a1f] rounded-full h-1.5 overflow-hidden'>
+                        <div
+                          className='h-1.5 rounded-full transition-all duration-500'
+                          style={{ width: `${pct}%`, backgroundColor: color }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </ScrollArea>
+    </div>
+  );
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\pages\LoginPage.tsx
+==============================
+
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Eye, EyeOff, Zap, ArrowRight, Loader2 } from 'lucide-react';
+import { useSignIn } from '@/services/auth.service';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Separator } from '@/components/ui/separator';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+
+export default function LoginPage() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const { mutate: signIn, isPending, error } = useSignIn();
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    signIn({ email, password });
+  };
+
+  return (
+    <div className='min-h-screen bg-[#09090b] flex items-center justify-center p-4'>
+      {/* Grid background */}
+      <div
+        className='fixed inset-0 opacity-[0.03] pointer-events-none'
+        style={{
+          backgroundImage:
+            'linear-gradient(rgba(255,255,255,.8) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.8) 1px, transparent 1px)',
+          backgroundSize: '40px 40px',
+        }}
+      />
+
+      <div className='w-full max-w-sm relative'>
+        {/* Logo */}
+        <div className='flex items-center gap-3 mb-10'>
+          <div className='w-10 h-10 rounded-xl bg-[--primary] flex items-center justify-center shadow-lg shrink-0'>
+            <Zap
+              className='w-5 h-5 text-[--primary-foreground]'
+              strokeWidth={2.5}
+            />
+          </div>
+          <div>
+            <h1 className='font-display text-lg font-bold text-[--foreground] tracking-tight'>
+              ExpenseAI
+            </h1>
+            <p className='text-[10px] text-[--foreground-secondary] font-mono uppercase tracking-widest'>
+              Smart Tracking
+            </p>
+          </div>
+        </div>
+
+        {/* Card */}
+        <Card className='bg-[#111114] border-[#1c1c22] rounded-2xl shadow-2xl'>
+          <CardHeader className='pb-2 px-8 pt-8'>
+            <CardTitle className='text-xl font-display font-bold text-[--foreground]'>
+              Welcome back
+            </CardTitle>
+            <CardDescription className='text-sm text-[--foreground-secondary]'>
+              Sign in to your account
+            </CardDescription>
+          </CardHeader>
+
+          <Separator className='bg-[#1c1c22] mt-4' />
+
+          <CardContent className='px-8 pt-6 pb-8'>
+            {error && (
+              <Alert className='mb-5 border-red-900/40 bg-red-950/40'>
+                <AlertDescription className='text-red-400 text-sm'>
+                  {error.message}
+                </AlertDescription>
+              </Alert>
+            )}
+
+            <form onSubmit={handleSubmit} className='space-y-4'>
+              {/* Email */}
+              <div className='space-y-2'>
+                <Label className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                  Email
+                </Label>
+                <Input
+                  type='email'
+                  autoComplete='email'
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder='you@example.com'
+                  required
+                  className='bg-[#0a0a0c] border-[#1c1c22] text-[--foreground] placeholder:text-[--foreground-secondary]/50 focus-visible:ring-[--primary]/30 focus-visible:border-[--primary]/50'
+                />
+              </div>
+
+              {/* Password */}
+              <div className='space-y-2'>
+                <Label className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                  Password
+                </Label>
+                <div className='relative'>
+                  <Input
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete='current-password'
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder='••••••••'
+                    required
+                    className='bg-[#0a0a0c] border-[#1c1c22] text-[--foreground] placeholder:text-[--foreground-secondary]/50 focus-visible:ring-[--primary]/30 focus-visible:border-[--primary]/50 pr-10'
+                  />
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    size='icon'
+                    onClick={() => setShowPassword((v) => !v)}
+                    className='absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 text-[--foreground-secondary] hover:text-[--foreground] hover:bg-transparent'
+                  >
+                    {showPassword ? (
+                      <EyeOff className='h-4 w-4' />
+                    ) : (
+                      <Eye className='h-4 w-4' />
+                    )}
+                  </Button>
+                </div>
+              </div>
+
+              {/* Submit */}
+              <Button
+                type='submit'
+                disabled={isPending}
+                className='w-full gap-2 bg-[--primary] text-[--primary-foreground] hover:bg-[--primary]/90 disabled:opacity-50 disabled:cursor-not-allowed mt-2 h-10'
+              >
+                {isPending ? (
+                  <Loader2 className='h-4 w-4 animate-spin' />
+                ) : (
+                  <>
+                    <span>Sign In</span>
+                    <ArrowRight className='h-4 w-4' />
+                  </>
+                )}
+              </Button>
+            </form>
+
+            <p className='text-center text-sm text-[--foreground-secondary] mt-6'>
+              Don't have an account?{' '}
+              <Link
+                to='/signup'
+                className='text-[--primary] hover:underline font-medium transition-colors'
+              >
+                Sign up
+              </Link>
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\pages\SettingsPage.tsx
+==============================
+
+import { useState } from 'react';
+import { Check, Loader2, User, Lock, Bell, LogOut } from 'lucide-react';
+import { useAuthStore } from '@/store/auth.store';
+import { useChangePassword, useSignOut } from '@/services/auth.service';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Separator } from '@/components/ui/separator';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Badge } from '@/components/ui/badge';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from '@/components/ui/card';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+
+export default function SettingsPage() {
+  const user = useAuthStore((s) => s.user);
+  const { mutate: signOut } = useSignOut();
+  const [settings, setSettings] = useState({
+    emailNotifications: true,
+    budgetAlerts: true,
+    weeklyReport: false,
+  });
+  const [settingsSaved, setSettingsSaved] = useState(false);
+  const [pwForm, setPwForm] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: '',
+  });
+  const [pwError, setPwError] = useState('');
+  const [pwSuccess, setPwSuccess] = useState(false);
+  const { mutateAsync: changePassword, isPending: isChangingPw } =
+    useChangePassword();
+
+  const toggle = (key: keyof typeof settings) =>
+    setSettings((p) => ({ ...p, [key]: !p[key] }));
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwError('');
+    if (pwForm.newPassword !== pwForm.confirmPassword) {
+      setPwError('Passwords do not match');
+      return;
+    }
+    try {
+      await changePassword(pwForm);
+      setPwForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+      setPwSuccess(true);
+      setTimeout(() => setPwSuccess(false), 3000);
+    } catch (err: any) {
+      setPwError(err.message ?? 'Failed to change password');
+    }
+  };
+
+  const notificationItems = [
+    {
+      id: 'emailNotifications',
+      label: 'Email Notifications',
+      desc: 'Receive expense alerts via email',
+    },
+    {
+      id: 'budgetAlerts',
+      label: 'Budget Alerts',
+      desc: 'Get notified when you exceed limits',
+    },
+    {
+      id: 'weeklyReport',
+      label: 'Weekly Report',
+      desc: 'Spending summary every week',
+    },
+  ] as const;
+
+  return (
+    <div className='flex flex-col h-full bg-[--background]'>
+      {/* Header */}
+      <div className='shrink-0 border-b border-[#1c1c22] bg-[#0a0a0c] px-8 py-6'>
+        <h1 className='font-display text-2xl font-bold text-[--foreground]'>
+          Settings
+        </h1>
+        <p className='text-sm text-[--foreground-secondary] mt-0.5 font-mono'>
+          Preferences &amp; account
+        </p>
+      </div>
+
+      <ScrollArea className='flex-1'>
+        <div className='px-8 py-6 space-y-6 max-w-2xl'>
+          {/* Account card */}
+          <Card className='bg-[#0f0f12] border-[#1c1c22]'>
+            <CardHeader className='pb-2'>
+              <CardTitle className='text-sm font-mono text-[--foreground-secondary] uppercase tracking-widest font-normal flex items-center gap-2'>
+                <User className='h-4 w-4 text-[--primary]' /> Account
+              </CardTitle>
+            </CardHeader>
+            <Separator className='bg-[#1c1c22]' />
+            <CardContent className='pt-5 space-y-3'>
+              {user && (
+                <div className='flex items-center gap-3 p-3 rounded-lg bg-[#111114]'>
+                  <Avatar className='w-10 h-10 rounded-xl shrink-0'>
+                    <AvatarFallback className='rounded-xl bg-[--primary]/20 border border-[--primary]/30 text-[--primary] font-bold'>
+                      {user.name.charAt(0).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className='min-w-0 flex-1'>
+                    <p className='text-sm font-medium text-[--foreground] truncate'>
+                      {user.name}
+                    </p>
+                    <p className='text-xs text-[--foreground-secondary] truncate font-mono'>
+                      {user.email}
+                    </p>
+                  </div>
+                  <Badge
+                    variant='outline'
+                    className='border-green-900/40 bg-[#0f1a10] text-green-400 text-[9px] font-mono shrink-0'
+                  >
+                    {user.role}
+                  </Badge>
+                </div>
+              )}
+
+              <div className='grid grid-cols-2 gap-3'>
+                <div className='p-3 rounded-lg bg-[#111114]'>
+                  <p className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest mb-1'>
+                    Name
+                  </p>
+                  <p className='text-sm text-[--foreground]'>
+                    {user?.name ?? '—'}
+                  </p>
+                </div>
+                <div className='p-3 rounded-lg bg-[#111114]'>
+                  <p className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest mb-1'>
+                    Email
+                  </p>
+                  <p className='text-sm text-[--foreground] truncate'>
+                    {user?.email ?? '—'}
+                  </p>
+                </div>
+              </div>
+
+              {user?._count && (
+                <div className='p-3 rounded-lg bg-[#111114] flex items-center justify-between'>
+                  <p className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                    Total Expenses
+                  </p>
+                  <Badge
+                    variant='outline'
+                    className='border-[#1c1c22] bg-[#0a0a0c] text-[--foreground] font-mono text-xs'
+                  >
+                    {user._count.expenses} records
+                  </Badge>
+                </div>
+              )}
+
+              <Button
+                variant='outline'
+                onClick={() => signOut()}
+                className='w-full gap-2 border-red-900/40 bg-red-950/20 text-red-400 hover:bg-red-900/30 hover:text-red-300 hover:border-red-900/60'
+              >
+                <LogOut className='h-4 w-4' />
+                Sign Out
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Change password card */}
+          <Card className='bg-[#0f0f12] border-[#1c1c22]'>
+            <CardHeader className='pb-2'>
+              <CardTitle className='text-sm font-mono text-[--foreground-secondary] uppercase tracking-widest font-normal flex items-center gap-2'>
+                <Lock className='h-4 w-4 text-[--primary]' /> Change Password
+              </CardTitle>
+              <CardDescription className='text-[--foreground-secondary] text-xs font-mono'>
+                Must be at least 8 characters
+              </CardDescription>
+            </CardHeader>
+            <Separator className='bg-[#1c1c22]' />
+            <CardContent className='pt-5'>
+              {pwError && (
+                <Alert className='mb-4 border-red-900/40 bg-red-950/20'>
+                  <AlertDescription className='text-red-400 text-sm'>
+                    {pwError}
+                  </AlertDescription>
+                </Alert>
+              )}
+              {pwSuccess && (
+                <Alert className='mb-4 border-green-900/40 bg-green-950/10'>
+                  <AlertDescription className='text-green-400 text-sm flex items-center gap-2'>
+                    <Check className='h-4 w-4' /> Password updated successfully!
+                  </AlertDescription>
+                </Alert>
+              )}
+              <form onSubmit={handleChangePassword} className='space-y-3'>
+                {(
+                  [
+                    { field: 'currentPassword', label: 'Current Password' },
+                    { field: 'newPassword', label: 'New Password' },
+                    { field: 'confirmPassword', label: 'Confirm Password' },
+                  ] as const
+                ).map(({ field, label }) => (
+                  <div key={field} className='space-y-2'>
+                    <Label className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                      {label}
+                    </Label>
+                    <Input
+                      type='password'
+                      value={pwForm[field]}
+                      onChange={(e) =>
+                        setPwForm((p) => ({ ...p, [field]: e.target.value }))
+                      }
+                      placeholder='••••••••'
+                      required
+                      className='bg-[#111114] border-[#1c1c22] text-[--foreground] placeholder:text-[--foreground-secondary]/50 focus-visible:ring-[--primary]/30'
+                    />
+                  </div>
+                ))}
+                <Button
+                  type='submit'
+                  disabled={isChangingPw}
+                  className='w-full gap-2 bg-[--primary] text-[--primary-foreground] hover:bg-[--primary]/90 disabled:opacity-50 mt-2'
+                >
+                  {isChangingPw ? (
+                    <Loader2 className='h-4 w-4 animate-spin' />
+                  ) : (
+                    <Lock className='h-4 w-4' />
+                  )}
+                  Update Password
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
+
+          {/* Notifications card */}
+          <Card className='bg-[#0f0f12] border-[#1c1c22]'>
+            <CardHeader className='pb-2'>
+              <CardTitle className='text-sm font-mono text-[--foreground-secondary] uppercase tracking-widest font-normal flex items-center gap-2'>
+                <Bell className='h-4 w-4 text-[--primary]' /> Notifications
+              </CardTitle>
+            </CardHeader>
+            <Separator className='bg-[#1c1c22]' />
+            <CardContent className='pt-5 space-y-3'>
+              {notificationItems.map((item) => (
+                <div
+                  key={item.id}
+                  className='flex items-center justify-between p-3 rounded-lg bg-[#111114]'
+                >
+                  <div className='space-y-0.5'>
+                    <p className='text-sm text-[--foreground]'>{item.label}</p>
+                    <p className='text-xs text-[--foreground-secondary]'>
+                      {item.desc}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={settings[item.id]}
+                    onCheckedChange={() => toggle(item.id)}
+                    className='data-[state=checked]:bg-[--primary]'
+                  />
+                </div>
+              ))}
+
+              <Button
+                onClick={() => {
+                  setSettingsSaved(true);
+                  setTimeout(() => setSettingsSaved(false), 2000);
+                }}
+                className='w-full gap-2 bg-[--primary] text-[--primary-foreground] hover:bg-[--primary]/90 mt-2'
+              >
+                {settingsSaved ? (
+                  <>
+                    <Check className='h-4 w-4' /> Saved!
+                  </>
+                ) : (
+                  'Save Preferences'
+                )}
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      </ScrollArea>
+    </div>
+  );
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\pages\SignupPage.tsx
+==============================
+
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
+import {
+  Eye,
+  EyeOff,
+  Zap,
+  ArrowRight,
+  Loader2,
+  Check,
+  Circle,
+} from 'lucide-react';
+import { useSignUp } from '@/services/auth.service';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Separator } from '@/components/ui/separator';
+import { Badge } from '@/components/ui/badge';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+
+const PASSWORD_RULES = [
+  { label: '8+ characters', test: (p: string) => p.length >= 8 },
+  { label: 'Uppercase', test: (p: string) => /[A-Z]/.test(p) },
+  { label: 'Lowercase', test: (p: string) => /[a-z]/.test(p) },
+  { label: 'Number', test: (p: string) => /[0-9]/.test(p) },
+];
+
+export default function SignupPage() {
+  const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const [showPassword, setShowPassword] = useState(false);
+  const { mutate: signUp, isPending, error } = useSignUp();
+
+  const set =
+    (field: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
+      setForm((prev) => ({ ...prev, [field]: e.target.value }));
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    signUp(form);
+  };
+
+  const passwordStrength = PASSWORD_RULES.filter((r) =>
+    r.test(form.password),
+  ).length;
+
+  return (
+    <div className='min-h-screen bg-[#09090b] flex items-center justify-center p-4'>
+      {/* Grid background */}
+      <div
+        className='fixed inset-0 opacity-[0.03] pointer-events-none'
+        style={{
+          backgroundImage:
+            'linear-gradient(rgba(255,255,255,.8) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.8) 1px, transparent 1px)',
+          backgroundSize: '40px 40px',
+        }}
+      />
+
+      <div className='w-full max-w-sm relative'>
+        {/* Logo */}
+        <div className='flex items-center gap-3 mb-10'>
+          <div className='w-10 h-10 rounded-xl bg-[--primary] flex items-center justify-center shadow-lg shrink-0'>
+            <Zap
+              className='w-5 h-5 text-[--primary-foreground]'
+              strokeWidth={2.5}
+            />
+          </div>
+          <div>
+            <h1 className='font-display text-lg font-bold text-[--foreground] tracking-tight'>
+              ExpenseAI
+            </h1>
+            <p className='text-[10px] text-[--foreground-secondary] font-mono uppercase tracking-widest'>
+              Smart Tracking
+            </p>
+          </div>
+        </div>
+
+        {/* Card */}
+        <Card className='bg-[#111114] border-[#1c1c22] rounded-2xl shadow-2xl'>
+          <CardHeader className='pb-2 px-8 pt-8'>
+            <CardTitle className='text-xl font-display font-bold text-[--foreground]'>
+              Create account
+            </CardTitle>
+            <CardDescription className='text-sm text-[--foreground-secondary]'>
+              Start tracking your expenses with AI
+            </CardDescription>
+          </CardHeader>
+
+          <Separator className='bg-[#1c1c22] mt-4' />
+
+          <CardContent className='px-8 pt-6 pb-8'>
+            {error && (
+              <Alert className='mb-5 border-red-900/40 bg-red-950/40'>
+                <AlertDescription className='text-red-400 text-sm'>
+                  {error.message}
+                </AlertDescription>
+              </Alert>
+            )}
+
+            <form onSubmit={handleSubmit} className='space-y-4'>
+              {/* Full Name */}
+              <div className='space-y-2'>
+                <Label className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                  Full Name
+                </Label>
+                <Input
+                  type='text'
+                  autoComplete='name'
+                  value={form.name}
+                  onChange={set('name')}
+                  placeholder='John Doe'
+                  required
+                  className='bg-[#0a0a0c] border-[#1c1c22] text-[--foreground] placeholder:text-[--foreground-secondary]/50 focus-visible:ring-[--primary]/30 focus-visible:border-[--primary]/50'
+                />
+              </div>
+
+              {/* Email */}
+              <div className='space-y-2'>
+                <Label className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                  Email
+                </Label>
+                <Input
+                  type='email'
+                  autoComplete='email'
+                  value={form.email}
+                  onChange={set('email')}
+                  placeholder='you@example.com'
+                  required
+                  className='bg-[#0a0a0c] border-[#1c1c22] text-[--foreground] placeholder:text-[--foreground-secondary]/50 focus-visible:ring-[--primary]/30 focus-visible:border-[--primary]/50'
+                />
+              </div>
+
+              {/* Password */}
+              <div className='space-y-2'>
+                <Label className='text-[10px] font-mono text-[--foreground-secondary] uppercase tracking-widest'>
+                  Password
+                </Label>
+                <div className='relative'>
+                  <Input
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete='new-password'
+                    value={form.password}
+                    onChange={set('password')}
+                    placeholder='••••••••'
+                    required
+                    className='bg-[#0a0a0c] border-[#1c1c22] text-[--foreground] placeholder:text-[--foreground-secondary]/50 focus-visible:ring-[--primary]/30 focus-visible:border-[--primary]/50 pr-10'
+                  />
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    size='icon'
+                    onClick={() => setShowPassword((v) => !v)}
+                    className='absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 text-[--foreground-secondary] hover:text-[--foreground] hover:bg-transparent'
+                  >
+                    {showPassword ? (
+                      <EyeOff className='h-4 w-4' />
+                    ) : (
+                      <Eye className='h-4 w-4' />
+                    )}
+                  </Button>
+                </div>
+
+                {/* Password strength rules */}
+                {form.password.length > 0 && (
+                  <div className='space-y-2 pt-1'>
+                    {/* Strength bar */}
+                    <div className='flex gap-1'>
+                      {[1, 2, 3, 4].map((step) => (
+                        <div
+                          key={step}
+                          className='h-1 flex-1 rounded-full transition-all duration-300'
+                          style={{
+                            backgroundColor:
+                              passwordStrength >= step
+                                ? passwordStrength === 1
+                                  ? '#ef4444'
+                                  : passwordStrength === 2
+                                    ? '#f59e0b'
+                                    : passwordStrength === 3
+                                      ? '#84cc16'
+                                      : '#22c55e'
+                                : '#1c1c22',
+                          }}
+                        />
+                      ))}
+                    </div>
+
+                    {/* Rule badges */}
+                    <div className='flex flex-wrap gap-1.5'>
+                      {PASSWORD_RULES.map((rule) => {
+                        const ok = rule.test(form.password);
+                        return (
+                          <Badge
+                            key={rule.label}
+                            variant='outline'
+                            className={[
+                              'text-[10px] font-mono gap-1 px-1.5 py-0.5 transition-colors',
+                              ok
+                                ? 'border-green-900/40 bg-green-950/20 text-green-400'
+                                : 'border-[#1c1c22] bg-[#0a0a0c] text-[--foreground-secondary]',
+                            ].join(' ')}
+                          >
+                            {ok ? (
+                              <Check className='h-2.5 w-2.5' />
+                            ) : (
+                              <Circle className='h-2.5 w-2.5' />
+                            )}
+                            {rule.label}
+                          </Badge>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Submit */}
+              <Button
+                type='submit'
+                disabled={isPending}
+                className='w-full gap-2 bg-[--primary] text-[--primary-foreground] hover:bg-[--primary]/90 disabled:opacity-50 disabled:cursor-not-allowed mt-2 h-10'
+              >
+                {isPending ? (
+                  <Loader2 className='h-4 w-4 animate-spin' />
+                ) : (
+                  <>
+                    Create Account
+                    <ArrowRight className='h-4 w-4' />
+                  </>
+                )}
+              </Button>
+            </form>
+
+            <p className='text-center text-sm text-[--foreground-secondary] mt-6'>
+              Already have an account?{' '}
+              <Link
+                to='/login'
+                className='text-[--primary] hover:underline font-medium transition-colors'
+              >
+                Sign in
+              </Link>
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\services\auth.service.ts
+==============================
+
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
+import {
+  authApi,
+  type SignUpInput,
+  type SignInInput,
+  type ChangePasswordInput,
+} from '@/api/auth.api';
+import { useAuthStore } from '@/store/auth.store';
+
+// ─── Query Keys ───────────────────────────────────────────────────────────────
+export const authKeys = {
+  me: ['auth', 'me'] as const,
+};
+
+// ─── Get current user ─────────────────────────────────────────────────────────
+export function useMe() {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  return useQuery({
+    queryKey: authKeys.me,
+    queryFn: async () => {
+      const res = await authApi.getMe();
+      if (!res.success || !res.data)
+        throw new Error(res.error ?? 'Failed to fetch user');
+      return res.data;
+    },
+    enabled: isAuthenticated,
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+// ─── Sign Up ──────────────────────────────────────────────────────────────────
+export function useSignUp() {
+  const login = useAuthStore((s) => s.login);
+  const navigate = useNavigate();
+
+  return useMutation({
+    mutationFn: async (data: SignUpInput) => {
+      const res = await authApi.signUp(data);
+      if (!res.success || !res.data)
+        throw new Error(res.error ?? 'Sign up failed');
+      return res.data;
+    },
+    onSuccess: (data) => {
+      login(data.user, data.tokens.accessToken, data.tokens.refreshToken);
+      navigate('/');
+    },
+  });
+}
+
+// ─── Sign In ──────────────────────────────────────────────────────────────────
+export function useSignIn() {
+  const login = useAuthStore((s) => s.login);
+  const navigate = useNavigate();
+
+  return useMutation({
+    mutationFn: async (data: SignInInput) => {
+      const res = await authApi.signIn(data);
+      if (!res.success || !res.data)
+        throw new Error(res.error ?? 'Sign in failed');
+      return res.data;
+    },
+    onSuccess: (data) => {
+      login(data.user, data.tokens.accessToken, data.tokens.refreshToken);
+      navigate('/');
+    },
+  });
+}
+
+// ─── Sign Out ─────────────────────────────────────────────────────────────────
+export function useSignOut() {
+  const logout = useAuthStore((s) => s.logout);
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+
+  return useMutation({
+    mutationFn: async () => {
+      await logout();
+    },
+    onSuccess: () => {
+      queryClient.clear();
+      navigate('/login');
+    },
+  });
+}
+
+// ─── Change Password ──────────────────────────────────────────────────────────
+export function useChangePassword() {
+  return useMutation({
+    mutationFn: async (data: ChangePasswordInput) => {
+      const res = await authApi.changePassword(data);
+      if (!res.success)
+        throw new Error(res.error ?? 'Failed to change password');
+      return res;
+    },
+  });
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\services\expenses.service.ts
+==============================
+
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  expensesApi,
+  type CreateExpenseInput,
+  type UpdateExpenseInput,
+  type ExpenseFilters,
+} from '@/api/expenses.api';
+
+// ─── Query Keys ───────────────────────────────────────────────────────────────
+export const expenseKeys = {
+  all: ['expenses'] as const,
+  lists: () => [...expenseKeys.all, 'list'] as const,
+  list: (filters: ExpenseFilters) => [...expenseKeys.lists(), filters] as const,
+  stats: (from?: string, to?: string) =>
+    [...expenseKeys.all, 'stats', from, to] as const,
+  detail: (id: number) => [...expenseKeys.all, id] as const,
+};
+
+// ─── List Expenses ────────────────────────────────────────────────────────────
+export function useExpenses(filters?: ExpenseFilters) {
+  return useQuery({
+    queryKey: expenseKeys.list(filters ?? {}),
+    queryFn: async () => {
+      const res = await expensesApi.list(filters);
+      if (!res.success)
+        throw new Error(res.error ?? 'Failed to fetch expenses');
+      return { expenses: res.data ?? [], pagination: res.pagination };
+    },
+    staleTime: 30 * 1000,
+  });
+}
+
+// ─── Expense Stats ────────────────────────────────────────────────────────────
+export function useExpenseStats(from?: string, to?: string) {
+  return useQuery({
+    queryKey: expenseKeys.stats(from, to),
+    queryFn: async () => {
+      const res = await expensesApi.stats(from, to);
+      if (!res.success) throw new Error(res.error ?? 'Failed to fetch stats');
+      return res.data!;
+    },
+    staleTime: 30 * 1000,
+  });
+}
+
+// ─── Single Expense ───────────────────────────────────────────────────────────
+export function useExpense(id: number) {
+  return useQuery({
+    queryKey: expenseKeys.detail(id),
+    queryFn: async () => {
+      const res = await expensesApi.get(id);
+      if (!res.success) throw new Error(res.error ?? 'Failed to fetch expense');
+      return res.data!;
+    },
+  });
+}
+
+// ─── Create Expense ───────────────────────────────────────────────────────────
+export function useCreateExpense() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: CreateExpenseInput) => {
+      const res = await expensesApi.create(data);
+      if (!res.success)
+        throw new Error(res.error ?? 'Failed to create expense');
+      return res.data!;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: expenseKeys.all });
+    },
+  });
+}
+
+// ─── Update Expense ───────────────────────────────────────────────────────────
+export function useUpdateExpense() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      id,
+      data,
+    }: {
+      id: number;
+      data: UpdateExpenseInput;
+    }) => {
+      const res = await expensesApi.update(id, data);
+      if (!res.success)
+        throw new Error(res.error ?? 'Failed to update expense');
+      return res.data!;
+    },
+    onSuccess: (_, { id }) => {
+      queryClient.invalidateQueries({ queryKey: expenseKeys.all });
+      queryClient.invalidateQueries({ queryKey: expenseKeys.detail(id) });
+    },
+  });
+}
+
+// ─── Delete Expense ───────────────────────────────────────────────────────────
+export function useDeleteExpense() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const res = await expensesApi.delete(id);
+      if (!res.success)
+        throw new Error(res.error ?? 'Failed to delete expense');
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: expenseKeys.all });
+    },
+  });
+}
+
+// ─── Bulk Delete ──────────────────────────────────────────────────────────────
+export function useBulkDeleteExpenses() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (ids: number[]) => {
+      const res = await expensesApi.bulkDelete(ids);
+      if (!res.success)
+        throw new Error(res.error ?? 'Failed to delete expenses');
+      return res.data!;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: expenseKeys.all });
+    },
+  });
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\store\auth.store.ts
+==============================
+
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+import { tokenStorage } from '@/api/client';
+import { authApi, type PublicUser } from '@/api/auth.api';
+
+interface AuthState {
+  user: PublicUser | null;
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  // Actions
+  login: (user: PublicUser, accessToken: string, refreshToken: string) => void;
+  logout: () => Promise<void>;
+  setUser: (user: PublicUser) => void;
+  hydrate: () => Promise<void>;
+}
+
+export const useAuthStore = create<AuthState>()(
+  persist(
+    (set, get) => ({
+      user: null,
+      isAuthenticated: false,
+      isLoading: false,
+
+      login: (user, accessToken, refreshToken) => {
+        tokenStorage.set(accessToken, refreshToken);
+        set({ user, isAuthenticated: true });
+      },
+
+      logout: async () => {
+        const refreshToken = tokenStorage.getRefresh();
+        if (refreshToken) {
+          authApi.signOut(refreshToken).catch(() => {});
+        }
+        tokenStorage.clear();
+        set({ user: null, isAuthenticated: false });
+      },
+
+      setUser: (user) => set({ user }),
+
+      hydrate: async () => {
+        const token = tokenStorage.getAccess();
+        if (!token || get().isAuthenticated) return;
+
+        set({ isLoading: true });
+        try {
+          const res = await authApi.getMe();
+          if (res.success && res.data) {
+            set({ user: res.data, isAuthenticated: true });
+          } else {
+            tokenStorage.clear();
+            set({ user: null, isAuthenticated: false });
+          }
+        } catch {
+          tokenStorage.clear();
+          set({ user: null, isAuthenticated: false });
+        } finally {
+          set({ isLoading: false });
+        }
+      },
+    }),
+    {
+      name: 'auth-store',
+      partialize: (state) => ({
+        user: state.user,
+        isAuthenticated: state.isAuthenticated,
+      }),
+    },
+  ),
+);
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\types\Streammessage.types.ts
+==============================
+
+// Base type from the API (server-sent stream events)
+export type StreamMessageType =
+  | { type: 'ai'; payload: { text: string } }
+  | {
+      type: 'toolCall:start';
+      payload: { name: string; args: Record<string, unknown> };
+    }
+  | { type: 'tool'; payload: { name: string; result: Record<string, unknown> } }
+  | { type: 'error'; payload: { text: string } };
+
+// User message added client-side (not from stream)
+export type UserMessage = {
+  type: 'user';
+  payload: { text: string };
+};
+
+// Full union used in ChatContainer state and ChatMessage renderer
+export type StreamMessage = (StreamMessageType | UserMessage) & { id: string };

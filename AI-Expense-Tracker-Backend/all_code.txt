@@ -1,0 +1,2134 @@
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\agents\index.ts
+==============================
+
+import { ChatOpenAI } from '@langchain/openai';
+import type { LangGraphRunnableConfig } from '@langchain/langgraph';
+import {
+  MemorySaver,
+  MessagesAnnotation,
+  StateGraph,
+} from '@langchain/langgraph';
+import { ToolNode } from '@langchain/langgraph/prebuilt';
+import { AIMessage, ToolMessage } from '@langchain/core/messages';
+import { initTools } from '../tools/index';
+import { env } from '../config/env';
+import type { StreamMessage } from '../types/index';
+
+// ─── LLM ─────────────────────────────────────────────────────────────────────
+
+const llm = new ChatOpenAI({
+  model: env.OPENAI_MODEL,
+  apiKey: env.OPENAI_API_KEY,
+  temperature: 0.2,
+});
+
+// Shared MemorySaver — thread history is keyed by thread_id inside each stream call.
+// For production at scale, replace with a Redis-backed or DB-backed checkpointer.
+const checkpointer = new MemorySaver();
+
+// ─── Agent Factory ────────────────────────────────────────────────────────────
+
+/**
+ * Builds and compiles a LangGraph StateGraph for a specific user.
+ * Tools are instantiated with userId so they always query the right user's data.
+ */
+export function createAgent(userId: number) {
+  const tools = initTools(userId);
+  const toolNode = new ToolNode(tools);
+
+  // ── Nodes ────────────────────────────────────────────────────────────────
+
+  async function callModel(
+    state: typeof MessagesAnnotation.State,
+    _config: LangGraphRunnableConfig,
+  ) {
+    const llmWithTools = llm.bindTools(tools);
+
+    const response = await llmWithTools.invoke([
+      {
+        role: 'system',
+        content: [
+          'You are a helpful personal finance assistant for an expense tracking app.',
+          `Current datetime: ${new Date().toISOString()}.`,
+          '',
+          'BEHAVIOUR:',
+          '- Use INR (₹) currency unless the user specifies otherwise.',
+          '- Call add_expense when the user mentions spending or buying something.',
+          '- Call get_expenses to answer questions about past spending.',
+          '- Call generate_expense_chart ONLY when the user explicitly asks for a chart or graph.',
+          '- Call delete_expense when the user asks to remove a specific expense by ID.',
+          '- If you need more info before adding an expense, ask for the missing details.',
+          '- Be concise, friendly, and format numbers in the Indian number system (e.g. ₹1,50,000).',
+        ].join('\n'),
+      },
+      ...state.messages,
+    ]);
+
+    return { messages: [response] };
+  }
+
+  // ── Edge logic ────────────────────────────────────────────────────────────
+
+  function shouldContinue(
+    state: typeof MessagesAnnotation.State,
+    config: LangGraphRunnableConfig,
+  ): string {
+    const lastMessage = state.messages.at(-1) as AIMessage;
+
+    if (lastMessage.tool_calls?.length) {
+      const firstCall = lastMessage.tool_calls[0];
+      // Emit a custom SSE event so the frontend can show a "Calling tool…" indicator
+      const announcement: StreamMessage = {
+        type: 'toolCall:start',
+        payload: {
+          name: firstCall.name,
+          args: firstCall.args as Record<string, unknown>,
+        },
+      };
+      config.writer!(announcement);
+      return 'tools';
+    }
+
+    return '__end__';
+  }
+
+  function shouldCallModel(state: typeof MessagesAnnotation.State): string {
+    const lastMessage = state.messages.at(-1) as ToolMessage;
+
+    try {
+      const parsed = JSON.parse(lastMessage.content as string) as Record<
+        string,
+        unknown
+      >;
+      // Chart data is rendered client-side — don't send it back to the LLM
+      if (parsed['type'] === 'chart') return '__end__';
+    } catch {
+      // Not JSON → normal tool result, continue to model for a human-readable reply
+    }
+
+    return 'callModel';
+  }
+
+  // ── Graph ─────────────────────────────────────────────────────────────────
+
+  const graph = new StateGraph(MessagesAnnotation)
+    .addNode('callModel', callModel)
+    .addNode('tools', toolNode)
+    .addEdge('__start__', 'callModel')
+    .addConditionalEdges('callModel', shouldContinue, {
+      tools: 'tools',
+      __end__: '__end__',
+    })
+    .addConditionalEdges('tools', shouldCallModel, {
+      callModel: 'callModel',
+      __end__: '__end__',
+    });
+
+  return graph.compile({ checkpointer });
+}
+
+// ─── Agent Cache ──────────────────────────────────────────────────────────────
+
+/**
+ * Cache compiled agents by userId.
+ * The MemorySaver stores per-thread history; the agent instance itself is stateless.
+ */
+const agentCache = new Map<number, ReturnType<typeof createAgent>>();
+
+export function getAgent(userId: number): ReturnType<typeof createAgent> {
+  if (!agentCache.has(userId)) {
+    agentCache.set(userId, createAgent(userId));
+  }
+  return agentCache.get(userId)!;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\config\db.ts
+==============================
+
+import { PrismaClient } from '../generated/prisma';
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __prisma: PrismaClient | undefined;
+}
+
+function createPrismaClient(): PrismaClient {
+  return new PrismaClient({
+    log:
+      process.env.NODE_ENV === 'development'
+        ? ['query', 'error', 'warn']
+        : ['error'],
+    errorFormat: process.env.NODE_ENV === 'development' ? 'pretty' : 'minimal',
+  });
+}
+
+// Singleton — prevents multiple Prisma instances during hot-reload in dev
+export const prisma: PrismaClient = globalThis.__prisma ?? createPrismaClient();
+
+if (process.env.NODE_ENV !== 'production') {
+  globalThis.__prisma = prisma;
+}
+
+export async function connectDB(): Promise<void> {
+  try {
+    await prisma.$connect();
+    console.log('✅ Connected to NeonDB via Prisma');
+  } catch (error) {
+    console.error('❌ Failed to connect to database:', error);
+    process.exit(1);
+  }
+}
+
+export async function disconnectDB(): Promise<void> {
+  await prisma.$disconnect();
+  console.log('🔌 Disconnected from database');
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\config\env.ts
+==============================
+
+import { z } from 'zod';
+
+const envSchema = z.object({
+  // Database
+  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  DIRECT_URL: z.string().min(1, 'DIRECT_URL is required'),
+
+  // Auth
+  JWT_ACCESS_SECRET: z
+    .string()
+    .min(32, 'JWT_ACCESS_SECRET must be at least 32 chars'),
+  JWT_REFRESH_SECRET: z
+    .string()
+    .min(32, 'JWT_REFRESH_SECRET must be at least 32 chars'),
+  JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
+  JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
+  BCRYPT_ROUNDS: z.coerce.number().min(10).max(14).default(12),
+
+  // OpenAI
+  OPENAI_API_KEY: z.string().min(1, 'OPENAI_API_KEY is required'),
+  OPENAI_MODEL: z.string().default('gpt-4o-mini'),
+
+  // Server
+  PORT: z.coerce.number().default(4100),
+  NODE_ENV: z
+    .enum(['development', 'production', 'test'])
+    .default('development'),
+  FRONTEND_URL: z.string().url().default('http://localhost:5173'),
+
+  // Rate limiting
+  RATE_LIMIT_WINDOW_MS: z.coerce.number().default(15 * 60 * 1000),
+  RATE_LIMIT_MAX: z.coerce.number().default(100),
+  AUTH_RATE_LIMIT_MAX: z.coerce.number().default(10),
+});
+
+function validateEnv() {
+  const result = envSchema.safeParse(process.env);
+  if (!result.success) {
+    console.error('❌ Invalid environment variables:');
+    result.error.issues.forEach((issue) => {
+      console.error(`   ${issue.path.join('.')}: ${issue.message}`);
+    });
+    process.exit(1);
+  }
+  return result.data;
+}
+
+export const env = validateEnv();
+export type Env = typeof env;
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\controllers\auth.controller.ts
+==============================
+
+import type { Request, Response, NextFunction } from 'express';
+import type { AuthenticatedRequest } from '../types/index';
+import type {
+  SignUpInput,
+  SignInInput,
+  RefreshTokenInput,
+  ChangePasswordInput,
+} from '../lib/schemas';
+import {
+  signUpService,
+  signInService,
+  refreshTokenService,
+  logoutService,
+  getMeService,
+  changePasswordService,
+} from '../services/auth.service';
+
+// ─── POST /api/auth/signup ────────────────────────────────────────────────────
+
+export async function signUp(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const result = await signUpService(req.body as SignUpInput);
+    res.status(201).json({
+      success: true,
+      message: 'Account created successfully',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── POST /api/auth/signin ────────────────────────────────────────────────────
+
+export async function signIn(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const result = await signInService(req.body as SignInInput);
+    res.json({
+      success: true,
+      message: 'Signed in successfully',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── POST /api/auth/refresh ───────────────────────────────────────────────────
+
+export async function refreshToken(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { refreshToken: token } = req.body as RefreshTokenInput;
+    const tokens = await refreshTokenService(token);
+    res.json({ success: true, message: 'Tokens refreshed', data: { tokens } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── POST /api/auth/logout ────────────────────────────────────────────────────
+
+export async function logout(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { refreshToken: token } = req.body as RefreshTokenInput;
+    await logoutService(token);
+    res.json({ success: true, message: 'Logged out successfully' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── GET /api/auth/me ─────────────────────────────────────────────────────────
+
+export async function getMe(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const user = await getMeService(userId);
+    res.json({ success: true, data: user });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── PATCH /api/auth/change-password ─────────────────────────────────────────
+
+export async function changePassword(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    await changePasswordService(userId, req.body as ChangePasswordInput);
+    res.json({
+      success: true,
+      message: 'Password changed. Please sign in again on all devices.',
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\controllers\chat.controller.ts
+==============================
+
+import type { Request, Response, NextFunction } from 'express';
+import {
+  AIMessage,
+  AIMessageChunk,
+  ToolMessage,
+} from '@langchain/core/messages';
+import type { AuthenticatedRequest, StreamMessage } from '../types/index';
+import type { ChatQueryInput } from '../lib/schemas';
+import { getAgent } from '../agents/index';
+import { env } from '../config/env';
+import {
+  scopeThreadId,
+  persistUserMessage,
+  getChatHistoryService,
+  deleteChatHistoryService,
+} from '../services/chat.service';
+
+// ─── POST /api/chat ───────────────────────────────────────────────────────────
+
+export async function streamChat(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const userId = (req as AuthenticatedRequest).user.sub;
+  const { query, threadId } = req.body as ChatQueryInput;
+  const scopedThreadId = scopeThreadId(userId, threadId);
+
+  // ── SSE setup ──────────────────────────────────────────────────────────────
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+    'Access-Control-Allow-Origin': env.FRONTEND_URL,
+  });
+
+  const writeEvent = (eventName: string, data: StreamMessage): void => {
+    res.write(`event: ${eventName}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  let isConnected = true;
+  req.on('close', () => {
+    isConnected = false;
+  });
+
+  try {
+    const agent = getAgent(userId);
+
+    const responseStream = await agent.stream(
+      { messages: [{ role: 'user', content: query }] },
+      {
+        streamMode: 'messages',
+        configurable: { thread_id: scopedThreadId },
+      },
+    );
+
+    for await (const chunk of responseStream) {
+      if (!isConnected) break;
+
+      const msgChunk = chunk as unknown as {
+        content: unknown;
+        name?: string;
+        tool_calls?: unknown[];
+      };
+
+      if (!msgChunk || msgChunk.content === '') continue;
+
+      let message: StreamMessage | null = null;
+
+      if (msgChunk instanceof ToolMessage) {
+        let result: Record<string, unknown>;
+        try {
+          result = JSON.parse(msgChunk.content as string) as Record<
+            string,
+            unknown
+          >;
+        } catch {
+          result = { raw: msgChunk.content };
+        }
+        message = {
+          type: 'tool',
+          payload: { name: msgChunk.name ?? 'unknown', result },
+        };
+      } else if (
+        typeof msgChunk.content === 'string' &&
+        msgChunk.content !== ''
+      ) {
+        // AIMessageChunk — skip tool call chunks (they have content === '')
+        message = { type: 'ai', payload: { text: msgChunk.content } };
+      }
+
+      if (message) writeEvent('messages', message);
+    }
+
+    // Persist user message after successful stream (fire-and-forget)
+    persistUserMessage(userId, scopedThreadId, query).catch(console.error);
+  } catch (err) {
+    console.error('[Chat stream error]', err);
+    if (isConnected) {
+      writeEvent('error', {
+        type: 'error',
+        payload: { text: 'An error occurred. Please try again.' },
+      });
+    }
+    next(err);
+  } finally {
+    res.end();
+  }
+}
+
+// ─── GET /api/chat/history ────────────────────────────────────────────────────
+
+export async function getChatHistory(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = (req as AuthenticatedRequest).user.sub;
+    const { threadId, limit = '50' } = req.query as {
+      threadId?: string;
+      limit?: string;
+    };
+    const scopedThreadId = scopeThreadId(userId, threadId);
+    const messages = await getChatHistoryService(
+      userId,
+      scopedThreadId,
+      parseInt(limit, 10),
+    );
+    res.json({ success: true, data: messages });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── DELETE /api/chat/history ─────────────────────────────────────────────────
+
+export async function deleteChatHistory(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = (req as AuthenticatedRequest).user.sub;
+    const { threadId } = req.query as { threadId?: string };
+    const scopedThreadId = threadId
+      ? scopeThreadId(userId, threadId)
+      : undefined;
+    const count = await deleteChatHistoryService(userId, scopedThreadId);
+    res.json({ success: true, message: `${count} message(s) deleted` });
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\controllers\expense.controller.ts
+==============================
+
+import type { Request, Response, NextFunction } from 'express';
+import type { AuthenticatedRequest } from '../types/index';
+import type {
+  CreateExpenseInput,
+  UpdateExpenseInput,
+  ExpenseFiltersInput,
+  BulkDeleteInput,
+} from '../lib/schemas';
+import {
+  listExpensesService,
+  getStatsService,
+  getExpenseByIdService,
+  createExpenseService,
+  updateExpenseService,
+  deleteExpenseService,
+  bulkDeleteExpensesService,
+} from '../services/expense.service';
+
+// ─── GET /api/expenses ────────────────────────────────────────────────────────
+
+export async function listExpenses(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = (req as AuthenticatedRequest).user.sub;
+    const { expenses, pagination } = await listExpensesService(
+      userId,
+      req.query as unknown as ExpenseFiltersInput,
+    );
+    res.json({ success: true, data: expenses, pagination });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── GET /api/expenses/stats ──────────────────────────────────────────────────
+
+export async function getStats(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = (req as AuthenticatedRequest).user.sub;
+    const { from, to } = req.query as { from?: string; to?: string };
+    const stats = await getStatsService(userId, from, to);
+    res.json({ success: true, data: stats });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── GET /api/expenses/:id ────────────────────────────────────────────────────
+
+export async function getExpenseById(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = (req as AuthenticatedRequest).user.sub;
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) {
+      res.status(400).json({ success: false, error: 'Invalid expense ID' });
+      return;
+    }
+    const expense = await getExpenseByIdService(userId, id);
+    res.json({ success: true, data: expense });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── POST /api/expenses ───────────────────────────────────────────────────────
+
+export async function createExpense(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = (req as AuthenticatedRequest).user.sub;
+    const expense = await createExpenseService(
+      userId,
+      req.body as CreateExpenseInput,
+    );
+    res
+      .status(201)
+      .json({ success: true, message: 'Expense created', data: expense });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── PATCH /api/expenses/:id ──────────────────────────────────────────────────
+
+export async function updateExpense(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = (req as AuthenticatedRequest).user.sub;
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) {
+      res.status(400).json({ success: false, error: 'Invalid expense ID' });
+      return;
+    }
+    const expense = await updateExpenseService(
+      userId,
+      id,
+      req.body as UpdateExpenseInput,
+    );
+    res.json({ success: true, message: 'Expense updated', data: expense });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── DELETE /api/expenses/:id ─────────────────────────────────────────────────
+
+export async function deleteExpense(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = (req as AuthenticatedRequest).user.sub;
+    const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) {
+      res.status(400).json({ success: false, error: 'Invalid expense ID' });
+      return;
+    }
+    await deleteExpenseService(userId, id);
+    res.json({ success: true, message: 'Expense deleted' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── DELETE /api/expenses (bulk) ──────────────────────────────────────────────
+
+export async function bulkDeleteExpenses(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = (req as AuthenticatedRequest).user.sub;
+    const count = await bulkDeleteExpensesService(
+      userId,
+      req.body as BulkDeleteInput,
+    );
+    res.json({
+      success: true,
+      message: `${count} expense(s) deleted`,
+      data: { count },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\lib\hash.ts
+==============================
+
+import bcrypt from 'bcryptjs';
+import { env } from '../config/env';
+
+export async function hashPassword(password: string): Promise<string> {
+  return bcrypt.hash(password, env.BCRYPT_ROUNDS);
+}
+
+export async function comparePassword(
+  password: string,
+  hash: string,
+): Promise<boolean> {
+  return bcrypt.compare(password, hash);
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\lib\jwt.ts
+==============================
+
+import jwt from 'jsonwebtoken';
+import { env } from '../config/env';
+import type { JwtPayload, TokenPair } from '../types/index';
+import type { Role } from '../generated/prisma'; 
+
+export function signAccessToken(
+  payload: Omit<JwtPayload, 'iat' | 'exp'>,
+): string {
+  return jwt.sign(payload, env.JWT_ACCESS_SECRET, {
+    expiresIn: env.JWT_ACCESS_EXPIRES_IN as jwt.SignOptions['expiresIn'],
+  });
+}
+
+export function signRefreshToken(
+  payload: Omit<JwtPayload, 'iat' | 'exp'>,
+): string {
+  return jwt.sign(payload, env.JWT_REFRESH_SECRET, {
+    expiresIn: env.JWT_REFRESH_EXPIRES_IN as jwt.SignOptions['expiresIn'],
+  });
+}
+
+export function verifyAccessToken(token: string): JwtPayload {
+  return jwt.verify(token, env.JWT_ACCESS_SECRET) as unknown as JwtPayload; // ← double cast
+}
+
+export function verifyRefreshToken(token: string): JwtPayload {
+  return jwt.verify(token, env.JWT_REFRESH_SECRET) as unknown as JwtPayload; // ← double cast
+}
+
+export function generateTokenPair(
+  userId: number,
+  email: string,
+  role: Role,
+): TokenPair {
+  const payload: Omit<JwtPayload, 'iat' | 'exp'> = { sub: userId, email, role };
+  return {
+    accessToken: signAccessToken(payload),
+    refreshToken: signRefreshToken(payload),
+  };
+}
+
+export function parseDurationMs(duration: string): number {
+  const match = duration.match(/^(\d+)([smhd])$/);
+  if (!match) return 15 * 60 * 1000;
+  const value = parseInt(match[1], 10);
+  const unit = match[2];
+  const multipliers: Record<string, number> = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+  };
+  return value * (multipliers[unit] ?? 1000);
+}
+
+export function getRefreshTokenExpiry(): Date {
+  return new Date(Date.now() + parseDurationMs(env.JWT_REFRESH_EXPIRES_IN));
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\lib\schemas.ts
+==============================
+
+import { z } from 'zod';
+import { Category } from '../generated/prisma'; 
+
+// ─── Auth Schemas ─────────────────────────────────────────────────────────────
+
+export const signUpSchema = z.object({
+  name: z.string().min(2, 'Name must be at least 2 characters').max(100, 'Name too long').trim(),
+  email: z.string().email('Invalid email address').toLowerCase().trim(),
+  password: z
+    .string()
+    .min(8, 'Password must be at least 8 characters')
+    .max(128, 'Password too long')
+    .regex(/[A-Z]/, 'Must contain at least one uppercase letter')
+    .regex(/[a-z]/, 'Must contain at least one lowercase letter')
+    .regex(/[0-9]/, 'Must contain at least one number'),
+});
+
+export const signInSchema = z.object({
+  email: z.string().email('Invalid email address').toLowerCase().trim(),
+  password: z.string().min(1, 'Password is required'),
+});
+
+export const refreshTokenSchema = z.object({
+  refreshToken: z.string().min(1, 'Refresh token is required'),
+});
+
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1, 'Current password is required'),
+    newPassword: z
+      .string()
+      .min(8, 'Password must be at least 8 characters')
+      .max(128)
+      .regex(/[A-Z]/, 'Must contain at least one uppercase letter')
+      .regex(/[a-z]/, 'Must contain at least one lowercase letter')
+      .regex(/[0-9]/, 'Must contain at least one number'),
+    confirmPassword: z.string().min(1, 'Please confirm your password'),
+  })
+  .refine((d) => d.newPassword === d.confirmPassword, {
+    message: 'Passwords do not match',
+    path: ['confirmPassword'],
+  });
+
+// ─── Expense Schemas ──────────────────────────────────────────────────────────
+
+const categoryValues = Object.values(Category) as [Category, ...Category[]];
+
+export const createExpenseSchema = z.object({
+  title: z
+    .string()
+    .min(1, 'Title is required')
+    .max(200, 'Title too long')
+    .trim(),
+  amount: z
+    .number({ error: 'Amount must be a number' })
+    .positive('Amount must be positive')
+    .max(10_000_000, 'Amount too large'),
+  category: z.enum(categoryValues).optional(),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD')
+    .optional(),
+  notes: z.string().max(1000, 'Notes too long').optional(),
+});
+
+export const updateExpenseSchema = z.object({
+  title: z.string().min(1).max(200).trim().optional(),
+  amount: z.number().positive().max(10_000_000).optional(),
+  category: z.enum(categoryValues).optional(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD').optional(),
+  notes: z.string().max(1000).optional(),
+});
+
+export const expenseFiltersSchema = z.object({
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  category: z.enum(categoryValues).optional(),
+  search: z.string().max(200).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export const bulkDeleteSchema = z.object({
+  ids: z.array(z.number().int().positive()).min(1, 'At least one ID required'),
+});
+
+// ─── Chat Schemas ─────────────────────────────────────────────────────────────
+
+export const chatQuerySchema = z.object({
+  query: z.string().min(1, 'Query is required').max(2000, 'Query too long').trim(),
+  threadId: z.string().max(100).optional(),
+});
+
+// ─── Inferred types ───────────────────────────────────────────────────────────
+
+export type SignUpInput         = z.infer<typeof signUpSchema>;
+export type SignInInput         = z.infer<typeof signInSchema>;
+export type RefreshTokenInput   = z.infer<typeof refreshTokenSchema>;
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+export type CreateExpenseInput  = z.infer<typeof createExpenseSchema>;
+export type UpdateExpenseInput  = z.infer<typeof updateExpenseSchema>;
+export type ExpenseFiltersInput = z.infer<typeof expenseFiltersSchema>;
+export type BulkDeleteInput     = z.infer<typeof bulkDeleteSchema>;
+export type ChatQueryInput      = z.infer<typeof chatQuerySchema>;
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\middleware\authenticate.ts
+==============================
+
+import type { Request, Response, NextFunction } from 'express';
+import type { AuthenticatedRequest } from '../types/index';
+import { verifyAccessToken } from '../lib/jwt';
+import { prisma } from '../config/db';
+
+export async function authenticate(
+  req: Request, 
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader?.startsWith('Bearer ')) {
+    res.status(401).json({ success: false, error: 'No token provided' });
+    return;
+  }
+
+  const token = authHeader.slice(7);
+
+  try {
+    const payload = verifyAccessToken(token);
+
+    const user = await prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: { id: true, isActive: true },
+    });
+
+    if (!user || !user.isActive) {
+      res
+        .status(401)
+        .json({ success: false, error: 'User not found or deactivated' });
+      return;
+    }
+
+    (req as AuthenticatedRequest).user = payload; // ← Cast here
+    next();
+  } catch {
+    res.status(401).json({ success: false, error: 'Invalid or expired token' });
+  }
+}
+
+export function requireAdmin(
+  req: Request, 
+  res: Response,
+  next: NextFunction,
+): void {
+  if ((req as AuthenticatedRequest).user.role !== 'ADMIN') {
+    res.status(403).json({ success: false, error: 'Admin access required' });
+    return;
+  }
+  next();
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\middleware\errorHandler.ts
+==============================
+
+import type { Request, Response, NextFunction } from 'express';
+import { env } from '../config/env';
+
+// ─── AppError ─────────────────────────────────────────────────────────────────
+
+export class AppError extends Error {
+  constructor(
+    public readonly statusCode: number,
+    message: string,
+    public readonly code?: string,
+  ) {
+    super(message);
+    this.name = 'AppError';
+    // Restore prototype chain for instanceof checks
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+// ─── Handlers ─────────────────────────────────────────────────────────────────
+
+export function notFoundHandler(req: Request, res: Response): void {
+  res.status(404).json({
+    success: false,
+    error: `Route ${req.method} ${req.path} not found`,
+  });
+}
+
+export function errorHandler(
+  err: Error,
+  _req: Request,
+  res: Response,
+  _next: NextFunction,
+): void {
+  // Operational errors we threw intentionally
+  if (err instanceof AppError) {
+    res.status(err.statusCode).json({
+      success: false,
+      error: err.message,
+      ...(err.code && { code: err.code }),
+    });
+    return;
+  }
+
+  // Prisma unique-constraint violation (P2002)
+  if (isPrismaUniqueError(err)) {
+    res.status(409).json({ success: false, error: 'Resource already exists' });
+    return;
+  }
+
+  // Prisma record-not-found (P2025)
+  if (isPrismaNotFoundError(err)) {
+    res.status(404).json({ success: false, error: 'Record not found' });
+    return;
+  }
+
+  // Unknown — hide internals in production
+  console.error('[ErrorHandler]', err);
+  res.status(500).json({
+    success: false,
+    error:
+      env.NODE_ENV === 'development' ? err.message : 'Internal server error',
+  });
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function isPrismaUniqueError(err: Error): boolean {
+  return 'code' in err && (err as { code: string }).code === 'P2002';
+}
+
+function isPrismaNotFoundError(err: Error): boolean {
+  return 'code' in err && (err as { code: string }).code === 'P2025';
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\middleware\rateLimiter.ts
+==============================
+
+import rateLimit from 'express-rate-limit';
+import { env } from '../config/env';
+
+/** General API rate limiter — applied to all /api routes */
+export const apiLimiter = rateLimit({
+  windowMs: env.RATE_LIMIT_WINDOW_MS,
+  max: env.RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many requests, please try again later.',
+  },
+  skip: () => env.NODE_ENV === 'test',
+});
+
+/** Stricter limiter for auth endpoints (signup / signin) */
+export const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: env.AUTH_RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many authentication attempts, please try again in 15 minutes.',
+  },
+  skip: () => env.NODE_ENV === 'test',
+});
+
+/** Tight limiter for AI chat streaming endpoint */
+export const chatLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error:
+      'Chat rate limit exceeded. Please wait before sending more messages.',
+  },
+  skip: () => env.NODE_ENV === 'test',
+});
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\middleware\validate.ts
+==============================
+
+// src/middleware/validate.ts
+
+import type { Request, Response, NextFunction } from 'express';
+import type { ZodSchema, ZodError } from 'zod';
+
+type RequestPart = 'body' | 'query' | 'params';
+
+export function validate(schema: ZodSchema, part: RequestPart = 'body') {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const result = schema.safeParse(req[part]);
+    if (!result.success) {
+      res.status(400).json({
+        success: false,
+        error: 'Validation failed',
+        details: formatErrors(result.error),
+      });
+      return;
+    }
+
+    if (part === 'query') {
+      // Express 5 makes req.query a read-only getter — merge onto the object instead
+      Object.assign(req.query, result.data);
+    } else {
+      (req as unknown as Record<string, unknown>)[part] = result.data;
+    }
+
+    next();
+  };
+}
+
+function formatErrors(error: ZodError): Record<string, string> {
+  return error.issues.reduce<Record<string, string>>((acc, issue) => {
+    const path = issue.path.join('.') || 'root';
+    acc[path] = issue.message;
+    return acc;
+  }, {});
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\routes\auth.routes.ts
+==============================
+
+import { Router } from 'express';
+import { authLimiter } from '../middleware/rateLimiter';
+import { validate } from '../middleware/validate';
+import { authenticate } from '../middleware/authenticate';
+import {
+  signUpSchema,
+  signInSchema,
+  refreshTokenSchema,
+  changePasswordSchema,
+} from '../lib/schemas';
+import {
+  signUp,
+  signIn,
+  refreshToken,
+  logout,
+  getMe,
+  changePassword,
+} from '../controllers/auth.controller';
+
+export const authRouter: Router = Router();
+
+// Public — with strict per-IP rate limiting
+authRouter.post('/signup', authLimiter, validate(signUpSchema), signUp);
+authRouter.post('/signin', authLimiter, validate(signInSchema), signIn);
+authRouter.post('/refresh', validate(refreshTokenSchema), refreshToken);
+authRouter.post('/logout', validate(refreshTokenSchema), logout);
+
+// Protected — requires valid Bearer JWT
+authRouter.get('/me', authenticate, getMe);
+authRouter.patch(
+  '/change-password',
+  authenticate,
+  validate(changePasswordSchema),
+  changePassword,
+);
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\routes\chat.routes.ts
+==============================
+
+import { Router } from 'express';
+import { authenticate } from '../middleware/authenticate';
+import { validate } from '../middleware/validate';
+import { chatLimiter } from '../middleware/rateLimiter';
+import { chatQuerySchema } from '../lib/schemas';
+import {
+  streamChat,
+  getChatHistory,
+  deleteChatHistory,
+} from '../controllers/chat.controller';
+
+export const chatRouter: Router = Router();
+
+// All chat routes require a valid Bearer JWT
+chatRouter.use(authenticate);
+
+chatRouter.post('/', chatLimiter, validate(chatQuerySchema), streamChat);
+chatRouter.get('/history', getChatHistory);
+chatRouter.delete('/history', deleteChatHistory);
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\routes\expense.routes.ts
+==============================
+
+import { Router } from 'express';
+import { authenticate } from '../middleware/authenticate';
+import { validate } from '../middleware/validate';
+import {
+  createExpenseSchema,
+  updateExpenseSchema,
+  expenseFiltersSchema,
+  bulkDeleteSchema,
+} from '../lib/schemas';
+import {
+  listExpenses,
+  getStats,
+  getExpenseById,
+  createExpense,
+  updateExpense,
+  deleteExpense,
+  bulkDeleteExpenses,
+} from '../controllers/expense.controller';
+
+export const expenseRouter: Router = Router();
+
+// All expense routes require a valid Bearer JWT
+expenseRouter.use(authenticate);
+
+// Collection routes
+expenseRouter.get('/', validate(expenseFiltersSchema, 'query'), listExpenses);
+expenseRouter.get('/stats', getStats);
+expenseRouter.post('/', validate(createExpenseSchema), createExpense);
+expenseRouter.delete('/', validate(bulkDeleteSchema), bulkDeleteExpenses);
+
+// Single-resource routes — note: /stats must be declared before /:id
+expenseRouter.get('/:id', getExpenseById);
+expenseRouter.patch('/:id', validate(updateExpenseSchema), updateExpense);
+expenseRouter.delete('/:id', deleteExpense);
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\routes\index.ts
+==============================
+
+import { Router } from 'express';
+import { authRouter } from './auth.routes';
+import { expenseRouter } from './expense.routes';
+import { chatRouter } from './chat.routes';
+
+export const apiRouter: Router = Router();
+
+apiRouter.use('/auth', authRouter);
+apiRouter.use('/expenses', expenseRouter);
+apiRouter.use('/chat', chatRouter);
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\server.ts
+==============================
+
+import 'dotenv/config';
+import './config/env'; // ← Must be first — validates all env vars before anything else
+
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import { connectDB, disconnectDB } from './config/db';
+import { apiRouter } from './routes/index';
+import { apiLimiter } from './middleware/rateLimiter';
+import { notFoundHandler, errorHandler } from './middleware/errorHandler';
+import { env } from './config/env';
+
+const app = express();
+
+// ─── Security headers ─────────────────────────────────────────────────────────
+
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    contentSecurityPolicy: false, // Pure API — no HTML served
+  }),
+);
+
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+
+app.use(
+  cors({
+    origin: env.FRONTEND_URL,
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
+  }),
+);
+
+// Trust proxy — required for correct IP-based rate limiting behind Nginx / Railway / Render
+app.set('trust proxy', 1);
+
+// ─── Body parsing ─────────────────────────────────────────────────────────────
+
+app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+
+// ─── HTTP logging ─────────────────────────────────────────────────────────────
+
+app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));
+
+// ─── Rate limiting ────────────────────────────────────────────────────────────
+
+app.use('/api', apiLimiter);
+
+// ─── Health check ─────────────────────────────────────────────────────────────
+
+app.get('/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    env: env.NODE_ENV,
+  });
+});
+
+// ─── API routes ───────────────────────────────────────────────────────────────
+
+app.use('/api', apiRouter);
+
+// ─── 404 + Error handling ─────────────────────────────────────────────────────
+
+app.use(notFoundHandler);
+app.use(errorHandler);
+
+// ─── Bootstrap ────────────────────────────────────────────────────────────────
+
+async function start(): Promise<void> {
+  await connectDB();
+
+  const server = app.listen(env.PORT, () => {
+    console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log(`🚀  Server    → http://localhost:${env.PORT}`);
+    console.log(`🔐  Auth      → http://localhost:${env.PORT}/api/auth`);
+    console.log(`📊  Expenses  → http://localhost:${env.PORT}/api/expenses`);
+    console.log(`💬  Chat      → http://localhost:${env.PORT}/api/chat`);
+    console.log(`🩺  Health    → http://localhost:${env.PORT}/health`);
+    console.log(`🌱  Env       → ${env.NODE_ENV}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+  });
+
+  // ── Graceful shutdown ──────────────────────────────────────────────────────
+
+  const shutdown = async (signal: string): Promise<void> => {
+    console.log(`\n🛑  ${signal} — shutting down gracefully...`);
+
+    server.close(async () => {
+      await disconnectDB();
+      console.log('👋  Server closed.');
+      process.exit(0);
+    });
+
+    // Force exit after 10 s if connections are stuck
+    setTimeout(() => {
+      console.error('⚠️   Forcing shutdown after 10 s timeout.');
+      process.exit(1);
+    }, 10_000).unref();
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+
+  process.on('uncaughtException', (err) => {
+    console.error('💥  Uncaught exception:', err);
+    shutdown('uncaughtException').catch(() => process.exit(1));
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    console.error('💥  Unhandled rejection:', reason);
+  });
+}
+
+start().catch((err: Error) => {
+  console.error('Failed to start server:', err.message);
+  process.exit(1);
+});
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\services\auth.service.ts
+==============================
+
+import { prisma } from '../config/db';
+import { hashPassword, comparePassword } from '../lib/hash';
+import {
+  generateTokenPair,
+  verifyRefreshToken,
+  getRefreshTokenExpiry,
+} from '../lib/jwt';
+import { AppError } from '../middleware/errorHandler';
+import type {
+  SignUpInput,
+  SignInInput,
+  ChangePasswordInput,
+} from '../lib/schemas';
+import type { PublicUser, TokenPair } from '../types/index';
+
+// Dummy hash for constant-time comparison — prevents timing attacks that
+// reveal whether an email address exists in the system.
+const DUMMY_HASH =
+  '$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeANHBfElmfNyD1ra';
+
+export interface AuthResult {
+  user: PublicUser;
+  tokens: TokenPair;
+}
+
+// ─── Sign Up ──────────────────────────────────────────────────────────────────
+
+export async function signUpService(input: SignUpInput): Promise<AuthResult> {
+  const { name, email, password } = input;
+
+  const existing = await prisma.user.findUnique({
+    where: { email },
+    select: { id: true },
+  });
+
+  if (existing) {
+    throw new AppError(409, 'Email already registered');
+  }
+
+  const passwordHash = await hashPassword(password);
+
+  const user = await prisma.user.create({
+    data: { name, email, passwordHash },
+    select: { id: true, name: true, email: true, role: true, createdAt: true },
+  });
+
+  const tokens = generateTokenPair(user.id, user.email, user.role);
+
+  await prisma.refreshToken.create({
+    data: {
+      token: tokens.refreshToken,
+      userId: user.id,
+      expiresAt: getRefreshTokenExpiry(),
+    },
+  });
+
+  return { user, tokens };
+}
+
+// ─── Sign In ──────────────────────────────────────────────────────────────────
+
+export async function signInService(input: SignInInput): Promise<AuthResult> {
+  const { email, password } = input;
+
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+      passwordHash: true,
+      isActive: true,
+      createdAt: true,
+    },
+  });
+
+  // Always run bcrypt compare to prevent timing attacks
+  const isValid = await comparePassword(
+    password,
+    user?.passwordHash ?? DUMMY_HASH,
+  );
+
+  if (!user || !isValid) {
+    throw new AppError(401, 'Invalid email or password');
+  }
+
+  if (!user.isActive) {
+    throw new AppError(403, 'Account deactivated. Please contact support.');
+  }
+
+  const tokens = generateTokenPair(user.id, user.email, user.role);
+
+  await Promise.all([
+    prisma.refreshToken.create({
+      data: {
+        token: tokens.refreshToken,
+        userId: user.id,
+        expiresAt: getRefreshTokenExpiry(),
+      },
+    }),
+    prisma.user.update({
+      where: { id: user.id },
+      data: { lastLoginAt: new Date() },
+    }),
+  ]);
+
+  const { passwordHash: _omit, ...publicUser } = user;
+  return { user: publicUser, tokens };
+}
+
+// ─── Refresh Tokens ───────────────────────────────────────────────────────────
+
+export async function refreshTokenService(
+  refreshToken: string,
+): Promise<TokenPair> {
+  let _payload: ReturnType<typeof verifyRefreshToken>;
+  try {
+    _payload = verifyRefreshToken(refreshToken);
+  } catch {
+    throw new AppError(401, 'Invalid refresh token');
+  }
+
+  const stored = await prisma.refreshToken.findUnique({
+    where: { token: refreshToken },
+    include: {
+      user: { select: { id: true, email: true, role: true, isActive: true } },
+    },
+  });
+
+  if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
+    throw new AppError(401, 'Refresh token expired or revoked');
+  }
+
+  if (!stored.user.isActive) {
+    throw new AppError(403, 'Account deactivated');
+  }
+
+  // Rotate — revoke old token, issue new pair
+  const tokens = generateTokenPair(
+    stored.user.id,
+    stored.user.email,
+    stored.user.role,
+  );
+
+  await prisma.$transaction([
+    prisma.refreshToken.update({
+      where: { id: stored.id },
+      data: { revokedAt: new Date() },
+    }),
+    prisma.refreshToken.create({
+      data: {
+        token: tokens.refreshToken,
+        userId: stored.userId,
+        expiresAt: getRefreshTokenExpiry(),
+      },
+    }),
+  ]);
+
+  return tokens;
+}
+
+// ─── Logout ───────────────────────────────────────────────────────────────────
+
+export async function logoutService(refreshToken: string): Promise<void> {
+  // Silently revoke — don't leak whether the token exists
+  await prisma.refreshToken
+    .update({
+      where: { token: refreshToken },
+      data: { revokedAt: new Date() },
+    })
+    .catch(() => undefined);
+}
+
+// ─── Get Current User ─────────────────────────────────────────────────────────
+
+export async function getMeService(userId: number) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+      isActive: true,
+      lastLoginAt: true,
+      createdAt: true,
+      updatedAt: true,
+      _count: { select: { expenses: true } },
+    },
+  });
+
+  if (!user) throw new AppError(404, 'User not found');
+  return user;
+}
+
+// ─── Change Password ──────────────────────────────────────────────────────────
+
+export async function changePasswordService(
+  userId: number,
+  input: ChangePasswordInput,
+): Promise<void> {
+  const { currentPassword, newPassword } = input;
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, passwordHash: true },
+  });
+
+  if (!user) throw new AppError(404, 'User not found');
+
+  const isValid = await comparePassword(currentPassword, user.passwordHash);
+  if (!isValid) throw new AppError(401, 'Current password is incorrect');
+
+  const newHash = await hashPassword(newPassword);
+
+  // Update password AND revoke all refresh tokens — forces re-login on all devices
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash: newHash },
+    }),
+    prisma.refreshToken.updateMany({
+      where: { userId: user.id, revokedAt: null },
+      data: { revokedAt: new Date() },
+    }),
+  ]);
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\services\chat.service.ts
+==============================
+
+import { prisma } from '../config/db';
+
+// ─── Thread ID scoping ────────────────────────────────────────────────────────
+
+/** Prefixes threadId with userId — users can never access each other's threads */
+export function scopeThreadId(userId: number, threadId?: string): string {
+  return `user-${userId}-${threadId ?? 'default'}`;
+}
+
+// ─── Persist a user message ───────────────────────────────────────────────────
+
+export async function persistUserMessage(
+  userId: number,
+  threadId: string,
+  content: string,
+): Promise<void> {
+  await prisma.chatMessage.create({
+    data: { userId, threadId, role: 'user', content },
+  });
+}
+
+// ─── Get chat history ─────────────────────────────────────────────────────────
+
+export async function getChatHistoryService(
+  userId: number,
+  threadId: string,
+  limit: number,
+) {
+  return prisma.chatMessage.findMany({
+    where: { userId, threadId },
+    orderBy: { createdAt: 'asc' },
+    take: limit,
+    select: {
+      id: true,
+      threadId: true,
+      role: true,
+      content: true,
+      createdAt: true,
+    },
+  });
+}
+
+// ─── Delete chat history ──────────────────────────────────────────────────────
+
+export async function deleteChatHistoryService(
+  userId: number,
+  threadId?: string,
+): Promise<number> {
+  const where = threadId ? { userId, threadId } : { userId };
+  const { count } = await prisma.chatMessage.deleteMany({ where });
+  return count;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\services\expense.service.ts
+==============================
+
+import type { Prisma, Category } from '../generated/prisma';
+import { prisma } from '../config/db';
+import { AppError } from '../middleware/errorHandler';
+import type {
+  CreateExpenseInput,
+  UpdateExpenseInput,
+  ExpenseFiltersInput,
+  BulkDeleteInput,
+} from '../lib/schemas';
+import type { ExpenseStats, PaginationMeta } from '../types/index';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface ExpenseListResult {
+  expenses: Awaited<ReturnType<typeof prisma.expense.findMany>>;
+  pagination: PaginationMeta;
+}
+
+// ─── List Expenses ────────────────────────────────────────────────────────────
+
+export async function listExpensesService(
+  userId: number,
+  filters: ExpenseFiltersInput,
+): Promise<ExpenseListResult> {
+  const { from, to, category, search, page, limit } = filters;
+  const skip = (page - 1) * limit;
+
+  const where: Prisma.ExpenseWhereInput = { userId };
+
+  if (from && to) where.date = { gte: from, lte: to };
+  else if (from) where.date = { gte: from };
+  else if (to) where.date = { lte: to };
+  if (category) where.category = category;
+  if (search) where.title = { contains: search, mode: 'insensitive' };
+
+  const [expenses, total] = await Promise.all([
+    prisma.expense.findMany({
+      where,
+      orderBy: { date: 'desc' },
+      skip,
+      take: limit,
+    }),
+    prisma.expense.count({ where }),
+  ]);
+
+  return {
+    expenses,
+    pagination: {
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    },
+  };
+}
+
+// ─── Get Stats ────────────────────────────────────────────────────────────────
+
+export async function getStatsService(
+  userId: number,
+  from?: string,
+  to?: string,
+): Promise<ExpenseStats> {
+  const where: Prisma.ExpenseWhereInput = { userId };
+
+  if (from && to) where.date = { gte: from, lte: to };
+  else if (from) where.date = { gte: from };
+  else if (to) where.date = { lte: to };
+
+  const [aggregate, byCategory] = await Promise.all([
+    prisma.expense.aggregate({
+      where,
+      _sum: { amount: true },
+      _count: true,
+      _avg: { amount: true },
+      _max: { amount: true },
+      _min: { amount: true },
+    }),
+    prisma.expense.groupBy({
+      by: ['category'],
+      where,
+      _sum: { amount: true },
+      _count: true,
+      orderBy: { _sum: { amount: 'desc' } },
+    }),
+  ]);
+
+  return {
+    total: aggregate._sum.amount ?? 0,
+    count: aggregate._count,
+    average: aggregate._avg.amount ?? 0,
+    max: aggregate._max.amount ?? 0,
+    min: aggregate._min.amount ?? 0,
+    byCategory: byCategory.map((c) => ({
+      category: c.category,
+      amount: c._sum.amount ?? 0,
+      count: c._count,
+    })),
+  };
+}
+
+// ─── Get Single ───────────────────────────────────────────────────────────────
+
+export async function getExpenseByIdService(userId: number, id: number) {
+  const expense = await prisma.expense.findFirst({ where: { id, userId } });
+  if (!expense) throw new AppError(404, 'Expense not found');
+  return expense;
+}
+
+// ─── Create ───────────────────────────────────────────────────────────────────
+
+export async function createExpenseService(
+  userId: number,
+  input: CreateExpenseInput,
+) {
+  const { title, amount, category, date, notes } = input;
+
+  return prisma.expense.create({
+    data: {
+      title,
+      amount,
+      category: (category as Category) ?? 'OTHER',
+      date: date ?? new Date().toISOString().split('T')[0],
+      notes,
+      userId,
+    },
+  });
+}
+
+// ─── Update ───────────────────────────────────────────────────────────────────
+
+export async function updateExpenseService(
+  userId: number,
+  id: number,
+  input: UpdateExpenseInput,
+) {
+  const existing = await prisma.expense.findFirst({ where: { id, userId } });
+  if (!existing) throw new AppError(404, 'Expense not found');
+
+  const { title, amount, category, date, notes } = input;
+
+  return prisma.expense.update({
+    where: { id },
+    data: {
+      ...(title !== undefined && { title }),
+      ...(amount !== undefined && { amount }),
+      ...(category !== undefined && { category: category as Category }),
+      ...(date !== undefined && { date }),
+      ...(notes !== undefined && { notes }),
+    },
+  });
+}
+
+// ─── Delete One ───────────────────────────────────────────────────────────────
+
+export async function deleteExpenseService(
+  userId: number,
+  id: number,
+): Promise<void> {
+  const existing = await prisma.expense.findFirst({ where: { id, userId } });
+  if (!existing) throw new AppError(404, 'Expense not found');
+  await prisma.expense.delete({ where: { id } });
+}
+
+// ─── Bulk Delete ──────────────────────────────────────────────────────────────
+
+export async function bulkDeleteExpensesService(
+  userId: number,
+  input: BulkDeleteInput,
+): Promise<number> {
+  const { count } = await prisma.expense.deleteMany({
+    where: { id: { in: input.ids }, userId },
+  });
+  return count;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\tools\index.ts
+==============================
+
+import { tool } from '@langchain/core/tools';
+import { z } from 'zod';
+import { prisma } from '../config/db';
+import type { Category } from '../generated/prisma';
+
+const categoryEnum = z.enum([
+  'DINING',
+  'SHOPPING',
+  'TRANSPORT',
+  'ENTERTAINMENT',
+  'UTILITIES',
+  'HEALTH',
+  'EDUCATION',
+  'OTHER',
+]);
+
+/**
+ * Initialises all LangGraph tools scoped to a specific user.
+ * Called once per user — results are cached in the agent factory.
+ */
+export function initTools(userId: number) {
+  // ─── add_expense ─────────────────────────────────────────────────────────
+
+  const addExpense = tool(
+    async ({ title, amount, category, date, notes }) => {
+      const expense = await prisma.expense.create({
+        data: {
+          title,
+          amount,
+          category: (category as Category) ?? 'OTHER',
+          date: date ?? new Date().toISOString().split('T')[0],
+          notes,
+          userId,
+        },
+      });
+      return JSON.stringify({
+        status: 'success',
+        message: `Added "${title}" (₹${amount.toLocaleString('en-IN')}) to your expenses.`,
+        id: expense.id,
+      });
+    },
+    {
+      name: 'add_expense',
+      description:
+        'Add a new expense. Call this when the user mentions spending or buying something.',
+      schema: z.object({
+        title: z.string().describe('Short description of the expense'),
+        amount: z.number().positive().describe('Amount spent in INR'),
+        category: categoryEnum
+          .optional()
+          .describe('Expense category — pick the most fitting one'),
+        date: z
+          .string()
+          .optional()
+          .describe('Date in YYYY-MM-DD. Defaults to today if not provided.'),
+        notes: z.string().optional().describe('Any extra notes'),
+      }),
+    },
+  );
+
+  // ─── get_expenses ─────────────────────────────────────────────────────────
+
+  const getExpenses = tool(
+    async ({ from, to, category }) => {
+      const rows = await prisma.expense.findMany({
+        where: {
+          userId,
+          date: { gte: from, lte: to },
+          ...(category && { category: category as Category }),
+        },
+        orderBy: { date: 'desc' },
+      });
+
+      if (rows.length === 0) {
+        return JSON.stringify({
+          message: 'No expenses found for this period.',
+          data: [],
+        });
+      }
+
+      const total = rows.reduce((sum, r) => sum + r.amount, 0);
+
+      return JSON.stringify({
+        data: rows,
+        summary: {
+          count: rows.length,
+          total: Math.round(total * 100) / 100,
+        },
+      });
+    },
+    {
+      name: 'get_expenses',
+      description:
+        'Retrieve expenses for a date range. Use this to answer questions about past spending.',
+      schema: z.object({
+        from: z.string().describe('Start date in YYYY-MM-DD format'),
+        to: z.string().describe('End date in YYYY-MM-DD format'),
+        category: categoryEnum.optional().describe('Optional category filter'),
+      }),
+    },
+  );
+
+  // ─── generate_expense_chart ───────────────────────────────────────────────
+
+  const generateChart = tool(
+    async ({ from, to, groupBy }) => {
+      const rows = await prisma.expense.findMany({
+        where: { userId, date: { gte: from, lte: to } },
+        select: { date: true, amount: true, category: true },
+        orderBy: { date: 'asc' },
+      });
+
+      const grouped: Record<string, number> = {};
+
+      for (const row of rows) {
+        let key: string;
+        const d = new Date(row.date);
+
+        if (groupBy === 'month') {
+          key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        } else if (groupBy === 'week') {
+          const startOfYear = new Date(d.getFullYear(), 0, 1);
+          const week = Math.ceil(
+            ((d.getTime() - startOfYear.getTime()) / 86400000 +
+              startOfYear.getDay() +
+              1) /
+              7,
+          );
+          key = `${d.getFullYear()}-W${String(week).padStart(2, '0')}`;
+        } else if (groupBy === 'category') {
+          key = row.category;
+        } else {
+          key = row.date;
+        }
+
+        grouped[key] = (grouped[key] ?? 0) + row.amount;
+      }
+
+      const data = Object.entries(grouped)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([period, total]) => ({
+          [groupBy]: period,
+          amount: Math.round(total * 100) / 100,
+        }));
+
+      return JSON.stringify({ type: 'chart', data, labelKey: groupBy });
+    },
+    {
+      name: 'generate_expense_chart',
+      description:
+        'Generate chart data grouped by date, week, month, or category. ' +
+        'Call ONLY when the user explicitly asks for a chart or graph.',
+      schema: z.object({
+        from: z.string().describe('Start date in YYYY-MM-DD format'),
+        to: z.string().describe('End date in YYYY-MM-DD format'),
+        groupBy: z
+          .enum(['date', 'week', 'month', 'category'])
+          .describe('How to group the data'),
+      }),
+    },
+  );
+
+  // ─── delete_expense ───────────────────────────────────────────────────────
+
+  const deleteExpense = tool(
+    async ({ id }) => {
+      const expense = await prisma.expense.findFirst({ where: { id, userId } });
+      if (!expense) {
+        return JSON.stringify({
+          status: 'error',
+          message: `Expense #${id} not found.`,
+        });
+      }
+      await prisma.expense.delete({ where: { id } });
+      return JSON.stringify({
+        status: 'success',
+        message: `Deleted "${expense.title}" (₹${expense.amount.toLocaleString('en-IN')}).`,
+      });
+    },
+    {
+      name: 'delete_expense',
+      description: 'Delete a specific expense by its numeric ID.',
+      schema: z.object({
+        id: z.number().int().positive().describe('The expense ID to delete'),
+      }),
+    },
+  );
+
+  return [addExpense, getExpenses, generateChart, deleteExpense];
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\types\index.ts
+==============================
+
+import type { Request } from 'express';
+import type { Category, Role } from '../generated/prisma';
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+export interface JwtPayload {
+  sub: number; // userId
+  email: string;
+  role: Role;
+  iat?: number;
+  exp?: number;
+}
+
+export interface AuthenticatedRequest extends Request {
+  user: JwtPayload;
+}
+
+export interface TokenPair {
+  accessToken: string;
+  refreshToken: string;
+}
+
+export interface PublicUser {
+  id: number;
+  name: string;
+  email: string;
+  role: Role;
+  createdAt: Date;
+}
+
+// ─── SSE Streaming ────────────────────────────────────────────────────────────
+
+export type StreamMessage =
+  | { type: 'ai'; payload: { text: string } }
+  | {
+      type: 'toolCall:start';
+      payload: { name: string; args: Record<string, unknown> };
+    }
+  | { type: 'tool'; payload: { name: string; result: Record<string, unknown> } }
+  | { type: 'error'; payload: { text: string } };
+
+// ─── API Responses ────────────────────────────────────────────────────────────
+
+export interface ApiResponse<T = unknown> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  message?: string;
+}
+
+export interface PaginationMeta {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export interface PaginatedResponse<T> extends ApiResponse<T[]> {
+  pagination: PaginationMeta;
+}
+
+// ─── Expenses ─────────────────────────────────────────────────────────────────
+
+export interface ExpenseStats {
+  total: number;
+  count: number;
+  average: number;
+  max: number;
+  min: number;
+  byCategory: Array<{
+    category: Category;
+    amount: number;
+    count: number;
+  }>;
+}
+
+// ─── Chat ─────────────────────────────────────────────────────────────────────
+
+export interface ChatHistoryEntry {
+  id: number;
+  threadId: string;
+  role: string;
+  content: string;
+  createdAt: Date;
+}
