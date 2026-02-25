@@ -87,7 +87,7 @@ export const authApi = {
 FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\api\chat.api.ts
 ==============================
 
-import { BASE_URL, tokenStorage } from './client';
+import { BASE_URL, fetchWithAuth } from './client';
 
 export type StreamMessageType =
   | { type: 'ai'; payload: { text: string } }
@@ -118,21 +118,23 @@ export function streamChat(
   callbacks: ChatStreamCallbacks,
 ): () => void {
   let isCancelled = false;
+
   (async () => {
     try {
-      const token = tokenStorage.getAccess();
-      const res = await fetch(`${BASE_URL}/chat`, {
+      // fetchWithAuth handles 401 → refresh → retry automatically,
+      // so the stream always starts with a valid token.
+      const res = await fetchWithAuth(`${BASE_URL}/chat`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, threadId }),
       });
+
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+
       while (!isCancelled) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -154,6 +156,7 @@ export function streamChat(
           }
         }
       }
+
       callbacks.onDone?.();
     } catch (err) {
       if (!isCancelled)
@@ -162,35 +165,31 @@ export function streamChat(
         );
     }
   })();
+
   return () => {
     isCancelled = true;
   };
 }
 
 export const chatApi = {
-  getHistory: (threadId?: string, limit = 50) => {
-    const token = tokenStorage.getAccess();
+  getHistory: async (threadId?: string, limit = 50) => {
     const params = new URLSearchParams();
     if (threadId) params.set('threadId', threadId);
     params.set('limit', String(limit));
-    return fetch(`${BASE_URL}/chat/history?${params}`, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    }).then((r) => r.json());
+    const res = await fetchWithAuth(`${BASE_URL}/chat/history?${params}`, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return res.json();
   },
-  deleteHistory: (threadId?: string) => {
-    const token = tokenStorage.getAccess();
+
+  deleteHistory: async (threadId?: string) => {
     const params = new URLSearchParams();
     if (threadId) params.set('threadId', threadId);
-    return fetch(`${BASE_URL}/chat/history?${params}`, {
+    const res = await fetchWithAuth(`${BASE_URL}/chat/history?${params}`, {
       method: 'DELETE',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    }).then((r) => r.json());
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return res.json();
   },
 };
 
@@ -240,6 +239,53 @@ async function doRefresh(): Promise<boolean> {
   }
 }
 
+/**
+ * Builds Authorization headers using the current access token.
+ * Merges with any headers already in `init`.
+ */
+function authHeaders(init: RequestInit = {}): Record<string, string> {
+  const token = tokenStorage.getAccess();
+  return {
+    'Content-Type': 'application/json',
+    ...(init.headers as Record<string, string>),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+/**
+ * A fetch wrapper for endpoints that need token refresh but return
+ * a raw Response (e.g. SSE streams, file downloads) rather than JSON.
+ *
+ * On 401 it attempts a token refresh once, updates the Authorization
+ * header with the new token, and retries the request.
+ * On repeated 401 (refresh failed) it clears storage and redirects to /login.
+ */
+export async function fetchWithAuth(
+  url: string,
+  init: RequestInit = {},
+  retry = true,
+): Promise<Response> {
+  const res = await fetch(url, { ...init, headers: authHeaders(init) });
+
+  if (res.status === 401 && retry) {
+    if (!refreshPromise) refreshPromise = doRefresh();
+    const refreshed = await refreshPromise;
+    refreshPromise = null;
+
+    if (refreshed) {
+      // Retry with the freshly-minted token
+      return fetchWithAuth(url, init, false);
+    }
+
+    tokenStorage.clear();
+    window.location.href = '/login';
+    // Return the 401 response so callers can handle it if needed
+    return res;
+  }
+
+  return res;
+}
+
 export interface ApiResponse<T = unknown> {
   success: boolean;
   data?: T;
@@ -283,7 +329,6 @@ export async function request<T>(
   }
   return res.json();
 }
-
 
 ==============================
 FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\api\expenses.api.ts
@@ -427,15 +472,26 @@ function AppShell() {
       }}
     >
       <Sidebar />
-      {/* Main content: on mobile, add top padding for fixed header + bottom padding for bottom nav */}
+
+      {/*
+        KEY FIX: `overflow: hidden` here is intentional — it clips the main
+        container so each PAGE can independently manage its own scroll via
+        an inner `overflow-y: auto` div. This prevents the entire shell from
+        scrolling and allows the header to stay sticky within each page.
+
+        On mobile the top header is 56px and the bottom nav is 64px, so we
+        pad the top and bottom accordingly via CSS variables.
+      */}
       <main
-        className='flex-1 overflow-hidden relative md:pt-0 md:pb-0'
+        className='flex-1 relative'
         style={{
-          // CSS variables make it easy to adjust header/bottomnav heights in one place
-          paddingTop: 'var(--mobile-header-height, 56px)',
-          paddingBottom: 'var(--mobile-bottomnav-height, 64px)',
+          overflow: 'hidden',
+          // On mobile: push content below fixed top bar + above bottom nav
+          paddingTop: 'var(--mobile-header-height, 0px)',
+          paddingBottom: 'var(--mobile-bottomnav-height, 0px)',
         }}
       >
+        {/* Subtle grid overlay */}
         <div
           style={{
             position: 'absolute',
@@ -447,7 +503,16 @@ function AppShell() {
             zIndex: 0,
           }}
         />
-        <div style={{ position: 'relative', zIndex: 1, height: '100%' }}>
+
+        {/* Page content — fills remaining height so pages can scroll internally */}
+        <div
+          style={{
+            position: 'relative',
+            zIndex: 1,
+            height: '100%',
+            overflow: 'hidden',
+          }}
+        >
           <Routes>
             <Route path='/' element={<Dashboard />} />
             <Route path='/chat' element={<ChatPage />} />
@@ -985,7 +1050,7 @@ export function ChatInput({ onSubmit, disabled }: ChatInputProps) {
 FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\components\ChatMessage.tsx
 ==============================
 
-import { useState } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   User,
   Cpu,
@@ -1000,16 +1065,22 @@ import {
   XAxis,
   YAxis,
   CartesianGrid,
-  Tooltip,
   ResponsiveContainer,
   Cell,
   PieChart,
   Pie,
   LineChart,
   Line,
+  Tooltip,
 } from 'recharts';
+import type { TooltipProps } from 'recharts';
+import type {
+  NameType,
+  ValueType,
+} from 'recharts/types/component/DefaultTooltipContent';
 import type { StreamMessage } from '@/types/StreamMessage.types';
 
+// ─── Constants ────────────────────────────────────────────────────────────────
 const CATEGORY_COLORS: Record<string, string> = {
   DINING: '#ff2d78',
   SHOPPING: '#9d7fff',
@@ -1031,6 +1102,7 @@ const PALETTE = [
   '#4a4870',
 ];
 
+// ─── Chart shape detection ────────────────────────────────────────────────────
 type ChartShape =
   | { kind: 'bar'; data: { label: string; amount: number; color?: string }[] }
   | { kind: 'pie'; data: { name: string; value: number; color: string }[] }
@@ -1054,16 +1126,15 @@ function detectChart(result: Record<string, unknown>): ChartShape {
   }
   if (Array.isArray(result.expenses) && result.expenses.length > 0) {
     const exps = result.expenses as Array<{ date: string; amount: number }>;
-    const monthSet = new Set(exps.map((e) => e.date.slice(0, 7)));
-    if (monthSet.size > 1) {
-      const monthMap: Record<string, number> = {};
+    if (new Set(exps.map((e) => e.date.slice(0, 7))).size > 1) {
+      const mm: Record<string, number> = {};
       for (const e of exps) {
         const k = e.date.slice(0, 7);
-        monthMap[k] = (monthMap[k] ?? 0) + e.amount;
+        mm[k] = (mm[k] ?? 0) + e.amount;
       }
       return {
         kind: 'line',
-        data: Object.entries(monthMap)
+        data: Object.entries(mm)
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([m, a]) => ({
             month: new Date(m + '-01').toLocaleString('en', { month: 'short' }),
@@ -1071,14 +1142,14 @@ function detectChart(result: Record<string, unknown>): ChartShape {
           })),
       };
     }
-    const dateMap: Record<string, number> = {};
+    const dm: Record<string, number> = {};
     for (const e of exps) {
       const k = e.date.slice(5);
-      dateMap[k] = (dateMap[k] ?? 0) + e.amount;
+      dm[k] = (dm[k] ?? 0) + e.amount;
     }
     return {
       kind: 'bar',
-      data: Object.entries(dateMap)
+      data: Object.entries(dm)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([l, a]) => ({ label: l, amount: a, color: '#7c5cfc' })),
     };
@@ -1102,30 +1173,372 @@ function detectChart(result: Record<string, unknown>): ChartShape {
   return null;
 }
 
-const tooltipStyle = {
-  contentStyle: {
-    background: '#0d0d1a',
-    border: '1px solid rgba(124,92,252,0.2)',
-    borderRadius: '10px',
-    fontFamily: '"JetBrains Mono", monospace',
-    fontSize: '11px',
-    color: '#f0efff',
-  },
-  cursor: { fill: 'rgba(124,92,252,0.05)' },
+// ─── Shared tooltip box UI ────────────────────────────────────────────────────
+interface TipPayload {
+  label: string;
+  value: number;
+  color: string;
+}
+
+function TooltipBox({ label, value, color }: TipPayload) {
+  return (
+    <div
+      style={{
+        background: '#1a1a2e',
+        border: `1px solid ${color}90`,
+        borderRadius: 10,
+        padding: '9px 13px',
+        boxShadow: `0 8px 32px rgba(0,0,0,0.85), 0 0 20px ${color}30`,
+        fontFamily: '"JetBrains Mono", monospace',
+        pointerEvents: 'none',
+        backdropFilter: 'blur(16px)',
+        minWidth: 130,
+      }}
+    >
+      <p
+        style={{
+          fontSize: 9,
+          color: '#8b89b0',
+          margin: '0 0 4px',
+          textTransform: 'uppercase',
+          letterSpacing: '0.08em',
+        }}
+      >
+        {label}
+      </p>
+      <p
+        style={{
+          fontSize: 17,
+          fontWeight: 700,
+          color,
+          fontFamily: '"Syne", sans-serif',
+          lineHeight: 1.1,
+          margin: 0,
+          textShadow: `0 0 16px ${color}60`,
+        }}
+      >
+        ₹{value.toLocaleString('en-IN')}
+      </p>
+    </div>
+  );
+}
+
+function FixedTooltip({
+  label,
+  value,
+  color,
+  x,
+  y,
+}: TipPayload & { x: number; y: number }) {
+  const W = 148,
+    H = 62,
+    GAP = 14;
+  const vw = window.innerWidth,
+    vh = window.innerHeight;
+  let left = x + GAP;
+  if (left + W > vw - 8) left = x - W - GAP;
+  let top = y - H / 2;
+  if (top < 8) top = 8;
+  if (top + H > vh - 8) top = vh - H - 8;
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        left,
+        top,
+        zIndex: 99999,
+        pointerEvents: 'none',
+      }}
+    >
+      <TooltipBox label={label} value={value} color={color} />
+    </div>
+  );
+}
+
+// ─── useChartTooltip ──────────────────────────────────────────────────────────
+function useChartTooltip(
+  data: Array<{
+    label?: string;
+    month?: string;
+    value?: number;
+    amount?: number;
+    color?: string;
+  }>,
+  accentColor = '#7c5cfc',
+) {
+  const [touchTip, setTouchTip] = useState<
+    (TipPayload & { x: number; y: number }) | null
+  >(null);
+  const lastInteraction = useRef<'touch' | 'mouse'>('mouse');
+  const containerRef = useRef<HTMLDivElement>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    [],
+  );
+
+  const hideAfter = useCallback((ms = 2200) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setTouchTip(null), ms);
+  }, []);
+
+  const getIndex = useCallback(
+    (clientX: number) => {
+      if (!containerRef.current || !data.length) return -1;
+      const rect = containerRef.current.getBoundingClientRect();
+      return Math.max(
+        0,
+        Math.min(
+          Math.floor(((clientX - rect.left) / rect.width) * data.length),
+          data.length - 1,
+        ),
+      );
+    },
+    [data],
+  );
+
+  const showFromIndex = useCallback(
+    (idx: number, clientX: number, clientY: number) => {
+      const item = data[idx];
+      if (!item) return;
+      setTouchTip({
+        label: item.label ?? item.month ?? '',
+        value: item.amount ?? item.value ?? 0,
+        color: item.color ?? accentColor,
+        x: clientX,
+        y: clientY,
+      });
+      hideAfter();
+    },
+    [data, accentColor, hideAfter],
+  );
+
+  const onTouchStart = useCallback(
+    (e: React.TouchEvent<HTMLDivElement>) => {
+      lastInteraction.current = 'touch';
+      e.stopPropagation();
+      if (timerRef.current) clearTimeout(timerRef.current);
+      const t = e.touches[0] ?? e.changedTouches[0];
+      if (t) showFromIndex(getIndex(t.clientX), t.clientX, t.clientY);
+    },
+    [getIndex, showFromIndex],
+  );
+
+  const onTouchMove = useCallback(
+    (e: React.TouchEvent<HTMLDivElement>) => {
+      e.stopPropagation();
+      if (timerRef.current) clearTimeout(timerRef.current);
+      const t = e.touches[0];
+      if (t) showFromIndex(getIndex(t.clientX), t.clientX, t.clientY);
+    },
+    [getIndex, showFromIndex],
+  );
+
+  const onMouseEnter = useCallback(() => {
+    lastInteraction.current = 'mouse';
+    setTouchTip(null);
+  }, []);
+
+  const rechartsContent = useCallback(
+    (props: TooltipProps<ValueType, NameType>) => {
+      if (lastInteraction.current === 'touch') return null;
+      if (!props.active || !props.payload?.length) return null;
+      const entry = props.payload[0];
+      const color =
+        (entry.payload as { color?: string } | undefined)?.color ?? accentColor;
+      const value =
+        typeof entry.value === 'number'
+          ? entry.value
+          : Number(entry.value ?? 0);
+      return (
+        <TooltipBox
+          label={String(props.label ?? '')}
+          value={value}
+          color={color}
+        />
+      );
+    },
+    [accentColor],
+  );
+
+  return {
+    containerRef,
+    touchTip,
+    onTouchStart,
+    onTouchMove,
+    onMouseEnter,
+    rechartsContent,
+  };
+}
+
+// ─── usePieChartTooltip ───────────────────────────────────────────────────────
+function usePieChartTooltip(
+  data: Array<{ name: string; value: number; color: string }>,
+) {
+  const [touchTip, setTouchTip] = useState<
+    (TipPayload & { x: number; y: number }) | null
+  >(null);
+  const lastInteraction = useRef<'touch' | 'mouse'>('mouse');
+  const containerRef = useRef<HTMLDivElement>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    [],
+  );
+
+  const hideAfter = useCallback((ms = 2200) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setTouchTip(null), ms);
+  }, []);
+
+  const findSlice = useCallback(
+    (clientX: number, clientY: number) => {
+      if (!containerRef.current || !data.length) return null;
+      const rect = containerRef.current.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const deg =
+        ((Math.atan2(clientY - cy, clientX - cx) * 180) / Math.PI + 360 + 90) %
+        360;
+      const sum = data.reduce((s, d) => s + d.value, 0);
+      let cumulative = 0;
+      for (const slice of data) {
+        const sliceDeg = (slice.value / sum) * 360;
+        if (deg >= cumulative && deg < cumulative + sliceDeg) return slice;
+        cumulative += sliceDeg;
+      }
+      return data[data.length - 1];
+    },
+    [data],
+  );
+
+  const onTouchStart = useCallback(
+    (e: React.TouchEvent<HTMLDivElement>) => {
+      lastInteraction.current = 'touch';
+      e.stopPropagation();
+      if (timerRef.current) clearTimeout(timerRef.current);
+      const t = e.touches[0] ?? e.changedTouches[0];
+      if (!t) return;
+      const slice = findSlice(t.clientX, t.clientY);
+      if (slice) {
+        setTouchTip({
+          label: slice.name,
+          value: slice.value,
+          color: slice.color,
+          x: t.clientX,
+          y: t.clientY,
+        });
+        hideAfter();
+      }
+    },
+    [findSlice, hideAfter],
+  );
+
+  const onTouchMove = useCallback(
+    (e: React.TouchEvent<HTMLDivElement>) => {
+      e.stopPropagation();
+      if (timerRef.current) clearTimeout(timerRef.current);
+      const t = e.touches[0];
+      if (!t) return;
+      const slice = findSlice(t.clientX, t.clientY);
+      if (slice) {
+        setTouchTip({
+          label: slice.name,
+          value: slice.value,
+          color: slice.color,
+          x: t.clientX,
+          y: t.clientY,
+        });
+        hideAfter();
+      }
+    },
+    [findSlice, hideAfter],
+  );
+
+  const onMouseEnter = useCallback(() => {
+    lastInteraction.current = 'mouse';
+    setTouchTip(null);
+  }, []);
+
+  const rechartsContent = useCallback(
+    (props: TooltipProps<ValueType, NameType>) => {
+      if (lastInteraction.current === 'touch') return null;
+      if (!props.active || !props.payload?.length) return null;
+      const entry = props.payload[0];
+      const color =
+        (entry.payload as { color?: string } | undefined)?.color ?? '#7c5cfc';
+      const value =
+        typeof entry.value === 'number'
+          ? entry.value
+          : Number(entry.value ?? 0);
+      return (
+        <TooltipBox
+          label={String(entry.name ?? '')}
+          value={value}
+          color={color}
+        />
+      );
+    },
+    [],
+  );
+
+  return {
+    containerRef,
+    touchTip,
+    onTouchStart,
+    onTouchMove,
+    onMouseEnter,
+    rechartsContent,
+  };
+}
+
+// ─── Shared wrapper style ─────────────────────────────────────────────────────
+const wrapStyle: React.CSSProperties = {
+  overflow: 'visible',
+  touchAction: 'pan-y',
+  userSelect: 'none',
+  WebkitUserSelect: 'none',
 };
 
-function RenderedChart({ chart }: { chart: NonNullable<ChartShape> }) {
-  if (chart.kind === 'bar') {
-    const max = Math.max(...chart.data.map((d) => d.amount));
-    return (
-      <div className='mt-3 sm:mt-4'>
-        <p className='font-mono text-[9px] sm:text-[10px] text-[#4a4870] uppercase tracking-widest mb-2 sm:mb-3'>
-          Spending Chart
-        </p>
-        <ResponsiveContainer width='100%' height={160}>
+// ─── Bar Chart ────────────────────────────────────────────────────────────────
+function BarChartView({
+  data,
+}: {
+  data: { label: string; amount: number; color?: string }[];
+}) {
+  const max = Math.max(...data.map((d) => d.amount));
+  const tipData = data.map((d) => ({ ...d, value: d.amount }));
+  const {
+    containerRef,
+    touchTip,
+    onTouchStart,
+    onTouchMove,
+    onMouseEnter,
+    rechartsContent,
+  } = useChartTooltip(tipData);
+
+  return (
+    <div className='mt-3'>
+      <p className='font-mono text-[9px] text-[#4a4870] uppercase tracking-widest mb-3'>
+        Spending Chart
+      </p>
+      <div
+        ref={containerRef}
+        style={wrapStyle}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onMouseEnter={onMouseEnter}
+      >
+        <ResponsiveContainer width='100%' height={180}>
           <BarChart
-            data={chart.data}
-            margin={{ top: 4, right: 4, left: -20, bottom: 0 }}
+            data={data}
+            margin={{ top: 10, right: 10, left: -16, bottom: 0 }}
             barCategoryGap='28%'
           >
             <CartesianGrid
@@ -1154,59 +1567,176 @@ function RenderedChart({ chart }: { chart: NonNullable<ChartShape> }) {
               tickFormatter={(v) =>
                 v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)
               }
+              width={36}
             />
-            <Tooltip {...tooltipStyle} />
-            <Bar dataKey='amount' radius={[6, 6, 0, 0]} maxBarSize={40}>
-              {chart.data.map((d, i) => (
+            <Tooltip
+              content={rechartsContent}
+              cursor={{ fill: 'rgba(124,92,252,0.08)', radius: 4 }}
+              wrapperStyle={{ zIndex: 9999, outline: 'none' }}
+              allowEscapeViewBox={{ x: true, y: true }}
+              isAnimationActive={false}
+            />
+            <Bar dataKey='amount' radius={[6, 6, 0, 0]} maxBarSize={44}>
+              {data.map((d, i) => (
                 <Cell
                   key={i}
                   fill={d.color ?? '#7c5cfc'}
-                  opacity={d.amount === max ? 1 : 0.5 + (d.amount / max) * 0.4}
+                  opacity={d.amount === max ? 1 : 0.5 + (d.amount / max) * 0.45}
                 />
               ))}
             </Bar>
           </BarChart>
         </ResponsiveContainer>
       </div>
-    );
-  }
-  if (chart.kind === 'pie') {
-    return (
-      <div className='mt-3 sm:mt-4'>
-        <p className='font-mono text-[9px] sm:text-[10px] text-[#4a4870] uppercase tracking-widest mb-2 sm:mb-3'>
-          Category Breakdown
-        </p>
-        <ResponsiveContainer width='100%' height={160}>
-          <PieChart>
-            <Pie
-              data={chart.data}
-              cx='50%'
-              cy='50%'
-              innerRadius={40}
-              outerRadius={65}
-              dataKey='value'
-              paddingAngle={2}
-            >
-              {chart.data.map((e, i) => (
-                <Cell key={i} fill={e.color} />
-              ))}
-            </Pie>
-            <Tooltip {...tooltipStyle} />
-          </PieChart>
-        </ResponsiveContainer>
+      {touchTip && <FixedTooltip {...touchTip} />}
+      <div className='flex flex-wrap gap-x-3 gap-y-1.5 mt-3'>
+        {data.map((d) => (
+          <div key={d.label} className='flex items-center gap-1.5'>
+            <div
+              className='w-2 h-2 rounded-sm shrink-0'
+              style={{
+                background: d.color ?? '#7c5cfc',
+                boxShadow: `0 0 5px ${d.color ?? '#7c5cfc'}60`,
+              }}
+            />
+            <span className='font-mono text-[9px] text-[#8b89b0]'>
+              {d.label}
+            </span>
+            <span className='font-mono text-[9px] text-[#4a4870]'>
+              ₹{d.amount.toLocaleString('en-IN')}
+            </span>
+          </div>
+        ))}
       </div>
-    );
-  }
-  if (chart.kind === 'line') {
-    return (
-      <div className='mt-3 sm:mt-4'>
-        <p className='font-mono text-[9px] sm:text-[10px] text-[#4a4870] uppercase tracking-widest mb-2 sm:mb-3'>
-          Monthly Trend
-        </p>
-        <ResponsiveContainer width='100%' height={160}>
+    </div>
+  );
+}
+
+// ─── Pie Chart ────────────────────────────────────────────────────────────────
+function PieChartView({
+  data,
+}: {
+  data: { name: string; value: number; color: string }[];
+}) {
+  const total = data.reduce((s, d) => s + d.value, 0);
+  const {
+    containerRef,
+    touchTip,
+    onTouchStart,
+    onTouchMove,
+    onMouseEnter,
+    rechartsContent,
+  } = usePieChartTooltip(data);
+
+  return (
+    <div className='mt-3'>
+      <p className='font-mono text-[9px] text-[#4a4870] uppercase tracking-widest mb-3'>
+        Category Breakdown
+      </p>
+      <div className='flex flex-col sm:flex-row items-center gap-4'>
+        <div
+          ref={containerRef}
+          style={{ ...wrapStyle, flexShrink: 0 }}
+          onTouchStart={onTouchStart}
+          onTouchMove={onTouchMove}
+          onMouseEnter={onMouseEnter}
+        >
+          <ResponsiveContainer width={180} height={160}>
+            <PieChart>
+              <Pie
+                data={data}
+                cx='50%'
+                cy='50%'
+                innerRadius={42}
+                outerRadius={68}
+                dataKey='value'
+                paddingAngle={3}
+                strokeWidth={0}
+              >
+                {data.map((e, i) => (
+                  <Cell key={i} fill={e.color} />
+                ))}
+              </Pie>
+              <Tooltip
+                content={rechartsContent}
+                wrapperStyle={{ zIndex: 9999, outline: 'none' }}
+                allowEscapeViewBox={{ x: true, y: true }}
+                isAnimationActive={false}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+        <div className='flex flex-col gap-2 flex-1 min-w-0 w-full'>
+          {data.map((d) => {
+            const pct = total > 0 ? Math.round((d.value / total) * 100) : 0;
+            return (
+              <div key={d.name} className='flex items-center gap-2'>
+                <div
+                  className='w-2.5 h-2.5 rounded-sm shrink-0'
+                  style={{
+                    background: d.color,
+                    boxShadow: `0 0 5px ${d.color}60`,
+                  }}
+                />
+                <span className='font-mono text-[10px] text-[#8b89b0] flex-1 truncate'>
+                  {d.name}
+                </span>
+                <span className='font-mono text-[10px] text-[#4a4870]'>
+                  {pct}%
+                </span>
+                <span
+                  className='font-mono text-[10px] font-semibold'
+                  style={{ color: d.color }}
+                >
+                  ₹{d.value.toLocaleString('en-IN')}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      {touchTip && <FixedTooltip {...touchTip} />}
+    </div>
+  );
+}
+
+// ─── Line Chart ───────────────────────────────────────────────────────────────
+function LineChartView({
+  data,
+}: {
+  data: { month: string; amount: number }[];
+}) {
+  const tipData = data.map((d) => ({
+    label: d.month,
+    amount: d.amount,
+    value: d.amount,
+    color: '#7c5cfc',
+  }));
+  const {
+    containerRef,
+    touchTip,
+    onTouchStart,
+    onTouchMove,
+    onMouseEnter,
+    rechartsContent,
+  } = useChartTooltip(tipData, '#7c5cfc');
+
+  return (
+    <div className='mt-3'>
+      <p className='font-mono text-[9px] text-[#4a4870] uppercase tracking-widest mb-3'>
+        Monthly Trend
+      </p>
+      <div
+        ref={containerRef}
+        style={wrapStyle}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onMouseEnter={onMouseEnter}
+      >
+        <ResponsiveContainer width='100%' height={180}>
           <LineChart
-            data={chart.data}
-            margin={{ top: 4, right: 4, left: -20, bottom: 0 }}
+            data={data}
+            margin={{ top: 10, right: 10, left: -16, bottom: 0 }}
           >
             <CartesianGrid
               strokeDasharray='3 3'
@@ -1214,32 +1744,105 @@ function RenderedChart({ chart }: { chart: NonNullable<ChartShape> }) {
             />
             <XAxis
               dataKey='month'
-              tick={{ fontSize: 9, fill: '#4a4870' }}
+              tick={{
+                fontSize: 9,
+                fill: '#4a4870',
+                fontFamily: '"JetBrains Mono", monospace',
+              }}
               tickLine={false}
               axisLine={false}
             />
             <YAxis
-              tick={{ fontSize: 9, fill: '#4a4870' }}
+              tick={{
+                fontSize: 9,
+                fill: '#4a4870',
+                fontFamily: '"JetBrains Mono", monospace',
+              }}
               tickLine={false}
               axisLine={false}
+              tickFormatter={(v) =>
+                v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)
+              }
+              width={36}
             />
-            <Tooltip {...tooltipStyle} />
+            <Tooltip
+              content={rechartsContent}
+              wrapperStyle={{ zIndex: 9999, outline: 'none' }}
+              allowEscapeViewBox={{ x: true, y: true }}
+              isAnimationActive={false}
+              cursor={{
+                stroke: 'rgba(124,92,252,0.3)',
+                strokeWidth: 1,
+                strokeDasharray: '4 2',
+              }}
+            />
             <Line
               type='monotone'
               dataKey='amount'
               stroke='#7c5cfc'
               strokeWidth={2.5}
-              dot={{ fill: '#7c5cfc', r: 3, strokeWidth: 0 }}
-              activeDot={{ r: 5, fill: '#9d7fff' }}
+              dot={{ fill: '#7c5cfc', r: 4, strokeWidth: 2, stroke: '#080810' }}
+              activeDot={{
+                r: 6,
+                fill: '#9d7fff',
+                stroke: '#080810',
+                strokeWidth: 2,
+              }}
             />
           </LineChart>
         </ResponsiveContainer>
       </div>
-    );
-  }
+      {touchTip && <FixedTooltip {...touchTip} />}
+      {data.length > 1 &&
+        (() => {
+          const hi = data.reduce((a, b) => (a.amount > b.amount ? a : b));
+          const lo = data.reduce((a, b) => (a.amount < b.amount ? a : b));
+          return (
+            <div className='flex gap-3 mt-3'>
+              <div
+                className='flex-1 px-3 py-2 rounded-xl'
+                style={{
+                  background: 'rgba(0,255,135,0.06)',
+                  border: '1px solid rgba(0,255,135,0.15)',
+                }}
+              >
+                <p className='font-mono text-[9px] text-[#4a4870] mb-0.5'>
+                  Lowest · {lo.month}
+                </p>
+                <p className='font-display text-sm font-bold text-[#00ff87]'>
+                  ₹{lo.amount.toLocaleString('en-IN')}
+                </p>
+              </div>
+              <div
+                className='flex-1 px-3 py-2 rounded-xl'
+                style={{
+                  background: 'rgba(255,45,120,0.06)',
+                  border: '1px solid rgba(255,45,120,0.15)',
+                }}
+              >
+                <p className='font-mono text-[9px] text-[#4a4870] mb-0.5'>
+                  Highest · {hi.month}
+                </p>
+                <p className='font-display text-sm font-bold text-[#ff2d78]'>
+                  ₹{hi.amount.toLocaleString('en-IN')}
+                </p>
+              </div>
+            </div>
+          );
+        })()}
+    </div>
+  );
+}
+
+// ─── Chart dispatcher ─────────────────────────────────────────────────────────
+function RenderedChart({ chart }: { chart: NonNullable<ChartShape> }) {
+  if (chart.kind === 'bar') return <BarChartView data={chart.data} />;
+  if (chart.kind === 'pie') return <PieChartView data={chart.data} />;
+  if (chart.kind === 'line') return <LineChartView data={chart.data} />;
   return null;
 }
 
+// ─── Tool blocks ──────────────────────────────────────────────────────────────
 function ToolCallBlock({
   name,
   args,
@@ -1258,13 +1861,13 @@ function ToolCallBlock({
     >
       <button
         onClick={() => setOpen((v) => !v)}
-        className='w-full flex items-center gap-2 sm:gap-2.5 px-3 sm:px-3.5 py-2.5 bg-transparent border-none cursor-pointer text-left'
+        className='w-full flex items-center gap-2 px-3.5 py-2.5 bg-transparent border-none cursor-pointer text-left'
       >
         <Wrench className='w-3 h-3 text-[#ffb830] shrink-0' />
-        <span className='font-mono text-[9px] sm:text-[10px] text-[#ffb830] bg-[rgba(255,184,48,0.1)] border border-[rgba(255,184,48,0.2)] px-1.5 py-0.5 rounded'>
+        <span className='font-mono text-[9px] text-[#ffb830] bg-[rgba(255,184,48,0.1)] border border-[rgba(255,184,48,0.2)] px-1.5 py-0.5 rounded'>
           tool
         </span>
-        <span className='font-mono text-[11px] sm:text-[12px] text-[#ffb830] flex-1 overflow-hidden text-ellipsis whitespace-nowrap'>
+        <span className='font-mono text-[11px] text-[#ffb830] flex-1 overflow-hidden text-ellipsis whitespace-nowrap'>
           {name}
         </span>
         {open ? (
@@ -1275,7 +1878,7 @@ function ToolCallBlock({
       </button>
       {open && args && (
         <div className='border-t border-[rgba(255,184,48,0.1)] max-h-[160px] overflow-y-auto'>
-          <pre className='p-3 font-mono text-[10px] sm:text-[11px] text-[rgba(255,184,48,0.6)] m-0 leading-relaxed overflow-x-auto'>
+          <pre className='p-3 font-mono text-[10px] text-[rgba(255,184,48,0.6)] m-0 leading-relaxed overflow-x-auto'>
             {JSON.stringify(args, null, 2)}
           </pre>
         </div>
@@ -1294,7 +1897,7 @@ function ToolResultBlock({
   const [open, setOpen] = useState(false);
   const chart = detectChart(result);
   return (
-    <div className='flex flex-col gap-2 sm:gap-2.5'>
+    <div className='flex flex-col gap-2'>
       <div
         className='rounded-xl overflow-hidden'
         style={{
@@ -1304,16 +1907,16 @@ function ToolResultBlock({
       >
         <button
           onClick={() => setOpen((v) => !v)}
-          className='w-full flex items-center gap-2 sm:gap-2.5 px-3 sm:px-3.5 py-2.5 bg-transparent border-none cursor-pointer text-left'
+          className='w-full flex items-center gap-2 px-3.5 py-2.5 bg-transparent border-none cursor-pointer text-left'
         >
           <div
             className='w-1.5 h-1.5 rounded-full shrink-0'
             style={{ background: '#00ff87', boxShadow: '0 0 5px #00ff87' }}
           />
-          <span className='font-mono text-[9px] sm:text-[10px] text-[#00ff87] bg-[rgba(0,255,135,0.1)] border border-[rgba(0,255,135,0.2)] px-1.5 py-0.5 rounded'>
+          <span className='font-mono text-[9px] text-[#00ff87] bg-[rgba(0,255,135,0.1)] border border-[rgba(0,255,135,0.2)] px-1.5 py-0.5 rounded'>
             result
           </span>
-          <span className='font-mono text-[11px] sm:text-[12px] text-[#00ff87] flex-1 overflow-hidden text-ellipsis whitespace-nowrap'>
+          <span className='font-mono text-[11px] text-[#00ff87] flex-1 overflow-hidden text-ellipsis whitespace-nowrap'>
             {name}
           </span>
           {open ? (
@@ -1324,7 +1927,7 @@ function ToolResultBlock({
         </button>
         {open && (
           <div className='border-t border-[rgba(0,255,135,0.1)] max-h-[160px] overflow-y-auto'>
-            <pre className='p-3 font-mono text-[10px] sm:text-[11px] text-[rgba(0,255,135,0.55)] m-0 leading-relaxed overflow-x-auto'>
+            <pre className='p-3 font-mono text-[10px] text-[rgba(0,255,135,0.55)] m-0 leading-relaxed overflow-x-auto'>
               {JSON.stringify(result, null, 2)}
             </pre>
           </div>
@@ -1332,10 +1935,12 @@ function ToolResultBlock({
       </div>
       {chart && (
         <div
-          className='rounded-2xl p-3 sm:p-4'
+          className='rounded-2xl p-4'
           style={{
-            background: 'rgba(13,13,26,0.8)',
-            border: '1px solid rgba(124,92,252,0.12)',
+            background: 'rgba(13,13,26,0.9)',
+            border: '1px solid rgba(124,92,252,0.15)',
+            overflow: 'visible',
+            position: 'relative',
           }}
         >
           <RenderedChart chart={chart} />
@@ -1345,14 +1950,27 @@ function ToolResultBlock({
   );
 }
 
+// ─── Markdown renderer ────────────────────────────────────────────────────────
+
+/**
+ * Inline parser — handles: **bold**, *italic*, `code`, ~~strikethrough~~
+ * Processes tokens left-to-right so nested combinations work naturally.
+ */
 function renderInline(text: string): React.ReactNode {
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  // Split on bold, italic, inline-code, strikethrough tokens
+  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|~~[^~]+~~)/g);
   return parts.map((part, i) => {
     if (part.startsWith('**') && part.endsWith('**'))
       return (
         <strong key={i} className='font-semibold text-[#f0efff]'>
           {part.slice(2, -2)}
         </strong>
+      );
+    if (part.startsWith('*') && part.endsWith('*') && part.length > 2)
+      return (
+        <em key={i} className='italic text-[#c9c7f0]'>
+          {part.slice(1, -1)}
+        </em>
       );
     if (part.startsWith('`') && part.endsWith('`'))
       return (
@@ -1363,53 +1981,380 @@ function renderInline(text: string): React.ReactNode {
           {part.slice(1, -1)}
         </code>
       );
+    if (part.startsWith('~~') && part.endsWith('~~'))
+      return (
+        <span key={i} className='line-through text-[#8b89b0]'>
+          {part.slice(2, -2)}
+        </span>
+      );
     return part;
   });
 }
 
+// ─── Table ────────────────────────────────────────────────────────────────────
+
+function isSeparatorRow(line: string): boolean {
+  return /^\|[\s\-|:]+\|$/.test(line.trim());
+}
+
+function parseRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\||\|$/g, '')
+    .split('|')
+    .map((c) => c.trim());
+}
+
+function MarkdownTable({ rows }: { rows: string[][] }) {
+  const [header, ...body] = rows;
+  return (
+    <div
+      className='w-full overflow-x-auto my-3 rounded-xl'
+      style={{ border: '1px solid rgba(124,92,252,0.18)' }}
+    >
+      <table className='w-full border-collapse text-sm'>
+        <thead>
+          <tr style={{ background: 'rgba(124,92,252,0.12)' }}>
+            {header.map((cell, i) => (
+              <th
+                key={i}
+                className='px-4 py-2.5 text-left font-mono text-[11px] uppercase tracking-widest'
+                style={{
+                  color: '#9d7fff',
+                  borderBottom: '1px solid rgba(124,92,252,0.18)',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {renderInline(cell)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {body.map((row, ri) => (
+            <tr
+              key={ri}
+              style={{
+                background:
+                  ri % 2 === 0 ? 'transparent' : 'rgba(124,92,252,0.04)',
+                borderBottom:
+                  ri < body.length - 1
+                    ? '1px solid rgba(124,92,252,0.08)'
+                    : 'none',
+              }}
+            >
+              {row.map((cell, ci) => (
+                <td
+                  key={ci}
+                  className='px-4 py-2 font-sans text-[13px]'
+                  style={{ color: ci === 0 ? '#d4d2f0' : '#8b89b0' }}
+                >
+                  {renderInline(cell)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── Code block ───────────────────────────────────────────────────────────────
+
+function CodeBlock({ lang, code }: { lang: string; code: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(code).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div
+      className='my-3 rounded-xl overflow-hidden'
+      style={{
+        border: '1px solid rgba(124,92,252,0.2)',
+        background: 'rgba(8,8,16,0.9)',
+      }}
+    >
+      {/* Header bar */}
+      <div
+        className='flex items-center justify-between px-4 py-2'
+        style={{ borderBottom: '1px solid rgba(124,92,252,0.12)' }}
+      >
+        <span className='font-mono text-[10px] text-[#4a4870] uppercase tracking-widest'>
+          {lang || 'code'}
+        </span>
+        <button
+          onClick={handleCopy}
+          className='font-mono text-[10px] transition-colors px-2 py-0.5 rounded'
+          style={{
+            color: copied ? '#00ff87' : '#4a4870',
+            background: copied ? 'rgba(0,255,135,0.08)' : 'transparent',
+          }}
+        >
+          {copied ? '✓ copied' : 'copy'}
+        </button>
+      </div>
+      {/* Code content */}
+      <pre
+        className='p-4 overflow-x-auto m-0 leading-relaxed'
+        style={{
+          fontFamily: '"JetBrains Mono", monospace',
+          fontSize: '12px',
+          color: '#c9c7f0',
+        }}
+      >
+        <code>{code}</code>
+      </pre>
+    </div>
+  );
+}
+
+// ─── Block-level parser ───────────────────────────────────────────────────────
+
+type Block =
+  | { kind: 'h1'; text: string }
+  | { kind: 'h2'; text: string }
+  | { kind: 'h3'; text: string }
+  | { kind: 'bullet'; text: string; depth: number }
+  | { kind: 'ordered'; text: string; num: number }
+  | { kind: 'table'; rows: string[][] }
+  | { kind: 'code'; lang: string; code: string }
+  | { kind: 'hr' }
+  | { kind: 'blank' }
+  | { kind: 'paragraph'; text: string };
+
+function parseBlocks(raw: string): Block[] {
+  const lines = raw.split('\n');
+  const blocks: Block[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // ── Fenced code block  ```lang ... ``` ───
+    if (trimmed.startsWith('```')) {
+      const lang = trimmed.slice(3).trim();
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].trim().startsWith('```')) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      i++; // consume closing ```
+      blocks.push({ kind: 'code', lang, code: codeLines.join('\n') });
+      continue;
+    }
+
+    // ── Horizontal rule  ---, ***, ___ ───
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      blocks.push({ kind: 'hr' });
+      i++;
+      continue;
+    }
+
+    // ── H1 ───
+    if (line.startsWith('# ') && !line.startsWith('## ')) {
+      blocks.push({ kind: 'h1', text: line.slice(2) });
+      i++;
+      continue;
+    }
+
+    // ── H2 ───
+    if (line.startsWith('## ') && !line.startsWith('### ')) {
+      blocks.push({ kind: 'h2', text: line.slice(3) });
+      i++;
+      continue;
+    }
+
+    // ── H3 ───
+    if (line.startsWith('### ')) {
+      blocks.push({ kind: 'h3', text: line.slice(4) });
+      i++;
+      continue;
+    }
+
+    // ── Unordered bullet  - / * / • (with optional indent) ───
+    const bulletMatch = line.match(/^(\s*)([-*•])\s+(.+)$/);
+    if (bulletMatch) {
+      const depth = Math.floor(bulletMatch[1].length / 2); // 2 spaces = 1 level
+      blocks.push({ kind: 'bullet', text: bulletMatch[3], depth });
+      i++;
+      continue;
+    }
+
+    // ── Ordered list  1. / 1) ───
+    const orderedMatch = line.match(/^\s*(\d+)[.)]\s+(.+)$/);
+    if (orderedMatch) {
+      blocks.push({
+        kind: 'ordered',
+        num: parseInt(orderedMatch[1], 10),
+        text: orderedMatch[2],
+      });
+      i++;
+      continue;
+    }
+
+    // ── Blank line ───
+    if (trimmed === '') {
+      blocks.push({ kind: 'blank' });
+      i++;
+      continue;
+    }
+
+    // ── Table  (header row followed immediately by separator) ───
+    if (
+      line.includes('|') &&
+      i + 1 < lines.length &&
+      isSeparatorRow(lines[i + 1])
+    ) {
+      const tableRows: string[][] = [];
+      tableRows.push(parseRow(line));
+      i += 2; // skip header + separator
+      while (i < lines.length && lines[i].includes('|')) {
+        tableRows.push(parseRow(lines[i]));
+        i++;
+      }
+      blocks.push({ kind: 'table', rows: tableRows });
+      continue;
+    }
+
+    // ── Plain paragraph ───
+    blocks.push({ kind: 'paragraph', text: line });
+    i++;
+  }
+
+  return blocks;
+}
+
 function AiTextContent({ text }: { text: string }) {
-  const lines = text.split('\n');
+  const blocks = parseBlocks(text);
+
+  // Track ordered-list counter to reset between separate lists
+  const lastOrderedNum = -1;
+
   return (
     <div className='text-[#d4d2f0] text-sm sm:text-[15px] leading-[1.75] font-sans'>
-      {lines.map((line, i) => {
-        if (line.startsWith('### '))
-          return (
-            <h3
-              key={i}
-              className='font-display font-bold text-sm sm:text-[15px] text-[#f0efff] mt-4 mb-1'
-            >
-              {line.slice(4)}
-            </h3>
-          );
-        if (line.startsWith('## '))
-          return (
-            <h2
-              key={i}
-              className='font-display font-extrabold text-base sm:text-[17px] text-[#f0efff] mt-5 mb-1.5'
-            >
-              {line.slice(3)}
-            </h2>
-          );
-        if (line.startsWith('- ') || line.startsWith('• '))
-          return (
-            <div key={i} className='flex gap-2.5 items-start my-1'>
-              <span className='text-[#7c5cfc] mt-2 text-[6px] shrink-0'>◆</span>
-              <span>{renderInline(line.slice(2))}</span>
-            </div>
-          );
-        if (line.trim() === '') return <div key={i} className='h-1.5' />;
-        return (
-          <p key={i} className='my-0.5'>
-            {renderInline(line)}
-          </p>
-        );
+      {blocks.map((block, i) => {
+        switch (block.kind) {
+          case 'h1':
+            return (
+              <h1
+                key={i}
+                className='font-display font-black text-xl text-[#f0efff] mt-6 mb-2 tracking-tight'
+              >
+                {block.text}
+              </h1>
+            );
+
+          case 'h2':
+            return (
+              <h2
+                key={i}
+                className='font-display font-extrabold text-base text-[#f0efff] mt-5 mb-1.5'
+              >
+                {block.text}
+              </h2>
+            );
+
+          case 'h3':
+            return (
+              <h3
+                key={i}
+                className='font-display font-bold text-sm text-[#f0efff] mt-4 mb-1'
+              >
+                {block.text}
+              </h3>
+            );
+
+          case 'bullet': {
+            const indent = block.depth * 16; // 16px per nesting level
+            // Use different bullet symbols per depth level
+            const bullets = ['◆', '◇', '·'];
+            const symbol = bullets[Math.min(block.depth, bullets.length - 1)];
+            return (
+              <div
+                key={i}
+                className='flex items-start my-1'
+                style={{ paddingLeft: indent }}
+              >
+                <span
+                  className='shrink-0 mt-2 mr-2.5'
+                  style={{
+                    color: block.depth === 0 ? '#7c5cfc' : '#4a4870',
+                    fontSize: block.depth === 0 ? '6px' : '8px',
+                    lineHeight: 1,
+                  }}
+                >
+                  {symbol}
+                </span>
+                <span>{renderInline(block.text)}</span>
+              </div>
+            );
+          }
+
+          case 'ordered': {
+            // Reset visual counter when a new list starts (num goes back to 1)
+            if (block.num <= lastOrderedNum || lastOrderedNum === -1) {
+              // new list or continuation — just use block.num
+            }
+            // Track ordered-list counter to reset between separate lists
+            /* lastOrderedNum = block.num; */ // removed reassignment to avoid render-side mutation
+            return (
+              <div key={i} className='flex items-start my-1 gap-2.5'>
+                <span
+                  className='shrink-0 font-mono text-[11px] font-bold min-w-[18px] text-right mt-0.5'
+                  style={{ color: '#7c5cfc' }}
+                >
+                  {block.num}.
+                </span>
+                <span>{renderInline(block.text)}</span>
+              </div>
+            );
+          }
+
+          case 'table':
+            return <MarkdownTable key={i} rows={block.rows} />;
+
+          case 'code':
+            return <CodeBlock key={i} lang={block.lang} code={block.code} />;
+
+          case 'hr':
+            return (
+              <div
+                key={i}
+                className='my-4'
+                style={{
+                  height: '1px',
+                  background:
+                    'linear-gradient(90deg, transparent, rgba(124,92,252,0.3), transparent)',
+                }}
+              />
+            );
+
+          case 'blank':
+            return <div key={i} className='h-1.5' />;
+
+          case 'paragraph':
+            return (
+              <p key={i} className='my-0.5'>
+                {renderInline(block.text)}
+              </p>
+            );
+        }
       })}
     </div>
   );
 }
 
+// ─── ChatMessage ──────────────────────────────────────────────────────────────
 export function ChatMessage({ message }: { message: StreamMessage }) {
-  if (message.type === 'user') {
+  if (message.type === 'user')
     return (
       <div className='flex justify-end gap-2.5 sm:gap-3 px-3 sm:px-6 py-3 sm:py-4 items-end'>
         <div className='max-w-[80%] sm:max-w-[72%]'>
@@ -1417,7 +2362,7 @@ export function ChatMessage({ message }: { message: StreamMessage }) {
             className='rounded-[16px_16px_4px_16px] px-3.5 sm:px-4 py-2.5 sm:py-3'
             style={{
               background:
-                'linear-gradient(135deg, rgba(124,92,252,0.25), rgba(0,212,255,0.15))',
+                'linear-gradient(135deg,rgba(124,92,252,0.25),rgba(0,212,255,0.15))',
               border: '1px solid rgba(124,92,252,0.3)',
               boxShadow: '0 4px 20px rgba(124,92,252,0.1)',
             }}
@@ -1438,9 +2383,8 @@ export function ChatMessage({ message }: { message: StreamMessage }) {
         </div>
       </div>
     );
-  }
 
-  if (message.type === 'toolCall:start') {
+  if (message.type === 'toolCall:start')
     return (
       <div className='flex gap-2.5 sm:gap-3 px-3 sm:px-6 py-2'>
         <div
@@ -1460,9 +2404,8 @@ export function ChatMessage({ message }: { message: StreamMessage }) {
         </div>
       </div>
     );
-  }
 
-  if (message.type === 'tool') {
+  if (message.type === 'tool')
     return (
       <div className='flex gap-2.5 sm:gap-3 px-3 sm:px-6 py-2'>
         <div
@@ -1477,7 +2420,7 @@ export function ChatMessage({ message }: { message: StreamMessage }) {
             style={{ background: '#00ff87', boxShadow: '0 0 6px #00ff87' }}
           />
         </div>
-        <div className='flex-1 pt-1'>
+        <div className='flex-1 pt-1 min-w-0'>
           <ToolResultBlock
             name={message.payload.name}
             result={message.payload.result}
@@ -1485,9 +2428,8 @@ export function ChatMessage({ message }: { message: StreamMessage }) {
         </div>
       </div>
     );
-  }
 
-  if (message.type === 'error') {
+  if (message.type === 'error')
     return (
       <div className='flex gap-2.5 sm:gap-3 px-3 sm:px-6 py-3 sm:py-4'>
         <div
@@ -1514,16 +2456,15 @@ export function ChatMessage({ message }: { message: StreamMessage }) {
         </div>
       </div>
     );
-  }
 
-  if (message.type === 'ai') {
+  if (message.type === 'ai')
     return (
       <div className='flex gap-2.5 sm:gap-3 px-3 sm:px-6 py-4 sm:py-5'>
         <div
           className='w-7 h-7 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center shrink-0'
           style={{
             background:
-              'linear-gradient(135deg, rgba(124,92,252,0.3), rgba(0,212,255,0.2))',
+              'linear-gradient(135deg,rgba(124,92,252,0.3),rgba(0,212,255,0.2))',
             border: '1px solid rgba(124,92,252,0.3)',
           }}
         >
@@ -1534,7 +2475,6 @@ export function ChatMessage({ message }: { message: StreamMessage }) {
         </div>
       </div>
     );
-  }
 
   return null;
 }
@@ -1768,19 +2708,12 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
-  Menu,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSignOut } from '@/services/auth.service';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Separator } from '@/components/ui/separator';
-import {
-  Sheet,
-  SheetContent,
-  SheetTitle,
-  SheetTrigger,
-} from '@/components/ui/sheet';
 import { cn } from '@/lib/utils';
 
 const navItems = [
@@ -1791,7 +2724,7 @@ const navItems = [
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 
-// Pure React hover tooltip — no external deps, fully controlled styles
+// ─── Desktop-only tooltip ─────────────────────────────────────────────────────
 function SidebarTooltip({
   children,
   content,
@@ -1806,22 +2739,17 @@ function SidebarTooltip({
   const show = () => {
     if (childRef.current) {
       const rect = childRef.current.getBoundingClientRect();
-      setPos({
-        top: rect.top + rect.height / 2,
-        left: rect.right + 14,
-      });
+      setPos({ top: rect.top + rect.height / 2, left: rect.right + 14 });
     }
     setVisible(true);
   };
-
-  const hide = () => setVisible(false);
 
   return (
     <>
       <div
         ref={childRef}
         onMouseEnter={show}
-        onMouseLeave={hide}
+        onMouseLeave={() => setVisible(false)}
         style={{ width: 'fit-content' }}
       >
         {children}
@@ -1867,305 +2795,359 @@ function SidebarTooltip({
   );
 }
 
-function NavItems({
-  isExpanded,
-  onNavClick,
-}: {
-  isExpanded?: boolean;
-  onNavClick?: () => void;
-}) {
+// ─── Desktop sidebar nav items ────────────────────────────────────────────────
+function DesktopNavItems({ isExpanded }: { isExpanded: boolean }) {
   const location = useLocation();
   const user = useAuthStore((s) => s.user);
   const { mutate: signOut, isPending } = useSignOut();
 
   return (
-    <>
-      <div className='flex flex-col h-full'>
-        {/* Logo */}
+    <div className='flex flex-col h-full'>
+      {/* Logo */}
+      <div
+        className={cn(
+          'flex items-center gap-3 mb-8',
+          isExpanded ? 'justify-start px-5' : 'justify-center',
+        )}
+      >
         <div
-          className={cn(
-            'flex items-center gap-3 mb-8',
-            isExpanded ? 'justify-start px-5' : 'justify-center',
-          )}
+          className='w-[42px] h-[42px] rounded-xl flex items-center justify-center shrink-0'
+          style={{
+            background: 'linear-gradient(135deg, #7c5cfc, #00d4ff)',
+            boxShadow: '0 0 20px rgba(124,92,252,0.5)',
+          }}
         >
-          <div
-            className='w-[42px] h-[42px] rounded-xl flex items-center justify-center shrink-0'
-            style={{
-              background: 'linear-gradient(135deg, #7c5cfc, #00d4ff)',
-              boxShadow: '0 0 20px rgba(124,92,252,0.5)',
-            }}
-          >
-            <Zap className='w-5 h-5 text-white' strokeWidth={2.5} />
+          <Zap className='w-5 h-5 text-white' strokeWidth={2.5} />
+        </div>
+        {isExpanded && (
+          <div>
+            <div className='font-display text-lg font-extrabold text-[--foreground] tracking-tight'>
+              ExpenseAI
+            </div>
+            <div className='font-mono text-[9px] text-[--foreground-subtle] tracking-wider uppercase'>
+              Smart Tracking
+            </div>
           </div>
-          {isExpanded && (
-            <div>
-              <div className='font-display text-lg font-extrabold text-[--foreground] tracking-tight'>
-                ExpenseAI
-              </div>
-              <div className='font-mono text-[9px] text-[--foreground-subtle] tracking-wider uppercase'>
-                Smart Tracking
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Nav */}
-        <nav
-          className={cn(
-            'flex flex-col gap-1 flex-1',
-            isExpanded ? 'px-5' : 'items-center',
-          )}
-        >
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive =
-              item.href === '/'
-                ? location.pathname === '/'
-                : location.pathname.startsWith(item.href);
-
-            const navButton = (
-              <NavLink to={item.href} className='w-full' onClick={onNavClick}>
-                <Button
-                  variant='ghost'
-                  className={cn(
-                    'relative transition-all h-12 rounded-xl w-full',
-                    isExpanded
-                      ? 'justify-start gap-3 px-3.5'
-                      : 'justify-center w-12',
-                    isActive
-                      ? 'bg-gradient-to-br from-[rgba(124,92,252,0.3)] to-[rgba(0,212,255,0.15)] border border-[rgba(124,92,252,0.4)] shadow-[0_0_15px_rgba(124,92,252,0.25)]'
-                      : 'border border-transparent hover:bg-[rgba(124,92,252,0.1)] hover:border-[rgba(124,92,252,0.2)]',
-                  )}
-                >
-                  <Icon
-                    className={cn(
-                      'shrink-0 transition-colors',
-                      isActive
-                        ? 'text-[--violet-bright]'
-                        : 'text-[--foreground-subtle]',
-                    )}
-                    size={18}
-                    strokeWidth={isActive ? 2.5 : 2}
-                  />
-                  {isExpanded && (
-                    <span
-                      className={cn(
-                        'font-sans text-sm transition-colors whitespace-nowrap',
-                        isActive
-                          ? 'text-[--foreground] font-semibold'
-                          : 'text-[--foreground-muted] font-medium',
-                      )}
-                    >
-                      {item.label}
-                    </span>
-                  )}
-                  {isActive && !isExpanded && (
-                    <div
-                      className='absolute -right-[13px] top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-sm'
-                      style={{
-                        background: 'linear-gradient(180deg, #7c5cfc, #00d4ff)',
-                        boxShadow: '0 0 8px rgba(124,92,252,0.6)',
-                      }}
-                    />
-                  )}
-                </Button>
-              </NavLink>
-            );
-
-            return isExpanded ? (
-              <div key={item.href}>{navButton}</div>
-            ) : (
-              <SidebarTooltip
-                key={item.href}
-                content={
-                  <span
-                    style={{
-                      fontFamily: 'DM Sans, sans-serif',
-                      fontWeight: 500,
-                      fontSize: '13px',
-                      color: '#f0efff',
-                    }}
-                  >
-                    {item.label}
-                  </span>
-                }
-              >
-                {navButton}
-              </SidebarTooltip>
-            );
-          })}
-        </nav>
-
-        {/* User Section */}
-        <div
-          className={cn(
-            'flex flex-col gap-3 mt-2',
-            isExpanded ? 'px-5' : 'items-center',
-          )}
-        >
-          <Separator className='bg-[rgba(124,92,252,0.12)]' />
-
-          {user && (
-            <div
-              className={cn(
-                'flex items-center gap-3 rounded-xl transition-all',
-                isExpanded
-                  ? 'p-2.5 px-3 bg-[rgba(124,92,252,0.08)] border border-[rgba(124,92,252,0.15)]'
-                  : 'justify-center',
-              )}
-            >
-              {isExpanded ? (
-                <Avatar className='w-[38px] h-[38px] rounded-xl shrink-0 cursor-default'>
-                  <AvatarFallback className='rounded-xl bg-gradient-to-br from-[rgba(124,92,252,0.3)] to-[rgba(0,212,255,0.2)] border border-[rgba(124,92,252,0.3)] text-[--violet-bright] font-display font-bold text-sm'>
-                    {user.name.charAt(0).toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
-              ) : (
-                <SidebarTooltip
-                  content={
-                    <div>
-                      <p
-                        style={{
-                          fontFamily: 'DM Sans, sans-serif',
-                          fontWeight: 600,
-                          fontSize: '13px',
-                          color: '#f0efff',
-                          marginBottom: 2,
-                        }}
-                      >
-                        {user.name}
-                      </p>
-                      <p
-                        style={{
-                          fontFamily: '"JetBrains Mono", monospace',
-                          fontSize: '11px',
-                          color: '#8b89b0',
-                        }}
-                      >
-                        {user.email}
-                      </p>
-                    </div>
-                  }
-                >
-                  <Avatar className='w-[38px] h-[38px] rounded-xl shrink-0 cursor-default'>
-                    <AvatarFallback className='rounded-xl bg-gradient-to-br from-[rgba(124,92,252,0.3)] to-[rgba(0,212,255,0.2)] border border-[rgba(124,92,252,0.3)] text-[--violet-bright] font-display font-bold text-sm'>
-                      {user.name.charAt(0).toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
-                </SidebarTooltip>
-              )}
-              {isExpanded && (
-                <div className='min-w-0 flex-1'>
-                  <div className='font-sans text-[13px] font-semibold text-[--foreground] truncate'>
-                    {user.name}
-                  </div>
-                  <div className='font-mono text-[10px] text-[--foreground-subtle] truncate'>
-                    {user.email}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {isExpanded ? (
-            <Button
-              variant='ghost'
-              onClick={() => signOut()}
-              disabled={isPending}
-              className='w-full h-[38px] justify-start gap-2.5 px-3.5 text-[#8b89b0] hover:bg-red-950/20 hover:text-red-400 hover:border-red-900/40 border border-transparent transition-all font-sans text-sm font-medium disabled:opacity-50'
-            >
-              <LogOut className='h-4 w-4 shrink-0' />
-              <span>Sign Out</span>
-            </Button>
-          ) : (
-            <SidebarTooltip
-              content={
-                <span
-                  style={{
-                    fontFamily: 'DM Sans, sans-serif',
-                    fontWeight: 500,
-                    fontSize: '13px',
-                    color: '#ff6b6b',
-                  }}
-                >
-                  Sign Out
-                </span>
-              }
-            >
-              <Button
-                variant='ghost'
-                size='icon'
-                onClick={() => signOut()}
-                disabled={isPending}
-                className='w-[38px] h-[38px] text-[#8b89b0] hover:bg-red-950/20 hover:text-red-400 hover:border-red-900/40 border border-transparent transition-all disabled:opacity-50'
-              >
-                <LogOut className='h-4 w-4' />
-              </Button>
-            </SidebarTooltip>
-          )}
-        </div>
+        )}
       </div>
-    </>
-  );
-}
 
-function MobileBottomNav({ onSignOut }: { onSignOut: () => void }) {
-  const location = useLocation();
-
-  return (
-    <nav
-      className='fixed bottom-0 left-0 right-0 z-50 md:hidden'
-      style={{
-        background: 'rgba(8,8,16,0.97)',
-        borderTop: '1px solid rgba(124,92,252,0.15)',
-        backdropFilter: 'blur(20px)',
-      }}
-    >
-      <div className='flex items-center justify-around px-2 py-2 safe-area-pb'>
+      {/* Nav links */}
+      <nav
+        className={cn(
+          'flex flex-col gap-1 flex-1',
+          isExpanded ? 'px-5' : 'items-center',
+        )}
+      >
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive =
             item.href === '/'
               ? location.pathname === '/'
               : location.pathname.startsWith(item.href);
+
+          const navButton = (
+            <NavLink to={item.href} className='w-full'>
+              <Button
+                variant='ghost'
+                className={cn(
+                  'relative transition-all h-12 rounded-xl w-full',
+                  isExpanded
+                    ? 'justify-start gap-3 px-3.5'
+                    : 'justify-center w-12',
+                  isActive
+                    ? 'bg-gradient-to-br from-[rgba(124,92,252,0.3)] to-[rgba(0,212,255,0.15)] border border-[rgba(124,92,252,0.4)] shadow-[0_0_15px_rgba(124,92,252,0.25)]'
+                    : 'border border-transparent hover:bg-[rgba(124,92,252,0.1)] hover:border-[rgba(124,92,252,0.2)]',
+                )}
+              >
+                <Icon
+                  className={cn(
+                    'shrink-0 transition-colors',
+                    isActive
+                      ? 'text-[--violet-bright]'
+                      : 'text-[--foreground-subtle]',
+                  )}
+                  size={18}
+                  strokeWidth={isActive ? 2.5 : 2}
+                />
+                {isExpanded && (
+                  <span
+                    className={cn(
+                      'font-sans text-sm transition-colors whitespace-nowrap',
+                      isActive
+                        ? 'text-[--foreground] font-semibold'
+                        : 'text-[--foreground-muted] font-medium',
+                    )}
+                  >
+                    {item.label}
+                  </span>
+                )}
+                {isActive && !isExpanded && (
+                  <div
+                    className='absolute -right-[13px] top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-sm'
+                    style={{
+                      background: 'linear-gradient(180deg, #7c5cfc, #00d4ff)',
+                      boxShadow: '0 0 8px rgba(124,92,252,0.6)',
+                    }}
+                  />
+                )}
+              </Button>
+            </NavLink>
+          );
+
+          return isExpanded ? (
+            <div key={item.href}>{navButton}</div>
+          ) : (
+            <SidebarTooltip
+              key={item.href}
+              content={
+                <span
+                  style={{
+                    fontFamily: 'DM Sans, sans-serif',
+                    fontWeight: 500,
+                    fontSize: '13px',
+                    color: '#f0efff',
+                  }}
+                >
+                  {item.label}
+                </span>
+              }
+            >
+              {navButton}
+            </SidebarTooltip>
+          );
+        })}
+      </nav>
+
+      {/* User section */}
+      <div
+        className={cn(
+          'flex flex-col gap-3 mt-2',
+          isExpanded ? 'px-5' : 'items-center',
+        )}
+      >
+        <Separator className='bg-[rgba(124,92,252,0.12)]' />
+
+        {user && (
+          <div
+            className={cn(
+              'flex items-center gap-3 rounded-xl transition-all',
+              isExpanded
+                ? 'p-2.5 px-3 bg-[rgba(124,92,252,0.08)] border border-[rgba(124,92,252,0.15)]'
+                : 'justify-center',
+            )}
+          >
+            {isExpanded ? (
+              <Avatar className='w-[38px] h-[38px] rounded-xl shrink-0'>
+                <AvatarFallback className='rounded-xl bg-gradient-to-br from-[rgba(124,92,252,0.3)] to-[rgba(0,212,255,0.2)] border border-[rgba(124,92,252,0.3)] text-[--violet-bright] font-display font-bold text-sm'>
+                  {user.name.charAt(0).toUpperCase()}
+                </AvatarFallback>
+              </Avatar>
+            ) : (
+              <SidebarTooltip
+                content={
+                  <div>
+                    <p
+                      style={{
+                        fontFamily: 'DM Sans, sans-serif',
+                        fontWeight: 600,
+                        fontSize: '13px',
+                        color: '#f0efff',
+                        marginBottom: 2,
+                      }}
+                    >
+                      {user.name}
+                    </p>
+                    <p
+                      style={{
+                        fontFamily: '"JetBrains Mono", monospace',
+                        fontSize: '11px',
+                        color: '#8b89b0',
+                      }}
+                    >
+                      {user.email}
+                    </p>
+                  </div>
+                }
+              >
+                <Avatar className='w-[38px] h-[38px] rounded-xl shrink-0 cursor-default'>
+                  <AvatarFallback className='rounded-xl bg-gradient-to-br from-[rgba(124,92,252,0.3)] to-[rgba(0,212,255,0.2)] border border-[rgba(124,92,252,0.3)] text-[--violet-bright] font-display font-bold text-sm'>
+                    {user.name.charAt(0).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+              </SidebarTooltip>
+            )}
+            {isExpanded && (
+              <div className='min-w-0 flex-1'>
+                <div className='font-sans text-[13px] font-semibold text-[--foreground] truncate'>
+                  {user.name}
+                </div>
+                <div className='font-mono text-[10px] text-[--foreground-subtle] truncate'>
+                  {user.email}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {isExpanded ? (
+          <Button
+            variant='ghost'
+            onClick={() => signOut()}
+            disabled={isPending}
+            className='w-full h-[38px] justify-start gap-2.5 px-3.5 text-[#8b89b0] hover:bg-red-950/20 hover:text-red-400 hover:border-red-900/40 border border-transparent transition-all font-sans text-sm font-medium disabled:opacity-50'
+          >
+            <LogOut className='h-4 w-4 shrink-0' />
+            <span>Sign Out</span>
+          </Button>
+        ) : (
+          <SidebarTooltip
+            content={
+              <span
+                style={{
+                  fontFamily: 'DM Sans, sans-serif',
+                  fontWeight: 500,
+                  fontSize: '13px',
+                  color: '#ff6b6b',
+                }}
+              >
+                Sign Out
+              </span>
+            }
+          >
+            <Button
+              variant='ghost'
+              size='icon'
+              onClick={() => signOut()}
+              disabled={isPending}
+              className='w-[38px] h-[38px] text-[#8b89b0] hover:bg-red-950/20 hover:text-red-400 hover:border-red-900/40 border border-transparent transition-all disabled:opacity-50'
+            >
+              <LogOut className='h-4 w-4' />
+            </Button>
+          </SidebarTooltip>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Mobile: top logo bar (branding only, no hamburger) ───────────────────────
+function MobileTopBar() {
+  return (
+    <div
+      className='md:hidden fixed top-0 left-0 right-0 z-40 flex items-center px-4 h-14'
+      style={{
+        background: 'rgba(8,8,16,0.97)',
+        borderBottom: '1px solid rgba(124,92,252,0.12)',
+        backdropFilter: 'blur(20px)',
+      }}
+    >
+      <div className='flex items-center gap-2.5'>
+        <div
+          className='w-8 h-8 rounded-lg flex items-center justify-center'
+          style={{
+            background: 'linear-gradient(135deg, #7c5cfc, #00d4ff)',
+            boxShadow: '0 0 14px rgba(124,92,252,0.4)',
+          }}
+        >
+          <Zap className='w-4 h-4 text-white' strokeWidth={2.5} />
+        </div>
+        <div>
+          <span className='font-display text-base font-extrabold text-[--foreground] tracking-tight'>
+            ExpenseAI
+          </span>
+          <span className='font-mono text-[9px] text-[#4a4870] tracking-widest uppercase ml-2 hidden xs:inline'>
+            Smart Tracking
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Mobile: bottom navigation bar ───────────────────────────────────────────
+function MobileBottomNav() {
+  const location = useLocation();
+  const { mutate: signOut } = useSignOut();
+
+  return (
+    <nav
+      className='md:hidden fixed bottom-0 left-0 right-0 z-50'
+      style={{
+        background: 'rgba(8,8,16,0.97)',
+        borderTop: '1px solid rgba(124,92,252,0.15)',
+        backdropFilter: 'blur(20px)',
+        paddingBottom: 'env(safe-area-inset-bottom)',
+      }}
+    >
+      <div className='flex items-stretch justify-around'>
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          const isActive =
+            item.href === '/'
+              ? location.pathname === '/'
+              : location.pathname.startsWith(item.href);
+
           return (
             <NavLink
               key={item.href}
               to={item.href}
-              className='flex flex-col items-center gap-1 px-3 py-1.5 rounded-xl transition-all'
-              style={{
-                color: isActive ? '#9d7fff' : '#4a4870',
-                background: isActive ? 'rgba(124,92,252,0.1)' : 'transparent',
-              }}
+              className='flex flex-col items-center justify-center gap-1 flex-1 py-2.5 transition-all relative'
+              style={{ color: isActive ? '#9d7fff' : '#4a4870' }}
             >
-              <Icon size={20} strokeWidth={isActive ? 2.5 : 2} />
-              <span className='text-[9px] font-mono tracking-wide'>
+              {/* Active indicator pill at top edge */}
+              {isActive && (
+                <div
+                  className='absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 rounded-full'
+                  style={{
+                    background: 'linear-gradient(90deg, #7c5cfc, #00d4ff)',
+                  }}
+                />
+              )}
+              <div
+                className='flex items-center justify-center w-8 h-8 rounded-xl transition-all'
+                style={{
+                  background: isActive
+                    ? 'rgba(124,92,252,0.15)'
+                    : 'transparent',
+                }}
+              >
+                <Icon size={19} strokeWidth={isActive ? 2.5 : 1.8} />
+              </div>
+              <span
+                className='font-mono text-[9px] tracking-wide leading-none'
+                style={{ color: isActive ? '#9d7fff' : '#4a4870' }}
+              >
                 {item.label}
               </span>
             </NavLink>
           );
         })}
+
+        {/* Sign out tab */}
         <button
-          onClick={() => onSignOut()}
-          className='flex flex-col items-center gap-1 px-3 py-1.5 rounded-xl transition-all'
+          onClick={() => signOut()}
+          className='flex flex-col items-center justify-center gap-1 flex-1 py-2.5 transition-all'
           style={{ color: '#4a4870' }}
         >
-          <LogOut size={20} strokeWidth={2} />
-          <span className='text-[9px] font-mono tracking-wide'>Logout</span>
+          <div className='flex items-center justify-center w-8 h-8 rounded-xl'>
+            <LogOut size={19} strokeWidth={1.8} />
+          </div>
+          <span className='font-mono text-[9px] tracking-wide leading-none'>
+            Logout
+          </span>
         </button>
       </div>
     </nav>
   );
 }
 
+// ─── Main export ──────────────────────────────────────────────────────────────
 export function Sidebar() {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const { mutate: signOut } = useSignOut();
 
   return (
     <>
-      {/* Desktop Sidebar */}
+      {/* ── Desktop sidebar ── */}
       <aside
         className={cn(
           'hidden md:flex flex-col h-screen shrink-0 relative transition-all duration-300 ease-in-out overflow-visible',
@@ -2174,7 +3156,7 @@ export function Sidebar() {
         )}
         style={{ padding: '20px 0' }}
       >
-        {/* Vertical gradient line */}
+        {/* Vertical gradient accent line */}
         <div
           className='absolute right-0 top-[20%] bottom-[20%] w-px'
           style={{
@@ -2183,7 +3165,7 @@ export function Sidebar() {
           }}
         />
 
-        {/* Toggle Button */}
+        {/* Expand/collapse toggle */}
         <div
           className={cn(
             'mb-4 transition-all',
@@ -2204,58 +3186,12 @@ export function Sidebar() {
           </Button>
         </div>
 
-        <NavItems isExpanded={isExpanded} />
+        <DesktopNavItems isExpanded={isExpanded} />
       </aside>
 
-      {/* Mobile: Top bar with hamburger */}
-      <div
-        className='md:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-4 py-3'
-        style={{
-          background: 'rgba(8,8,16,0.97)',
-          borderBottom: '1px solid rgba(124,92,252,0.12)',
-          backdropFilter: 'blur(20px)',
-        }}
-      >
-        <div className='flex items-center gap-2'>
-          <div
-            className='w-8 h-8 rounded-lg flex items-center justify-center'
-            style={{ background: 'linear-gradient(135deg, #7c5cfc, #00d4ff)' }}
-          >
-            <Zap className='w-4 h-4 text-white' strokeWidth={2.5} />
-          </div>
-          <span className='font-display text-base font-extrabold text-[--foreground]'>
-            ExpenseAI
-          </span>
-        </div>
-
-        <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-          <SheetTrigger asChild>
-            <Button
-              variant='ghost'
-              size='icon'
-              className='h-9 w-9 border border-[rgba(124,92,252,0.2)] text-[--foreground-muted]'
-            >
-              <Menu className='h-5 w-5' />
-            </Button>
-          </SheetTrigger>
-          <SheetContent
-            side='right'
-            className='w-72 p-0 border-[rgba(124,92,252,0.2)]'
-            style={{ background: 'rgba(8,8,16,0.98)' }}
-          >
-            <SheetTitle className='sr-only'>Navigation Menu</SheetTitle>
-            <div className='flex flex-col h-full pt-6 pb-4'>
-              <NavItems
-                isExpanded={true}
-                onNavClick={() => setMobileOpen(false)}
-              />
-            </div>
-          </SheetContent>
-        </Sheet>
-      </div>
-
-      {/* Mobile Bottom Nav */}
-      <MobileBottomNav onSignOut={signOut} />
+      {/* ── Mobile: logo bar at top + nav at bottom ── */}
+      <MobileTopBar />
+      <MobileBottomNav />
     </>
   );
 }
@@ -2496,8 +3432,8 @@ FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\index.cs
   --radius: 0.5rem;
 
   /* ── Mobile Layout ── */
-  --mobile-header-height:     56px;
-  --mobile-bottomnav-height:  64px;
+  --mobile-header-height:     0px;   /* desktop default — overridden below for mobile */
+  --mobile-bottomnav-height:  0px;   /* desktop default */
 
   /* ── Obsidian Core ── */
   --background:           #080810;
@@ -2543,7 +3479,6 @@ FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\index.cs
   --accent-foreground:    var(--foreground);
   --destructive:          var(--red);
   --destructive-foreground: #ffffff;
-  --border:               rgba(124, 92, 252, 0.15);
   --input:                var(--surface-2);
   --ring:                 var(--violet);
 
@@ -2563,6 +3498,14 @@ FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\index.cs
   --sidebar-accent-foreground:  var(--foreground);
   --sidebar-border:             var(--border);
   --sidebar-ring:               var(--violet);
+}
+
+/* On mobile viewports, activate the header/bottomnav offsets */
+@media (max-width: 767px) {
+  :root {
+    --mobile-header-height:    56px;
+    --mobile-bottomnav-height: 64px;
+  }
 }
 
 .dark {
@@ -2639,6 +3582,18 @@ FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\index.cs
     @apply bg-background text-foreground antialiased;
     font-family: "DM Sans", sans-serif;
     background: var(--background);
+    /*
+      CRITICAL FIX: Do NOT set overflow:hidden on body.
+      It must be `overflow: hidden` only on the #root / app shell level
+      so that individual page scroll containers work on mobile.
+    */
+    overflow: hidden;
+    height: 100vh;
+    height: 100dvh; /* dynamic viewport height — accounts for mobile browser chrome */
+  }
+
+  #root {
+    height: 100%;
     overflow: hidden;
   }
 }
@@ -2779,7 +3734,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 .delay-300 { animation-delay: 0.3s; opacity: 0; }
 .delay-400 { animation-delay: 0.4s; opacity: 0; }
 
-/* ─── Touch targets: ensure minimum 44px on mobile ── */
+/* ─── Touch targets: ensure minimum tap size on mobile ── */
 @media (max-width: 768px) {
   button, a[role="button"] {
     min-height: 36px;
@@ -2851,7 +3806,6 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { ScrollArea } from '@/components/ui/scroll-area';
 
 const CATEGORY_COLORS: Record<string, string> = {
   DINING: '#ff2d78',
@@ -2912,10 +3866,10 @@ function StatCard({
           background: `radial-gradient(circle, ${accent}20, transparent 70%)`,
         }}
       />
-      <CardContent className='p-4 sm:p-6'>
-        <div className='flex justify-between items-start mb-3 sm:mb-4'>
+      <CardContent className='p-4 sm:p-5'>
+        <div className='flex justify-between items-start mb-3'>
           <div
-            className='w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center'
+            className='w-9 h-9 rounded-xl flex items-center justify-center'
             style={{
               background: `${accent}15`,
               border: `1px solid ${accent}30`,
@@ -2923,19 +3877,19 @@ function StatCard({
           >
             <Icon style={{ width: '16px', height: '16px', color: accent }} />
           </div>
-          <span className='font-mono text-[9px] sm:text-[10px] text-[#4a4870] uppercase tracking-wider'>
+          <span className='font-mono text-[9px] text-[#4a4870] uppercase tracking-wider'>
             {label}
           </span>
         </div>
 
         {isLoading ? (
-          <div className='h-8 rounded-lg bg-[rgba(124,92,252,0.08)] mb-2 shimmer' />
+          <div className='h-7 rounded-lg bg-[rgba(124,92,252,0.08)] mb-2 shimmer' />
         ) : (
-          <div className='font-display text-2xl sm:text-3xl font-extrabold text-[#f0efff] tracking-tight mb-2 leading-none'>
+          <div className='font-display text-xl sm:text-2xl font-extrabold text-[#f0efff] tracking-tight mb-1.5 leading-none'>
             {value}
           </div>
         )}
-        <div className='font-mono text-[10px] sm:text-[11px] text-[#4a4870] flex items-center gap-1.5'>
+        <div className='font-mono text-[10px] text-[#4a4870] flex items-center gap-1.5 flex-wrap'>
           {sub}
         </div>
       </CardContent>
@@ -2946,7 +3900,6 @@ function StatCard({
 export default function Dashboard() {
   const user = useAuthStore((s) => s.user);
 
-  // Compute date range inside component so it stays fresh across month boundaries
   const { currentMonthFrom, currentMonthTo } = useMemo(() => {
     const now = new Date();
     return {
@@ -2994,57 +3947,71 @@ export default function Dashboard() {
   };
 
   return (
+    /* 
+      KEY FIX: Use a plain div with overflow-y-auto instead of ScrollArea.
+      On mobile, ScrollArea from Radix can fail to scroll properly when nested
+      inside a flex container that has overflow-hidden parents.
+      We rely on the natural block flow + overflow-y-auto here.
+    */
     <div
-      className='flex flex-col h-full overflow-hidden'
-      style={{ background: '#080810' }}
+      className='flex flex-col h-full'
+      style={{ background: '#080810', overflow: 'hidden' }}
     >
-      {/* Header */}
+      {/* Sticky Header */}
       <div
-        className='shrink-0 px-4 sm:px-8 py-4 sm:py-7'
+        className='shrink-0 px-4 sm:px-8 py-4 sm:py-5'
         style={{
           borderBottom: '1px solid rgba(124,92,252,0.1)',
-          background: 'rgba(8,8,16,0.9)',
+          background: 'rgba(8,8,16,0.95)',
           backdropFilter: 'blur(20px)',
+          zIndex: 10,
         }}
       >
         <div className='flex items-center justify-between'>
           <div>
             <div className='flex items-center gap-2 mb-1'>
-              <Sparkles className='w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#7c5cfc]' />
-              <span className='font-mono text-[9px] sm:text-[10px] text-[#4a4870] uppercase tracking-[0.15em]'>
+              <Sparkles className='w-3.5 h-3.5 text-[#7c5cfc]' />
+              <span className='font-mono text-[9px] text-[#4a4870] uppercase tracking-[0.15em]'>
                 {new Date().toLocaleDateString('en-IN', {
                   month: 'long',
                   year: 'numeric',
                 })}
               </span>
             </div>
-            <h1 className='font-display text-xl sm:text-3xl font-extrabold text-[#f0efff] tracking-tight'>
+            <h1 className='font-display text-xl sm:text-2xl font-extrabold text-[#f0efff] tracking-tight'>
               {user ? `Hey, ${user.name.split(' ')[0]} 👋` : 'Dashboard'}
             </h1>
           </div>
           <div
-            className='flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-2xl'
+            className='flex items-center gap-1.5 px-2.5 py-1.5 rounded-2xl'
             style={{
               background: 'rgba(0,255,135,0.07)',
               border: '1px solid rgba(0,255,135,0.2)',
             }}
           >
             <div
-              className='w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full pulse-dot'
+              className='w-1.5 h-1.5 rounded-full pulse-dot'
               style={{ background: '#00ff87', boxShadow: '0 0 6px #00ff87' }}
             />
-            <span className='font-mono text-[9px] sm:text-[11px] text-[#00ff87]'>
+            <span className='font-mono text-[9px] sm:text-[10px] text-[#00ff87]'>
               Live
             </span>
           </div>
         </div>
       </div>
 
-      {/* Scrollable content */}
-      <ScrollArea className='flex-1'>
-        <div className='p-4 sm:p-8 space-y-4 sm:space-y-6'>
-          {/* Stat cards - 1 col on mobile, 3 on desktop */}
-          <div className='grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4'>
+      {/* Scrollable Content — native overflow-y-auto for reliable mobile scroll */}
+      <div
+        className='flex-1 min-h-0'
+        style={{
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          WebkitOverflowScrolling: 'touch',
+        }}
+      >
+        <div className='p-4 sm:p-6 space-y-4 pb-6'>
+          {/* ── Stat Cards: 1-col on mobile, 3-col on sm+ ── */}
+          <div className='grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-3 gap-3'>
             <StatCard
               label='Total Spent'
               value={`₹${(stats?.total ?? 0).toLocaleString('en-IN')}`}
@@ -3075,10 +4042,10 @@ export default function Dashboard() {
             />
           </div>
 
-          {/* Charts - stacked on mobile, side by side on lg */}
+          {/* ── Charts ── */}
           {!isLoading && expenses.length > 0 && (
-            <div className='grid grid-cols-1 lg:grid-cols-[1fr_300px] xl:grid-cols-[1fr_340px] gap-4'>
-              {/* Bar chart */}
+            <div className='grid grid-cols-1 lg:grid-cols-[1fr_300px] xl:grid-cols-[1fr_320px] gap-4'>
+              {/* Bar Chart */}
               <Card
                 className='border-[rgba(124,92,252,0.12)]'
                 style={{
@@ -3086,10 +4053,10 @@ export default function Dashboard() {
                   backdropFilter: 'blur(20px)',
                 }}
               >
-                <CardHeader className='pb-2 px-4 sm:px-6 pt-4 sm:pt-6'>
-                  <CardTitle className='flex items-center gap-2.5 text-[#f0efff] font-display text-sm sm:text-base font-semibold'>
+                <CardHeader className='pb-2 px-4 pt-4'>
+                  <CardTitle className='flex items-center gap-2.5 text-[#f0efff] font-display text-sm font-semibold'>
                     <div
-                      className='w-0.5 h-4 sm:h-5 rounded-sm'
+                      className='w-0.5 h-4 rounded-sm'
                       style={{
                         background: 'linear-gradient(180deg, #7c5cfc, #00d4ff)',
                       }}
@@ -3097,8 +4064,8 @@ export default function Dashboard() {
                     Recent Expenses
                   </CardTitle>
                 </CardHeader>
-                <CardContent className='px-2 sm:px-4 pb-4'>
-                  <ResponsiveContainer width='100%' height={180}>
+                <CardContent className='px-2 pb-4'>
+                  <ResponsiveContainer width='100%' height={160}>
                     <BarChart
                       data={barData}
                       margin={{ top: 4, right: 4, left: -20, bottom: 0 }}
@@ -3135,7 +4102,7 @@ export default function Dashboard() {
                       <Bar
                         dataKey='amount'
                         radius={[6, 6, 0, 0]}
-                        maxBarSize={40}
+                        maxBarSize={36}
                         fill='#7c5cfc'
                       >
                         {barData.map((_, i) => (
@@ -3150,7 +4117,7 @@ export default function Dashboard() {
                 </CardContent>
               </Card>
 
-              {/* Pie chart */}
+              {/* Pie Chart */}
               {pieData.length > 0 && (
                 <Card
                   className='border-[rgba(124,92,252,0.12)]'
@@ -3159,10 +4126,10 @@ export default function Dashboard() {
                     backdropFilter: 'blur(20px)',
                   }}
                 >
-                  <CardHeader className='pb-2 px-4 sm:px-6 pt-4 sm:pt-6'>
-                    <CardTitle className='flex items-center gap-2.5 text-[#f0efff] font-display text-sm sm:text-base font-semibold'>
+                  <CardHeader className='pb-2 px-4 pt-4'>
+                    <CardTitle className='flex items-center gap-2.5 text-[#f0efff] font-display text-sm font-semibold'>
                       <div
-                        className='w-0.5 h-4 sm:h-5 rounded-sm'
+                        className='w-0.5 h-4 rounded-sm'
                         style={{
                           background:
                             'linear-gradient(180deg, #ff2d78, #ffb830)',
@@ -3171,15 +4138,15 @@ export default function Dashboard() {
                       By Category
                     </CardTitle>
                   </CardHeader>
-                  <CardContent className='px-2 sm:px-4 pb-4'>
-                    <ResponsiveContainer width='100%' height={160}>
+                  <CardContent className='px-2 pb-4'>
+                    <ResponsiveContainer width='100%' height={140}>
                       <PieChart>
                         <Pie
                           data={pieData}
                           cx='50%'
                           cy='50%'
-                          innerRadius={45}
-                          outerRadius={70}
+                          innerRadius={40}
+                          outerRadius={62}
                           dataKey='value'
                           paddingAngle={2}
                         >
@@ -3190,7 +4157,8 @@ export default function Dashboard() {
                         <Tooltip contentStyle={tooltipStyle.contentStyle} />
                       </PieChart>
                     </ResponsiveContainer>
-                    <div className='space-y-1.5 mt-2'>
+                    {/* Legend */}
+                    <div className='space-y-1.5 mt-2 px-2'>
                       {pieData.slice(0, 4).map((d) => (
                         <div
                           key={d.name}
@@ -3198,7 +4166,7 @@ export default function Dashboard() {
                         >
                           <div className='flex items-center gap-2'>
                             <div
-                              className='w-2 h-2 rounded-sm'
+                              className='w-2 h-2 rounded-sm shrink-0'
                               style={{
                                 background: d.color,
                                 boxShadow: `0 0 6px ${d.color}60`,
@@ -3223,7 +4191,7 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* Recent transactions */}
+          {/* ── Recent Transactions ── */}
           {expenses.length > 0 && (
             <Card
               className='border-[rgba(124,92,252,0.12)]'
@@ -3232,10 +4200,10 @@ export default function Dashboard() {
                 backdropFilter: 'blur(20px)',
               }}
             >
-              <CardHeader className='pb-2 px-4 sm:px-6 pt-4 sm:pt-6'>
-                <CardTitle className='flex items-center gap-2.5 text-[#f0efff] font-display text-sm sm:text-base font-semibold'>
+              <CardHeader className='pb-2 px-4 pt-4'>
+                <CardTitle className='flex items-center gap-2.5 text-[#f0efff] font-display text-sm font-semibold'>
                   <div
-                    className='w-0.5 h-4 sm:h-5 rounded-sm'
+                    className='w-0.5 h-4 rounded-sm'
                     style={{
                       background: 'linear-gradient(180deg, #00d4ff, #00ff87)',
                     }}
@@ -3243,15 +4211,15 @@ export default function Dashboard() {
                   Recent Transactions
                 </CardTitle>
               </CardHeader>
-              <CardContent className='px-2 sm:px-4 pb-4 space-y-1'>
+              <CardContent className='px-2 pb-3 space-y-0.5'>
                 {expenses.slice(0, 5).map((exp) => (
                   <div
                     key={exp.id}
-                    className='flex items-center justify-between p-2.5 sm:p-3 rounded-xl hover:bg-[rgba(124,92,252,0.06)] transition-colors cursor-default'
+                    className='flex items-center justify-between px-2 py-2.5 rounded-xl hover:bg-[rgba(124,92,252,0.06)] transition-colors cursor-default'
                   >
-                    <div className='flex items-center gap-2.5 sm:gap-3 min-w-0'>
+                    <div className='flex items-center gap-2.5 min-w-0 flex-1'>
                       <div
-                        className='w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center text-sm shrink-0'
+                        className='w-8 h-8 rounded-xl flex items-center justify-center text-sm shrink-0'
                         style={{
                           background: `${CATEGORY_COLORS[exp.category] ?? '#4a4870'}15`,
                           border: `1px solid ${CATEGORY_COLORS[exp.category] ?? '#4a4870'}30`,
@@ -3260,16 +4228,25 @@ export default function Dashboard() {
                         {CATEGORY_EMOJI[exp.category] ?? '📦'}
                       </div>
                       <div className='min-w-0'>
-                        <div className='font-sans text-sm font-medium text-[#f0efff] truncate max-w-[140px] sm:max-w-none'>
+                        <div className='font-sans text-sm font-medium text-[#f0efff] truncate max-w-[140px] sm:max-w-[260px]'>
                           {exp.title}
                         </div>
-                        <div className='font-mono text-[10px] text-[#4a4870]'>
-                          {exp.date}
+                        <div className='font-mono text-[9px] text-[#4a4870] flex items-center gap-1.5'>
+                          <span
+                            className='px-1.5 py-px rounded text-[8px]'
+                            style={{
+                              background: `${CATEGORY_COLORS[exp.category] ?? '#4a4870'}18`,
+                              color: CATEGORY_COLORS[exp.category] ?? '#4a4870',
+                            }}
+                          >
+                            {exp.category}
+                          </span>
+                          <span>{exp.date}</span>
                         </div>
                       </div>
                     </div>
                     <div
-                      className='font-display text-sm sm:text-base font-bold shrink-0 ml-2'
+                      className='font-display text-sm font-bold shrink-0 ml-2'
                       style={{
                         color: CATEGORY_COLORS[exp.category] ?? '#9d7fff',
                       }}
@@ -3282,6 +4259,20 @@ export default function Dashboard() {
             </Card>
           )}
 
+          {/* ── Loading skeletons ── */}
+          {isLoading && (
+            <div className='space-y-3'>
+              {[1, 2].map((i) => (
+                <div
+                  key={i}
+                  className='h-32 rounded-2xl shimmer'
+                  style={{ background: 'rgba(124,92,252,0.05)' }}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* ── Empty state ── */}
           {!isLoading && expenses.length === 0 && (
             <div className='flex flex-col items-center justify-center py-20 text-center'>
               <div className='text-5xl mb-4'>✨</div>
@@ -3294,7 +4285,7 @@ export default function Dashboard() {
             </div>
           )}
         </div>
-      </ScrollArea>
+      </div>
     </div>
   );
 }
@@ -3314,6 +4305,7 @@ import {
   X,
   Search,
   Loader2,
+  SlidersHorizontal,
 } from 'lucide-react';
 import {
   useExpenses,
@@ -3330,8 +4322,6 @@ import type {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import {
   Sheet,
@@ -3367,6 +4357,7 @@ const CATEGORIES: Category[] = [
   'EDUCATION',
   'OTHER',
 ];
+
 const CATEGORY_LABEL: Record<Category, string> = {
   DINING: 'Dining',
   SHOPPING: 'Shopping',
@@ -3377,6 +4368,18 @@ const CATEGORY_LABEL: Record<Category, string> = {
   EDUCATION: 'Education',
   OTHER: 'Other',
 };
+
+const CATEGORY_EMOJI: Record<Category, string> = {
+  DINING: '🍽️',
+  SHOPPING: '🛍️',
+  TRANSPORT: '🚗',
+  ENTERTAINMENT: '🎮',
+  UTILITIES: '⚡',
+  HEALTH: '💊',
+  EDUCATION: '📚',
+  OTHER: '📦',
+};
+
 const CATEGORY_COLORS: Record<Category, string> = {
   DINING: '#ff2d78',
   SHOPPING: '#9d7fff',
@@ -3387,6 +4390,7 @@ const CATEGORY_COLORS: Record<Category, string> = {
   EDUCATION: '#5b8fff',
   OTHER: '#4a4870',
 };
+
 const EMPTY_FORM = {
   title: '',
   category: 'OTHER' as Category,
@@ -3395,6 +4399,7 @@ const EMPTY_FORM = {
   notes: '',
 };
 
+// ─── Expense Form ─────────────────────────────────────────────────────────────
 function ExpenseForm({
   editingId,
   formData,
@@ -3413,7 +4418,7 @@ function ExpenseForm({
   onCancel: () => void;
 }) {
   return (
-    <form onSubmit={onSubmit} className='space-y-4 px-1'>
+    <form onSubmit={onSubmit} className='space-y-4'>
       {formError && (
         <div
           className='p-3 rounded-xl text-[#ff3b5c] text-sm'
@@ -3426,36 +4431,42 @@ function ExpenseForm({
         </div>
       )}
 
-      <div className='grid grid-cols-1 sm:grid-cols-2 gap-4'>
-        <div className='space-y-2'>
-          <Label className='font-mono text-[10px] text-[#8b89b0] uppercase tracking-widest'>
-            Title
-          </Label>
-          <Input
-            value={formData.title}
-            onChange={(e) =>
-              setFormData((p) => ({ ...p, title: e.target.value }))
-            }
-            placeholder='e.g., Coffee'
-            className='bg-[rgba(13,13,26,0.8)] border-[rgba(124,92,252,0.15)] text-[#f0efff] focus-visible:ring-[#7c5cfc]/30 focus-visible:border-[rgba(124,92,252,0.5)]'
-          />
-        </div>
-        <div className='space-y-2'>
-          <Label className='font-mono text-[10px] text-[#8b89b0] uppercase tracking-widest'>
-            Amount (₹)
-          </Label>
-          <Input
-            type='number'
-            step='0.01'
-            value={formData.amount}
-            onChange={(e) =>
-              setFormData((p) => ({ ...p, amount: e.target.value }))
-            }
-            placeholder='0.00'
-            className='bg-[rgba(13,13,26,0.8)] border-[rgba(124,92,252,0.15)] text-[#f0efff] focus-visible:ring-[#7c5cfc]/30 focus-visible:border-[rgba(124,92,252,0.5)]'
-          />
-        </div>
-        <div className='space-y-2'>
+      {/* Title */}
+      <div className='space-y-1.5'>
+        <Label className='font-mono text-[10px] text-[#8b89b0] uppercase tracking-widest'>
+          Title
+        </Label>
+        <Input
+          value={formData.title}
+          onChange={(e) =>
+            setFormData((p) => ({ ...p, title: e.target.value }))
+          }
+          placeholder='e.g., Coffee'
+          className='bg-[rgba(13,13,26,0.8)] border-[rgba(124,92,252,0.15)] text-[#f0efff] focus-visible:ring-[#7c5cfc]/30 focus-visible:border-[rgba(124,92,252,0.5)] h-11'
+        />
+      </div>
+
+      {/* Amount */}
+      <div className='space-y-1.5'>
+        <Label className='font-mono text-[10px] text-[#8b89b0] uppercase tracking-widest'>
+          Amount (₹)
+        </Label>
+        <Input
+          type='number'
+          step='0.01'
+          inputMode='decimal'
+          value={formData.amount}
+          onChange={(e) =>
+            setFormData((p) => ({ ...p, amount: e.target.value }))
+          }
+          placeholder='0.00'
+          className='bg-[rgba(13,13,26,0.8)] border-[rgba(124,92,252,0.15)] text-[#f0efff] focus-visible:ring-[#7c5cfc]/30 focus-visible:border-[rgba(124,92,252,0.5)] h-11'
+        />
+      </div>
+
+      {/* Category + Date side by side */}
+      <div className='grid grid-cols-2 gap-3'>
+        <div className='space-y-1.5'>
           <Label className='font-mono text-[10px] text-[#8b89b0] uppercase tracking-widest'>
             Category
           </Label>
@@ -3465,7 +4476,7 @@ function ExpenseForm({
               setFormData((p) => ({ ...p, category: v as Category }))
             }
           >
-            <SelectTrigger className='bg-[rgba(13,13,26,0.8)] border-[rgba(124,92,252,0.15)] text-[#f0efff] focus:ring-[#7c5cfc]/30'>
+            <SelectTrigger className='bg-[rgba(13,13,26,0.8)] border-[rgba(124,92,252,0.15)] text-[#f0efff] focus:ring-[#7c5cfc]/30 h-11'>
               <SelectValue />
             </SelectTrigger>
             <SelectContent className='bg-[#0d0d1a] border-[rgba(124,92,252,0.2)]'>
@@ -3481,7 +4492,8 @@ function ExpenseForm({
             </SelectContent>
           </Select>
         </div>
-        <div className='space-y-2'>
+
+        <div className='space-y-1.5'>
           <Label className='font-mono text-[10px] text-[#8b89b0] uppercase tracking-widest'>
             Date
           </Label>
@@ -3491,14 +4503,15 @@ function ExpenseForm({
             onChange={(e) =>
               setFormData((p) => ({ ...p, date: e.target.value }))
             }
-            className='bg-[rgba(13,13,26,0.8)] border-[rgba(124,92,252,0.15)] text-[#f0efff] focus-visible:ring-[#7c5cfc]/30 [color-scheme:dark]'
+            className='bg-[rgba(13,13,26,0.8)] border-[rgba(124,92,252,0.15)] text-[#f0efff] focus-visible:ring-[#7c5cfc]/30 [color-scheme:dark] h-11'
           />
         </div>
       </div>
 
-      <div className='space-y-2'>
+      {/* Notes */}
+      <div className='space-y-1.5'>
         <Label className='font-mono text-[10px] text-[#8b89b0] uppercase tracking-widest'>
-          Notes (optional)
+          Notes <span className='normal-case text-[#4a4870]'>(optional)</span>
         </Label>
         <Input
           value={formData.notes}
@@ -3506,15 +4519,16 @@ function ExpenseForm({
             setFormData((p) => ({ ...p, notes: e.target.value }))
           }
           placeholder='Any extra context…'
-          className='bg-[rgba(13,13,26,0.8)] border-[rgba(124,92,252,0.15)] text-[#f0efff] focus-visible:ring-[#7c5cfc]/30 focus-visible:border-[rgba(124,92,252,0.5)]'
+          className='bg-[rgba(13,13,26,0.8)] border-[rgba(124,92,252,0.15)] text-[#f0efff] focus-visible:ring-[#7c5cfc]/30 focus-visible:border-[rgba(124,92,252,0.5)] h-11'
         />
       </div>
 
+      {/* Actions */}
       <div className='flex gap-2.5 pt-1'>
         <Button
           type='submit'
           disabled={isSaving}
-          className='flex-1 gap-2 font-display font-bold'
+          className='flex-1 h-11 gap-2 font-display font-bold text-white'
           style={{
             background: 'linear-gradient(135deg, #7c5cfc, #00d4ff)',
             boxShadow: '0 0 20px rgba(124,92,252,0.25)',
@@ -3531,15 +4545,107 @@ function ExpenseForm({
           type='button'
           variant='outline'
           onClick={onCancel}
-          className='gap-2 border-[rgba(124,92,252,0.18)] text-[#8b89b0] hover:text-[#f0efff]'
+          className='h-11 gap-2 border-[rgba(124,92,252,0.18)] text-[#8b89b0] hover:text-[#f0efff]'
         >
-          <X className='w-4 h-4' /> Cancel
+          <X className='w-4 h-4' />
         </Button>
       </div>
     </form>
   );
 }
 
+// ─── Mobile Expense Card ──────────────────────────────────────────────────────
+function MobileExpenseCard({
+  exp,
+  onEdit,
+  onDelete,
+}: {
+  exp: Expense;
+  onEdit: (exp: Expense) => void;
+  onDelete: (exp: Expense) => void;
+}) {
+  const color = CATEGORY_COLORS[exp.category] ?? '#4a4870';
+  return (
+    <Card
+      className='border-[rgba(124,92,252,0.08)] active:border-[rgba(124,92,252,0.2)] transition-all'
+      style={{ background: 'rgba(13,13,26,0.7)' }}
+    >
+      <CardContent className='p-3.5'>
+        <div className='flex items-center gap-3'>
+          {/* Emoji icon */}
+          <div
+            className='w-10 h-10 rounded-xl flex items-center justify-center text-lg shrink-0'
+            style={{
+              background: `${color}15`,
+              border: `1px solid ${color}25`,
+            }}
+          >
+            {CATEGORY_EMOJI[exp.category] ?? '📦'}
+          </div>
+
+          {/* Details */}
+          <div className='flex-1 min-w-0'>
+            <p className='font-sans text-sm font-semibold text-[#f0efff] truncate'>
+              {exp.title}
+            </p>
+            <div className='flex items-center gap-1.5 mt-0.5 flex-wrap'>
+              <span
+                className='font-mono text-[9px] px-1.5 py-0.5 rounded-md'
+                style={{ background: `${color}15`, color }}
+              >
+                {CATEGORY_LABEL[exp.category]}
+              </span>
+              <span className='font-mono text-[9px] text-[#4a4870]'>
+                {exp.date}
+              </span>
+              {exp.notes && (
+                <span className='font-mono text-[9px] text-[#4a4870] truncate max-w-[100px]'>
+                  · {exp.notes}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Amount + actions */}
+          <div className='flex flex-col items-end gap-2 shrink-0'>
+            <span
+              className='font-display text-base font-bold'
+              style={{ color }}
+            >
+              ₹{exp.amount.toLocaleString('en-IN')}
+            </span>
+            <div className='flex gap-1.5'>
+              <button
+                onClick={() => onEdit(exp)}
+                className='w-8 h-8 rounded-lg flex items-center justify-center'
+                style={{
+                  background: 'rgba(91,143,255,0.1)',
+                  border: '1px solid rgba(91,143,255,0.2)',
+                  color: '#5b8fff',
+                }}
+              >
+                <Edit2 className='w-3.5 h-3.5' />
+              </button>
+              <button
+                onClick={() => onDelete(exp)}
+                className='w-8 h-8 rounded-lg flex items-center justify-center'
+                style={{
+                  background: 'rgba(255,59,92,0.08)',
+                  border: '1px solid rgba(255,59,92,0.2)',
+                  color: '#ff3b5c',
+                }}
+              >
+                <Trash2 className='w-3.5 h-3.5' />
+              </button>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
 export default function ExpensesPage() {
   const [filters, setFilters] = useState<ExpenseFilters>({});
   const [searchQuery, setSearchQuery] = useState('');
@@ -3547,6 +4653,7 @@ export default function ExpensesPage() {
     null,
   );
   const [showForm, setShowForm] = useState(false);
+  const [showFilterSheet, setShowFilterSheet] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [formData, setFormData] = useState(EMPTY_FORM);
   const [formError, setFormError] = useState('');
@@ -3566,17 +4673,21 @@ export default function ExpensesPage() {
   const handleCategorySelect = (cat: Category | null) => {
     setSelectedCategory(cat);
     setFilters((p) => ({ ...p, category: cat ?? undefined }));
+    setShowFilterSheet(false);
   };
+
   const handleSearch = (q: string) => {
     setSearchQuery(q);
     setFilters((p) => ({ ...p, search: q || undefined }));
   };
+
   const resetForm = () => {
     setShowForm(false);
     setEditingId(null);
     setFormData(EMPTY_FORM);
     setFormError('');
   };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.title || !formData.amount) {
@@ -3604,6 +4715,7 @@ export default function ExpensesPage() {
       );
     }
   };
+
   const handleEdit = (exp: Expense) => {
     setFormData({
       title: exp.title,
@@ -3615,6 +4727,7 @@ export default function ExpensesPage() {
     setEditingId(exp.id);
     setShowForm(true);
   };
+
   const handleExport = () => {
     const rows = expenses.map((e) =>
       [e.title, e.category, e.amount, e.date].join(','),
@@ -3629,49 +4742,70 @@ export default function ExpensesPage() {
 
   return (
     <div
-      className='flex flex-col h-full overflow-hidden'
-      style={{ background: '#080810' }}
+      className='flex flex-col h-full'
+      style={{ background: '#080810', overflow: 'hidden' }}
     >
-      {/* Header */}
+      {/* ── Sticky Header ── */}
       <div
-        className='shrink-0 px-4 sm:px-8 py-3.5 sm:py-5'
+        className='shrink-0 px-4 sm:px-6 py-3.5 sm:py-4'
         style={{
           borderBottom: '1px solid rgba(124,92,252,0.1)',
-          background: 'rgba(8,8,16,0.95)',
+          background: 'rgba(8,8,16,0.97)',
           backdropFilter: 'blur(20px)',
+          zIndex: 10,
         }}
       >
         <div className='flex items-center justify-between gap-3'>
           <div className='min-w-0'>
-            <h1 className='font-display text-xl sm:text-2xl font-extrabold text-[#f0efff] tracking-tight truncate'>
+            <h1 className='font-display text-xl sm:text-2xl font-extrabold text-[#f0efff] tracking-tight'>
               Expenses
             </h1>
-            <p className='font-mono text-[10px] sm:text-[11px] text-[#4a4870]'>
+            <p className='font-mono text-[10px] text-[#4a4870]'>
               {isLoading
                 ? 'Loading…'
                 : `${expenses.length} transactions · ₹${totalAmount.toLocaleString('en-IN')}`}
             </p>
           </div>
+
           <div className='flex items-center gap-2 shrink-0'>
+            {/* Export — desktop only */}
             <Button
               variant='outline'
               size='sm'
               onClick={handleExport}
-              className='gap-1.5 border-[rgba(124,92,252,0.18)] text-[#8b89b0] hover:text-[#f0efff] hover:border-[rgba(124,92,252,0.35)] hidden sm:flex'
+              className='hidden sm:flex gap-1.5 border-[rgba(124,92,252,0.18)] text-[#8b89b0] hover:text-[#f0efff] hover:border-[rgba(124,92,252,0.35)]'
             >
               <Download className='w-3.5 h-3.5' /> Export
             </Button>
+
+            {/* Filter button — mobile only */}
+            <Button
+              variant='outline'
+              size='icon'
+              onClick={() => setShowFilterSheet(true)}
+              className='sm:hidden h-9 w-9 border-[rgba(124,92,252,0.18)] text-[#8b89b0] relative'
+            >
+              <SlidersHorizontal className='w-4 h-4' />
+              {selectedCategory && (
+                <span
+                  className='absolute -top-1 -right-1 w-2 h-2 rounded-full'
+                  style={{ background: '#7c5cfc' }}
+                />
+              )}
+            </Button>
+
+            {/* Add button */}
             <Button
               onClick={() => {
                 setEditingId(null);
                 setFormData(EMPTY_FORM);
-                setShowForm((v) => !v);
+                setShowForm(true);
               }}
               size='sm'
-              className='gap-1.5 font-display font-bold text-white'
+              className='h-9 gap-1.5 font-display font-bold text-white'
               style={{
                 background: 'linear-gradient(135deg, #7c5cfc, #00d4ff)',
-                boxShadow: '0 0 20px rgba(124,92,252,0.3)',
+                boxShadow: '0 0 16px rgba(124,92,252,0.3)',
               }}
             >
               <Plus className='w-4 h-4' />
@@ -3680,332 +4814,368 @@ export default function ExpensesPage() {
             </Button>
           </div>
         </div>
+
+        {/* Search bar — always visible in header */}
+        <div className='relative mt-3'>
+          <Search className='absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#4a4870]' />
+          <Input
+            placeholder='Search expenses…'
+            value={searchQuery}
+            onChange={(e) => handleSearch(e.target.value)}
+            className='pl-10 h-10 bg-[rgba(13,13,26,0.8)] border-[rgba(124,92,252,0.15)] text-[#f0efff] placeholder:text-[#4a4870] focus-visible:ring-[#7c5cfc]/30 focus-visible:border-[rgba(124,92,252,0.4)]'
+          />
+          {searchQuery && (
+            <button
+              onClick={() => handleSearch('')}
+              className='absolute right-3 top-1/2 -translate-y-1/2 text-[#4a4870] hover:text-[#8b89b0]'
+            >
+              <X className='w-3.5 h-3.5' />
+            </button>
+          )}
+        </div>
+
+        {/* Category pills — desktop only (mobile uses filter sheet) */}
+        <div className='hidden sm:flex gap-2 mt-3 overflow-x-auto pb-0.5 scrollbar-hide flex-wrap'>
+          {[null, ...CATEGORIES].map((cat) => {
+            const isActive = selectedCategory === cat;
+            const color = cat ? CATEGORY_COLORS[cat] : '#7c5cfc';
+            return (
+              <button
+                key={cat ?? 'all'}
+                onClick={() => handleCategorySelect(cat)}
+                className='shrink-0 px-3 py-1.5 rounded-full font-mono text-[10px] transition-all whitespace-nowrap'
+                style={{
+                  border: `1px solid ${isActive ? color + '60' : 'rgba(124,92,252,0.12)'}`,
+                  background: isActive ? `${color}15` : 'transparent',
+                  color: isActive ? color : '#8b89b0',
+                  boxShadow: isActive ? `0 0 12px ${color}20` : 'none',
+                }}
+              >
+                {cat ? CATEGORY_LABEL[cat] : 'All'}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      <ScrollArea className='flex-1'>
-        <div className='p-4 sm:p-6 space-y-4'>
-          {/* Inline form for desktop */}
-          {showForm && (
-            <div
-              className='hidden sm:block rounded-2xl p-6'
-              style={{
-                background: 'rgba(13,13,26,0.85)',
-                border: '1px solid rgba(124,92,252,0.2)',
-                backdropFilter: 'blur(20px)',
-              }}
-            >
-              <div className='flex items-center gap-2.5 mb-5'>
-                <div
-                  className='w-0.5 h-5 rounded-sm'
-                  style={{
-                    background: 'linear-gradient(180deg, #7c5cfc, #00d4ff)',
-                  }}
-                />
-                <span className='font-display text-base font-bold text-[#f0efff]'>
-                  {editingId ? 'Edit Expense' : 'New Expense'}
-                </span>
-              </div>
-              <ExpenseForm
-                editingId={editingId}
-                formData={formData}
-                setFormData={setFormData}
-                isSaving={isSaving}
-                formError={formError}
-                onSubmit={handleSubmit}
-                onCancel={resetForm}
-              />
+      {/* ── Native-scroll content area ── */}
+      <div
+        className='flex-1 min-h-0'
+        style={{
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          WebkitOverflowScrolling: 'touch',
+        }}
+      >
+        <div className='p-4 sm:p-5 space-y-3 pb-6'>
+          {/* Active category badge on mobile */}
+          {selectedCategory && (
+            <div className='flex items-center gap-2 sm:hidden'>
+              <span className='font-mono text-[10px] text-[#4a4870]'>
+                Filtered by:
+              </span>
+              <button
+                onClick={() => handleCategorySelect(null)}
+                className='flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-[10px]'
+                style={{
+                  background: `${CATEGORY_COLORS[selectedCategory]}15`,
+                  border: `1px solid ${CATEGORY_COLORS[selectedCategory]}40`,
+                  color: CATEGORY_COLORS[selectedCategory],
+                }}
+              >
+                {CATEGORY_LABEL[selectedCategory]}
+                <X className='w-3 h-3' />
+              </button>
             </div>
           )}
 
-          {/* Mobile: Sheet - always mounted, controlled via open prop for smooth animation */}
-          <Sheet
-            open={showForm}
-            onOpenChange={(open) => {
-              if (!open) resetForm();
-            }}
-          >
-            <SheetContent
-              side='bottom'
-              className='sm:hidden rounded-t-3xl'
-              style={{
-                background: '#0d0d1a',
-                border: '1px solid rgba(124,92,252,0.2)',
-                paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))',
-              }}
-            >
-              <SheetHeader className='mb-5'>
-                <SheetTitle className='font-display text-[#f0efff]'>
-                  {editingId ? 'Edit Expense' : 'New Expense'}
-                </SheetTitle>
-              </SheetHeader>
-              <ExpenseForm
-                editingId={editingId}
-                formData={formData}
-                setFormData={setFormData}
-                isSaving={isSaving}
-                formError={formError}
-                onSubmit={handleSubmit}
-                onCancel={resetForm}
-              />
-            </SheetContent>
-          </Sheet>
-
-          {/* Filters */}
-          <div className='space-y-3'>
-            {/* Category pills - horizontal scroll on mobile */}
-            <div className='flex gap-2 overflow-x-auto pb-1 scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 sm:flex-wrap'>
-              {[null, ...CATEGORIES].map((cat) => {
-                const isActive = selectedCategory === cat;
-                const color = cat ? CATEGORY_COLORS[cat] : '#7c5cfc';
-                return (
-                  <button
-                    key={cat ?? 'all'}
-                    onClick={() => handleCategorySelect(cat)}
-                    className='shrink-0 px-3 py-1 sm:py-1.5 rounded-full font-mono text-[10px] sm:text-[11px] transition-all whitespace-nowrap'
-                    style={{
-                      border: `1px solid ${isActive ? color + '60' : 'rgba(124,92,252,0.12)'}`,
-                      background: isActive ? `${color}15` : 'transparent',
-                      color: isActive ? color : '#8b89b0',
-                      boxShadow: isActive ? `0 0 12px ${color}20` : 'none',
-                    }}
-                  >
-                    {cat ? CATEGORY_LABEL[cat] : 'All'}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Search */}
-            <div className='relative'>
-              <Search className='absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#4a4870]' />
-              <Input
-                placeholder='Search expenses…'
-                value={searchQuery}
-                onChange={(e) => handleSearch(e.target.value)}
-                className='pl-10 bg-[rgba(13,13,26,0.8)] border-[rgba(124,92,252,0.15)] text-[#f0efff] placeholder:text-[#4a4870] focus-visible:ring-[#7c5cfc]/30 focus-visible:border-[rgba(124,92,252,0.4)] focus-visible:bg-[rgba(124,92,252,0.05)]'
-              />
-            </div>
-          </div>
-
-          {/* Mobile card list */}
-          <div className='sm:hidden space-y-2'>
-            {isLoading ? (
-              Array.from({ length: 4 }).map((_, i) => (
+          {/* ── Loading skeletons ── */}
+          {isLoading && (
+            <div className='space-y-2.5'>
+              {Array.from({ length: 5 }).map((_, i) => (
                 <div
                   key={i}
-                  className='h-16 rounded-2xl shimmer'
+                  className='h-20 rounded-2xl shimmer'
                   style={{ background: 'rgba(124,92,252,0.05)' }}
                 />
-              ))
-            ) : expenses.length === 0 ? (
-              <div className='flex flex-col items-center py-16 text-center'>
-                <div className='text-4xl mb-3'>📭</div>
-                <p className='text-[#4a4870] text-sm'>No expenses found</p>
-              </div>
-            ) : (
-              expenses.map((exp) => {
-                const color = CATEGORY_COLORS[exp.category] ?? '#4a4870';
-                return (
-                  <Card
+              ))}
+            </div>
+          )}
+
+          {/* ── Empty state ── */}
+          {!isLoading && expenses.length === 0 && (
+            <div className='flex flex-col items-center justify-center py-20 text-center'>
+              <div className='text-5xl mb-4'>📭</div>
+              <p className='font-display text-base font-bold text-[#f0efff] mb-1'>
+                No expenses found
+              </p>
+              <p className='text-[#4a4870] text-sm'>
+                {searchQuery || selectedCategory
+                  ? 'Try adjusting your filters'
+                  : 'Tap "Add" to record your first expense'}
+              </p>
+            </div>
+          )}
+
+          {/* ── Mobile card list ── */}
+          {!isLoading && expenses.length > 0 && (
+            <>
+              {/* Mobile cards */}
+              <div className='sm:hidden space-y-2.5'>
+                {expenses.map((exp) => (
+                  <MobileExpenseCard
                     key={exp.id}
-                    className='border-[rgba(124,92,252,0.08)] hover:border-[rgba(124,92,252,0.2)] transition-all'
-                    style={{ background: 'rgba(13,13,26,0.7)' }}
-                  >
-                    <CardContent className='p-3.5'>
-                      <div className='flex items-center justify-between gap-3'>
-                        <div className='flex items-center gap-3 min-w-0'>
-                          <div className='flex flex-col min-w-0'>
-                            <span className='font-sans text-sm font-medium text-[#f0efff] truncate'>
-                              {exp.title}
+                    exp={exp}
+                    onEdit={handleEdit}
+                    onDelete={setDeleteConfirm}
+                  />
+                ))}
+              </div>
+
+              {/* Desktop table */}
+              <div
+                className='hidden sm:block rounded-2xl overflow-hidden'
+                style={{
+                  background: 'rgba(13,13,26,0.7)',
+                  border: '1px solid rgba(124,92,252,0.12)',
+                  backdropFilter: 'blur(20px)',
+                }}
+              >
+                <table className='w-full border-collapse'>
+                  <thead>
+                    <tr
+                      style={{ borderBottom: '1px solid rgba(124,92,252,0.1)' }}
+                    >
+                      {['Title', 'Category', 'Amount', 'Date', 'Actions'].map(
+                        (h) => (
+                          <th
+                            key={h}
+                            className='px-5 py-3.5 font-mono text-[10px] text-[#4a4870] uppercase tracking-widest font-medium text-left'
+                          >
+                            {h}
+                          </th>
+                        ),
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {expenses.map((exp) => {
+                      const color = CATEGORY_COLORS[exp.category] ?? '#4a4870';
+                      return (
+                        <tr
+                          key={exp.id}
+                          className='hover:bg-[rgba(124,92,252,0.04)] transition-colors'
+                          style={{
+                            borderBottom: '1px solid rgba(124,92,252,0.06)',
+                          }}
+                        >
+                          <td className='px-5 py-3.5 font-sans text-sm font-medium text-[#f0efff]'>
+                            {exp.title}
+                          </td>
+                          <td className='px-5 py-3.5'>
+                            <span
+                              className='inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-[10px]'
+                              style={{
+                                border: `1px solid ${color}30`,
+                                background: `${color}0f`,
+                                color,
+                              }}
+                            >
+                              <span
+                                className='w-1.5 h-1.5 rounded-full'
+                                style={{
+                                  background: color,
+                                  boxShadow: `0 0 5px ${color}`,
+                                }}
+                              />
+                              {CATEGORY_LABEL[exp.category]}
                             </span>
-                            <div className='flex items-center gap-2 mt-0.5'>
-                              <Badge
-                                className='text-[9px] font-mono px-1.5 py-0 h-4 border-0'
-                                style={{ background: `${color}15`, color }}
-                              >
-                                {CATEGORY_LABEL[exp.category]}
-                              </Badge>
-                              <span className='font-mono text-[9px] text-[#4a4870]'>
-                                {exp.date}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                        <div className='flex items-center gap-2 shrink-0'>
-                          <span
-                            className='font-display text-base font-bold'
+                          </td>
+                          <td
+                            className='px-5 py-3.5 font-display text-sm font-bold'
                             style={{ color }}
                           >
                             ₹{exp.amount.toLocaleString('en-IN')}
-                          </span>
-                          <div className='flex gap-1'>
-                            <button
-                              onClick={() => handleEdit(exp)}
-                              className='w-9 h-9 rounded-lg flex items-center justify-center transition-all'
-                              style={{
-                                background: 'rgba(91,143,255,0.1)',
-                                color: '#5b8fff',
-                                border: '1px solid rgba(91,143,255,0.2)',
-                              }}
-                            >
-                              <Edit2 className='w-3.5 h-3.5' />
-                            </button>
-                            <button
-                              onClick={() => setDeleteConfirm(exp)}
-                              className='w-9 h-9 rounded-lg flex items-center justify-center transition-all'
-                              style={{
-                                background: 'rgba(255,59,92,0.08)',
-                                color: '#ff3b5c',
-                                border: '1px solid rgba(255,59,92,0.2)',
-                              }}
-                            >
-                              <Trash2 className='w-3.5 h-3.5' />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                );
-              })
-            )}
-          </div>
+                          </td>
+                          <td className='px-5 py-3.5 font-mono text-[11px] text-[#4a4870]'>
+                            {new Date(exp.date).toLocaleDateString('en-IN', {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                            })}
+                          </td>
+                          <td className='px-5 py-3.5'>
+                            <div className='flex gap-1.5'>
+                              <button
+                                onClick={() => handleEdit(exp)}
+                                className='w-[30px] h-[30px] rounded-lg flex items-center justify-center transition-all hover:bg-[rgba(91,143,255,0.15)]'
+                                style={{
+                                  background: 'rgba(91,143,255,0.08)',
+                                  border: '1px solid rgba(91,143,255,0.2)',
+                                  color: '#5b8fff',
+                                }}
+                              >
+                                <Edit2 className='w-3 h-3' />
+                              </button>
+                              <button
+                                onClick={() => setDeleteConfirm(exp)}
+                                className='w-[30px] h-[30px] rounded-lg flex items-center justify-center transition-all hover:bg-[rgba(255,59,92,0.15)]'
+                                style={{
+                                  background: 'rgba(255,59,92,0.08)',
+                                  border: '1px solid rgba(255,59,92,0.2)',
+                                  color: '#ff3b5c',
+                                }}
+                              >
+                                <Trash2 className='w-3 h-3' />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
 
-          {/* Desktop table */}
+              {/* Export — mobile bottom */}
+              <div className='sm:hidden pt-1'>
+                <Button
+                  variant='outline'
+                  onClick={handleExport}
+                  className='w-full h-11 gap-2 border-[rgba(124,92,252,0.18)] text-[#8b89b0] hover:text-[#f0efff]'
+                >
+                  <Download className='w-4 h-4' /> Export CSV
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* ── Add/Edit form sheet (mobile) ── */}
+      <Sheet
+        open={showForm}
+        onOpenChange={(open) => {
+          if (!open) resetForm();
+        }}
+      >
+        <SheetContent
+          side='bottom'
+          className='rounded-t-3xl'
+          style={{
+            background: '#0d0d1a',
+            border: '1px solid rgba(124,92,252,0.2)',
+            maxHeight: '92dvh',
+            overflowY: 'auto',
+            paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))',
+          }}
+        >
+          <SheetHeader className='mb-5'>
+            <SheetTitle className='font-display text-[#f0efff]'>
+              {editingId ? 'Edit Expense' : 'New Expense'}
+            </SheetTitle>
+          </SheetHeader>
+          <ExpenseForm
+            editingId={editingId}
+            formData={formData}
+            setFormData={setFormData}
+            isSaving={isSaving}
+            formError={formError}
+            onSubmit={handleSubmit}
+            onCancel={resetForm}
+          />
+        </SheetContent>
+      </Sheet>
+
+      {/* ── Desktop inline form ── */}
+      {showForm && (
+        <div
+          className='hidden sm:block fixed inset-x-0 bottom-0 z-30 px-6 pb-6'
+          style={{ pointerEvents: 'none' }}
+        >
           <div
-            className='hidden sm:block rounded-2xl overflow-hidden'
+            className='max-w-2xl mx-auto rounded-2xl p-6'
             style={{
-              background: 'rgba(13,13,26,0.7)',
-              border: '1px solid rgba(124,92,252,0.12)',
-              backdropFilter: 'blur(20px)',
+              background: 'rgba(13,13,26,0.97)',
+              border: '1px solid rgba(124,92,252,0.25)',
+              backdropFilter: 'blur(30px)',
+              boxShadow: '0 -8px 40px rgba(124,92,252,0.12)',
+              pointerEvents: 'all',
             }}
           >
-            <table className='w-full border-collapse'>
-              <thead>
-                <tr style={{ borderBottom: '1px solid rgba(124,92,252,0.1)' }}>
-                  {['Title', 'Category', 'Amount', 'Date', 'Actions'].map(
-                    (h) => (
-                      <th
-                        key={h}
-                        className='px-5 py-3.5 font-mono text-[10px] text-[#4a4870] uppercase tracking-widest font-medium text-left'
-                      >
-                        {h}
-                      </th>
-                    ),
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {isLoading ? (
-                  <tr>
-                    <td
-                      colSpan={5}
-                      className='text-center py-12 text-[#4a4870] text-sm'
-                    >
-                      Loading…
-                    </td>
-                  </tr>
-                ) : expenses.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className='text-center py-12'>
-                      <div className='text-3xl mb-3'>📭</div>
-                      <p className='text-[#4a4870] text-sm'>
-                        No expenses found
-                      </p>
-                    </td>
-                  </tr>
-                ) : (
-                  expenses.map((exp) => {
-                    const color = CATEGORY_COLORS[exp.category] ?? '#4a4870';
-                    return (
-                      <tr
-                        key={exp.id}
-                        className='hover:bg-[rgba(124,92,252,0.04)] transition-colors'
-                        style={{
-                          borderBottom: '1px solid rgba(124,92,252,0.06)',
-                        }}
-                      >
-                        <td className='px-5 py-3.5 font-sans text-sm font-medium text-[#f0efff]'>
-                          {exp.title}
-                        </td>
-                        <td className='px-5 py-3.5'>
-                          <span
-                            className='inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-[10px]'
-                            style={{
-                              border: `1px solid ${color}30`,
-                              background: `${color}0f`,
-                              color,
-                            }}
-                          >
-                            <span
-                              className='w-1.5 h-1.5 rounded-full'
-                              style={{
-                                background: color,
-                                boxShadow: `0 0 5px ${color}`,
-                              }}
-                            />
-                            {CATEGORY_LABEL[exp.category]}
-                          </span>
-                        </td>
-                        <td
-                          className='px-5 py-3.5 font-display text-sm font-bold'
-                          style={{ color }}
-                        >{`₹${exp.amount.toLocaleString('en-IN')}`}</td>
-                        <td className='px-5 py-3.5 font-mono text-[11px] text-[#4a4870]'>
-                          {new Date(exp.date).toLocaleDateString('en-IN', {
-                            month: 'short',
-                            day: 'numeric',
-                            year: 'numeric',
-                          })}
-                        </td>
-                        <td className='px-5 py-3.5'>
-                          <div className='flex gap-1.5'>
-                            <button
-                              onClick={() => handleEdit(exp)}
-                              className='w-[30px] h-[30px] rounded-lg flex items-center justify-center transition-all hover:bg-[rgba(91,143,255,0.15)]'
-                              style={{
-                                background: 'rgba(91,143,255,0.08)',
-                                border: '1px solid rgba(91,143,255,0.2)',
-                                color: '#5b8fff',
-                              }}
-                            >
-                              <Edit2 className='w-3 h-3' />
-                            </button>
-                            <button
-                              onClick={() => setDeleteConfirm(exp)}
-                              className='w-[30px] h-[30px] rounded-lg flex items-center justify-center transition-all hover:bg-[rgba(255,59,92,0.15)]'
-                              style={{
-                                background: 'rgba(255,59,92,0.08)',
-                                border: '1px solid rgba(255,59,92,0.2)',
-                                color: '#ff3b5c',
-                              }}
-                            >
-                              <Trash2 className='w-3 h-3' />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Export button for mobile */}
-          <div className='sm:hidden'>
-            <Button
-              variant='outline'
-              onClick={handleExport}
-              className='w-full gap-2 border-[rgba(124,92,252,0.18)] text-[#8b89b0] hover:text-[#f0efff]'
-            >
-              <Download className='w-4 h-4' /> Export CSV
-            </Button>
+            <div className='flex items-center gap-2.5 mb-5'>
+              <div
+                className='w-0.5 h-5 rounded-sm'
+                style={{
+                  background: 'linear-gradient(180deg, #7c5cfc, #00d4ff)',
+                }}
+              />
+              <span className='font-display text-base font-bold text-[#f0efff]'>
+                {editingId ? 'Edit Expense' : 'New Expense'}
+              </span>
+            </div>
+            <ExpenseForm
+              editingId={editingId}
+              formData={formData}
+              setFormData={setFormData}
+              isSaving={isSaving}
+              formError={formError}
+              onSubmit={handleSubmit}
+              onCancel={resetForm}
+            />
           </div>
         </div>
-      </ScrollArea>
+      )}
 
-      {/* Delete confirm */}
+      {/* ── Mobile filter sheet ── */}
+      <Sheet open={showFilterSheet} onOpenChange={setShowFilterSheet}>
+        <SheetContent
+          side='bottom'
+          className='rounded-t-3xl'
+          style={{
+            background: '#0d0d1a',
+            border: '1px solid rgba(124,92,252,0.2)',
+            paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))',
+          }}
+        >
+          <SheetHeader className='mb-5'>
+            <SheetTitle className='font-display text-[#f0efff]'>
+              Filter by Category
+            </SheetTitle>
+          </SheetHeader>
+          <div className='grid grid-cols-2 gap-2.5'>
+            {[null, ...CATEGORIES].map((cat) => {
+              const isActive = selectedCategory === cat;
+              const color = cat ? CATEGORY_COLORS[cat] : '#7c5cfc';
+              return (
+                <button
+                  key={cat ?? 'all'}
+                  onClick={() => handleCategorySelect(cat)}
+                  className='flex items-center gap-2.5 px-3.5 py-3 rounded-xl font-sans text-sm font-medium text-left transition-all'
+                  style={{
+                    border: `1px solid ${isActive ? color + '50' : 'rgba(124,92,252,0.12)'}`,
+                    background: isActive ? `${color}15` : 'rgba(13,13,26,0.8)',
+                    color: isActive ? color : '#8b89b0',
+                  }}
+                >
+                  <span className='text-base'>
+                    {cat ? CATEGORY_EMOJI[cat] : '🔍'}
+                  </span>
+                  <span>{cat ? CATEGORY_LABEL[cat] : 'All'}</span>
+                  {isActive && (
+                    <span
+                      className='ml-auto w-1.5 h-1.5 rounded-full'
+                      style={{ background: color }}
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* ── Delete confirm dialog ── */}
       <AlertDialog
         open={!!deleteConfirm}
         onOpenChange={(open) => {
@@ -4168,7 +5338,6 @@ import {
   Cell,
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { ScrollArea } from '@/components/ui/scroll-area';
 
 const COLORS = [
   '#7c5cfc',
@@ -4248,7 +5417,7 @@ export default function InsightsPage() {
       glow: 'rgba(0,212,255,0.25)',
     },
     {
-      label: 'Avg Transaction',
+      label: 'Avg / Expense',
       value: `₹${Math.round(stats?.average ?? 0).toLocaleString('en-IN')}`,
       sub: 'Per expense',
       color: '#00ff87',
@@ -4265,51 +5434,47 @@ export default function InsightsPage() {
 
   return (
     <div
-      className='flex flex-col h-full overflow-hidden'
-      style={{ background: '#080810' }}
+      className='flex flex-col h-full'
+      style={{ background: '#080810', overflow: 'hidden' }}
     >
-      {/* Header */}
+      {/* ── Sticky header ── */}
       <div
-        className='shrink-0 px-4 sm:px-8 py-4 sm:py-6'
+        className='shrink-0 px-4 sm:px-8 py-4 sm:py-5'
         style={{
           borderBottom: '1px solid rgba(124,92,252,0.1)',
-          background: 'rgba(8,8,16,0.95)',
+          background: 'rgba(8,8,16,0.97)',
           backdropFilter: 'blur(20px)',
+          zIndex: 10,
         }}
       >
         <h1 className='font-display text-xl sm:text-2xl font-extrabold text-[#f0efff] tracking-tight'>
           Insights
         </h1>
-        <p className='font-mono text-[10px] sm:text-[11px] text-[#4a4870]'>
+        <p className='font-mono text-[10px] text-[#4a4870]'>
           AI-powered spending analysis · Last 6 months
         </p>
       </div>
 
-      <ScrollArea className='flex-1'>
-        <div className='p-4 sm:p-8 space-y-4 sm:space-y-5'>
-          {/* Summary cards - 2x2 on mobile, 4 on desktop */}
+      {/* ── Native scroll content ── */}
+      <div
+        className='flex-1 min-h-0'
+        style={{
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          WebkitOverflowScrolling: 'touch',
+        }}
+      >
+        <div className='p-4 sm:p-6 space-y-4 pb-6'>
+          {/* ── Summary cards: 2×2 on mobile, 4-col on sm+ ── */}
           <div className='grid grid-cols-2 sm:grid-cols-4 gap-3'>
             {summaryCards.map((card) => (
               <Card
                 key={card.label}
-                className='relative overflow-hidden transition-all hover:shadow-[0_0_25px_var(--glow)] border-transparent'
-                style={
-                  {
-                    background: 'rgba(13,13,26,0.7)',
-                    border: `1px solid ${card.color}20`,
-                    backdropFilter: 'blur(20px)',
-                  } as React.CSSProperties
-                }
-                onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLElement).style.borderColor =
-                    `${card.color}40`;
-                  (e.currentTarget as HTMLElement).style.boxShadow =
-                    `0 0 25px ${card.glow}`;
-                }}
-                onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLElement).style.borderColor =
-                    `${card.color}20`;
-                  (e.currentTarget as HTMLElement).style.boxShadow = 'none';
+                className='relative overflow-hidden border-transparent transition-all'
+                style={{
+                  background: 'rgba(13,13,26,0.7)',
+                  border: `1px solid ${card.color}20`,
+                  backdropFilter: 'blur(20px)',
                 }}
               >
                 <div
@@ -4318,15 +5483,15 @@ export default function InsightsPage() {
                     background: `radial-gradient(circle, ${card.glow}, transparent 70%)`,
                   }}
                 />
-                <CardContent className='p-3 sm:p-5'>
-                  <p className='font-mono text-[9px] sm:text-[10px] text-[#4a4870] uppercase tracking-wider mb-2'>
+                <CardContent className='p-3 sm:p-4'>
+                  <p className='font-mono text-[9px] text-[#4a4870] uppercase tracking-wider mb-2'>
                     {card.label}
                   </p>
                   {isLoading ? (
                     <div className='h-7 rounded-lg bg-[rgba(124,92,252,0.08)] shimmer mb-1.5' />
                   ) : (
                     <p
-                      className='font-display text-lg sm:text-2xl font-extrabold tracking-tight mb-1.5 truncate'
+                      className='font-display text-lg sm:text-xl font-extrabold tracking-tight mb-1 truncate'
                       style={{
                         color: card.color,
                         textShadow: `0 0 20px ${card.glow}`,
@@ -4335,7 +5500,7 @@ export default function InsightsPage() {
                       {card.value}
                     </p>
                   )}
-                  <p className='font-mono text-[9px] sm:text-[10px] text-[#4a4870]'>
+                  <p className='font-mono text-[9px] text-[#4a4870]'>
                     {card.sub}
                   </p>
                 </CardContent>
@@ -4343,7 +5508,7 @@ export default function InsightsPage() {
             ))}
           </div>
 
-          {/* Charts - stacked on mobile, side by side on md+ */}
+          {/* ── Charts: stacked on mobile, side-by-side on md+ ── */}
           <div className='grid grid-cols-1 md:grid-cols-2 gap-4'>
             {/* Line chart */}
             <Card
@@ -4353,10 +5518,10 @@ export default function InsightsPage() {
                 backdropFilter: 'blur(20px)',
               }}
             >
-              <CardHeader className='pb-2 px-4 sm:px-6 pt-4 sm:pt-5'>
-                <CardTitle className='flex items-center gap-2.5 text-[#f0efff] font-display text-sm sm:text-base font-bold'>
+              <CardHeader className='pb-2 px-4 pt-4'>
+                <CardTitle className='flex items-center gap-2.5 text-[#f0efff] font-display text-sm font-bold'>
                   <div
-                    className='w-0.5 h-4 sm:h-5 rounded-sm'
+                    className='w-0.5 h-4 rounded-sm'
                     style={{
                       background: 'linear-gradient(180deg, #7c5cfc, #00d4ff)',
                     }}
@@ -4364,14 +5529,18 @@ export default function InsightsPage() {
                   Monthly Trend
                 </CardTitle>
               </CardHeader>
-              <CardContent className='px-2 sm:px-4 pb-4'>
+              <CardContent className='px-2 pb-4'>
                 {isLoading ? (
                   <div
-                    className='h-[180px] sm:h-[220px] rounded-xl shimmer'
+                    className='h-48 rounded-xl shimmer'
                     style={{ background: 'rgba(124,92,252,0.05)' }}
                   />
+                ) : trendData.length === 0 ? (
+                  <div className='h-48 flex items-center justify-center text-[#4a4870] text-sm'>
+                    No data yet
+                  </div>
                 ) : (
-                  <ResponsiveContainer width='100%' height={200}>
+                  <ResponsiveContainer width='100%' height={190}>
                     <LineChart
                       data={trendData}
                       margin={{ top: 4, right: 4, left: -20, bottom: 0 }}
@@ -4398,6 +5567,9 @@ export default function InsightsPage() {
                         }}
                         tickLine={false}
                         axisLine={false}
+                        tickFormatter={(v) =>
+                          v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)
+                        }
                       />
                       <Tooltip {...tooltipStyle} />
                       <Line
@@ -4427,10 +5599,10 @@ export default function InsightsPage() {
                 backdropFilter: 'blur(20px)',
               }}
             >
-              <CardHeader className='pb-2 px-4 sm:px-6 pt-4 sm:pt-5'>
-                <CardTitle className='flex items-center gap-2.5 text-[#f0efff] font-display text-sm sm:text-base font-bold'>
+              <CardHeader className='pb-2 px-4 pt-4'>
+                <CardTitle className='flex items-center gap-2.5 text-[#f0efff] font-display text-sm font-bold'>
                   <div
-                    className='w-0.5 h-4 sm:h-5 rounded-sm'
+                    className='w-0.5 h-4 rounded-sm'
                     style={{
                       background: 'linear-gradient(180deg, #ff2d78, #ffb830)',
                     }}
@@ -4438,21 +5610,25 @@ export default function InsightsPage() {
                   By Category
                 </CardTitle>
               </CardHeader>
-              <CardContent className='px-2 sm:px-4 pb-4'>
+              <CardContent className='px-2 pb-4'>
                 {isLoading ? (
                   <div
-                    className='h-[180px] sm:h-[220px] rounded-xl shimmer'
+                    className='h-48 rounded-xl shimmer'
                     style={{ background: 'rgba(124,92,252,0.05)' }}
                   />
-                ) : pieData.length > 0 ? (
-                  <ResponsiveContainer width='100%' height={200}>
+                ) : pieData.length === 0 ? (
+                  <div className='h-48 flex items-center justify-center text-[#4a4870] text-sm'>
+                    No data yet
+                  </div>
+                ) : (
+                  <ResponsiveContainer width='100%' height={190}>
                     <PieChart>
                       <Pie
                         data={pieData}
                         cx='50%'
                         cy='50%'
-                        innerRadius={55}
-                        outerRadius={80}
+                        innerRadius={50}
+                        outerRadius={75}
                         dataKey='value'
                         paddingAngle={2}
                       >
@@ -4463,16 +5639,12 @@ export default function InsightsPage() {
                       <Tooltip {...tooltipStyle} />
                     </PieChart>
                   </ResponsiveContainer>
-                ) : (
-                  <div className='h-[200px] flex items-center justify-center text-[#4a4870] text-sm'>
-                    No data yet
-                  </div>
                 )}
               </CardContent>
             </Card>
           </div>
 
-          {/* Category breakdown */}
+          {/* ── Category breakdown ── */}
           {stats && stats.byCategory.length > 0 && (
             <Card
               className='border-[rgba(124,92,252,0.12)]'
@@ -4481,10 +5653,10 @@ export default function InsightsPage() {
                 backdropFilter: 'blur(20px)',
               }}
             >
-              <CardHeader className='pb-2 px-4 sm:px-6 pt-4 sm:pt-5'>
-                <CardTitle className='flex items-center gap-2.5 text-[#f0efff] font-display text-sm sm:text-base font-bold'>
+              <CardHeader className='pb-2 px-4 pt-4'>
+                <CardTitle className='flex items-center gap-2.5 text-[#f0efff] font-display text-sm font-bold'>
                   <div
-                    className='w-0.5 h-4 sm:h-5 rounded-sm'
+                    className='w-0.5 h-4 rounded-sm'
                     style={{
                       background: 'linear-gradient(180deg, #00ff87, #00d4ff)',
                     }}
@@ -4492,7 +5664,7 @@ export default function InsightsPage() {
                   Category Breakdown
                 </CardTitle>
               </CardHeader>
-              <CardContent className='px-4 sm:px-6 pb-4 sm:pb-5 space-y-4 sm:space-y-5'>
+              <CardContent className='px-4 pb-5 space-y-4'>
                 {stats.byCategory.map((cat, i) => {
                   const pct =
                     stats.total > 0 ? (cat.amount / stats.total) * 100 : 0;
@@ -4500,9 +5672,9 @@ export default function InsightsPage() {
                   return (
                     <div key={cat.category}>
                       <div className='flex items-center justify-between mb-2'>
-                        <div className='flex items-center gap-2.5'>
+                        <div className='flex items-center gap-2'>
                           <div
-                            className='w-2 h-2 rounded-sm'
+                            className='w-2 h-2 rounded-sm shrink-0'
                             style={{
                               background: color,
                               boxShadow: `0 0 8px ${color}70`,
@@ -4512,8 +5684,8 @@ export default function InsightsPage() {
                             {cat.category}
                           </span>
                         </div>
-                        <div className='flex items-center gap-2 sm:gap-3'>
-                          <span className='font-mono text-[10px] sm:text-[11px] text-[#4a4870]'>
+                        <div className='flex items-center gap-3'>
+                          <span className='font-mono text-[10px] text-[#4a4870]'>
                             {Math.round(pct)}%
                           </span>
                           <span
@@ -4525,7 +5697,7 @@ export default function InsightsPage() {
                         </div>
                       </div>
                       <div
-                        className='h-1 rounded-full overflow-hidden'
+                        className='h-1.5 rounded-full overflow-hidden'
                         style={{ background: 'rgba(124,92,252,0.08)' }}
                       >
                         <div
@@ -4543,8 +5715,21 @@ export default function InsightsPage() {
               </CardContent>
             </Card>
           )}
+
+          {/* Empty state */}
+          {!isLoading && expenses.length === 0 && (
+            <div className='flex flex-col items-center justify-center py-20 text-center'>
+              <div className='text-5xl mb-4'>📊</div>
+              <p className='font-display text-base font-bold text-[#f0efff] mb-1'>
+                No data yet
+              </p>
+              <p className='text-[#4a4870] text-sm'>
+                Add some expenses to see your insights
+              </p>
+            </div>
+          )}
         </div>
-      </ScrollArea>
+      </div>
     </div>
   );
 }
@@ -4809,7 +5994,15 @@ FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src\pages\Se
 ==============================
 
 import { useState } from 'react';
-import { Check, Loader2, User, Lock, Bell, LogOut } from 'lucide-react';
+import {
+  Check,
+  Loader2,
+  User,
+  Lock,
+  Bell,
+  LogOut,
+  ChevronRight,
+} from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useChangePassword, useSignOut } from '@/services/auth.service';
 import { Button } from '@/components/ui/button';
@@ -4817,7 +6010,6 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
@@ -4828,16 +6020,26 @@ import {
   CardDescription,
 } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
 
 export default function SettingsPage() {
   const user = useAuthStore((s) => s.user);
   const { mutate: signOut } = useSignOut();
+
   const [settings, setSettings] = useState({
     emailNotifications: true,
     budgetAlerts: true,
     weeklyReport: false,
   });
   const [settingsSaved, setSettingsSaved] = useState(false);
+
+  // Password form
+  const [showPasswordSheet, setShowPasswordSheet] = useState(false);
   const [pwForm, setPwForm] = useState({
     currentPassword: '',
     newPassword: '',
@@ -4862,6 +6064,7 @@ export default function SettingsPage() {
       await changePassword(pwForm);
       setPwForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
       setPwSuccess(true);
+      setShowPasswordSheet(false);
       setTimeout(() => setPwSuccess(false), 3000);
     } catch (err: unknown) {
       setPwError(
@@ -4889,46 +6092,59 @@ export default function SettingsPage() {
   ] as const;
 
   return (
-    <div className='flex flex-col h-full' style={{ background: '#080810' }}>
-      {/* Header */}
+    <div
+      className='flex flex-col h-full'
+      style={{ background: '#080810', overflow: 'hidden' }}
+    >
+      {/* ── Sticky header ── */}
       <div
-        className='shrink-0 px-4 sm:px-8 py-4 sm:py-6'
+        className='shrink-0 px-4 sm:px-8 py-4 sm:py-5'
         style={{
           borderBottom: '1px solid rgba(124,92,252,0.1)',
-          background: 'rgba(8,8,16,0.95)',
+          background: 'rgba(8,8,16,0.97)',
           backdropFilter: 'blur(20px)',
+          zIndex: 10,
         }}
       >
         <h1 className='font-display text-xl sm:text-2xl font-extrabold text-[#f0efff] tracking-tight'>
           Settings
         </h1>
-        <p className='font-mono text-[10px] sm:text-[11px] text-[#4a4870]'>
+        <p className='font-mono text-[10px] text-[#4a4870]'>
           Preferences &amp; account
         </p>
       </div>
 
-      <ScrollArea className='flex-1'>
-        <div className='px-4 sm:px-8 py-4 sm:py-6 space-y-4 sm:space-y-5 max-w-2xl'>
-          {/* Account card */}
+      {/* ── Native scroll content ── */}
+      <div
+        className='flex-1 min-h-0'
+        style={{
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          WebkitOverflowScrolling: 'touch',
+        }}
+      >
+        <div className='px-4 sm:px-6 py-4 space-y-4 pb-8 max-w-2xl mx-auto'>
+          {/* ── Account card ── */}
           <Card
-            className='border-[rgba(124,92,252,0.12)]'
+            className='border-[rgba(124,92,252,0.12)] overflow-hidden'
             style={{ background: 'rgba(13,13,26,0.8)' }}
           >
-            <CardHeader className='pb-2 px-4 sm:px-6 pt-4 sm:pt-5'>
-              <CardTitle className='text-[10px] sm:text-[11px] font-mono text-[#4a4870] uppercase tracking-widest font-normal flex items-center gap-2'>
+            <CardHeader className='pb-0 px-4 pt-4'>
+              <CardTitle className='text-[10px] font-mono text-[#4a4870] uppercase tracking-widest font-normal flex items-center gap-2'>
                 <User className='h-3.5 w-3.5 text-[#7c5cfc]' /> Account
               </CardTitle>
             </CardHeader>
-            <Separator className='bg-[rgba(124,92,252,0.1)]' />
-            <CardContent className='pt-4 sm:pt-5 px-4 sm:px-6 pb-4 sm:pb-5 space-y-3'>
+            <Separator className='bg-[rgba(124,92,252,0.1)] mt-3' />
+            <CardContent className='p-4 space-y-3'>
+              {/* Avatar + name row */}
               {user && (
                 <div
                   className='flex items-center gap-3 p-3 rounded-xl'
                   style={{ background: 'rgba(8,8,16,0.6)' }}
                 >
-                  <Avatar className='w-10 h-10 rounded-xl shrink-0'>
+                  <Avatar className='w-12 h-12 rounded-xl shrink-0'>
                     <AvatarFallback
-                      className='rounded-xl font-bold text-[#9d7fff]'
+                      className='rounded-xl font-bold text-lg text-[#9d7fff]'
                       style={{
                         background: 'rgba(124,92,252,0.2)',
                         border: '1px solid rgba(124,92,252,0.3)',
@@ -4957,47 +6173,52 @@ export default function SettingsPage() {
                 </div>
               )}
 
-              <div className='grid grid-cols-1 sm:grid-cols-2 gap-3'>
+              {/* Info rows */}
+              <div className='space-y-2'>
                 {[
                   { label: 'Name', value: user?.name ?? '—' },
                   { label: 'Email', value: user?.email ?? '—' },
                 ].map(({ label, value }) => (
                   <div
                     key={label}
-                    className='p-3 rounded-xl'
+                    className='flex items-center justify-between px-3 py-2.5 rounded-xl'
                     style={{ background: 'rgba(8,8,16,0.6)' }}
                   >
-                    <p className='font-mono text-[9px] sm:text-[10px] text-[#4a4870] uppercase tracking-widest mb-1'>
+                    <span className='font-mono text-[10px] text-[#4a4870] uppercase tracking-widest'>
                       {label}
-                    </p>
-                    <p className='font-sans text-sm text-[#f0efff] truncate'>
+                    </span>
+                    <span className='font-sans text-sm text-[#f0efff] truncate max-w-[60%] text-right'>
                       {value}
-                    </p>
+                    </span>
                   </div>
                 ))}
+
+                {user?._count && (
+                  <div
+                    className='flex items-center justify-between px-3 py-2.5 rounded-xl'
+                    style={{ background: 'rgba(8,8,16,0.6)' }}
+                  >
+                    <span className='font-mono text-[10px] text-[#4a4870] uppercase tracking-widest'>
+                      Total Expenses
+                    </span>
+                    <Badge
+                      className='font-mono text-xs border-[rgba(124,92,252,0.2)]'
+                      style={{
+                        background: 'rgba(8,8,16,0.8)',
+                        color: '#f0efff',
+                      }}
+                    >
+                      {user._count.expenses} records
+                    </Badge>
+                  </div>
+                )}
               </div>
 
-              {user?._count && (
-                <div
-                  className='flex items-center justify-between p-3 rounded-xl'
-                  style={{ background: 'rgba(8,8,16,0.6)' }}
-                >
-                  <p className='font-mono text-[9px] sm:text-[10px] text-[#4a4870] uppercase tracking-widest'>
-                    Total Expenses
-                  </p>
-                  <Badge
-                    className='font-mono text-xs border-[rgba(124,92,252,0.2)]'
-                    style={{ background: 'rgba(8,8,16,0.8)', color: '#f0efff' }}
-                  >
-                    {user._count.expenses} records
-                  </Badge>
-                </div>
-              )}
-
+              {/* Sign out */}
               <Button
                 variant='outline'
                 onClick={() => signOut()}
-                className='w-full gap-2 border-red-900/40 text-red-400 hover:bg-red-900/20 hover:text-red-300'
+                className='w-full h-11 gap-2 border-red-900/40 text-red-400 hover:bg-red-900/20 hover:text-red-300 font-sans font-medium'
                 style={{ background: 'rgba(255,59,92,0.05)' }}
               >
                 <LogOut className='h-4 w-4' /> Sign Out
@@ -5005,21 +6226,67 @@ export default function SettingsPage() {
             </CardContent>
           </Card>
 
-          {/* Change password card */}
+          {/* ── Change password ── */}
+          {/* Mobile: tap to open bottom sheet */}
           <Card
-            className='border-[rgba(124,92,252,0.12)]'
+            className='border-[rgba(124,92,252,0.12)] overflow-hidden sm:hidden'
             style={{ background: 'rgba(13,13,26,0.8)' }}
           >
-            <CardHeader className='pb-2 px-4 sm:px-6 pt-4 sm:pt-5'>
-              <CardTitle className='text-[10px] sm:text-[11px] font-mono text-[#4a4870] uppercase tracking-widest font-normal flex items-center gap-2'>
+            <button
+              className='w-full flex items-center justify-between px-4 py-4'
+              onClick={() => setShowPasswordSheet(true)}
+            >
+              <div className='flex items-center gap-2.5'>
+                <div
+                  className='w-8 h-8 rounded-lg flex items-center justify-center'
+                  style={{
+                    background: 'rgba(124,92,252,0.15)',
+                    border: '1px solid rgba(124,92,252,0.2)',
+                  }}
+                >
+                  <Lock className='h-3.5 w-3.5 text-[#7c5cfc]' />
+                </div>
+                <div className='text-left'>
+                  <p className='font-sans text-sm font-semibold text-[#f0efff]'>
+                    Change Password
+                  </p>
+                  <p className='font-mono text-[10px] text-[#4a4870]'>
+                    Update your account password
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className='h-4 w-4 text-[#4a4870]' />
+            </button>
+
+            {pwSuccess && (
+              <div className='px-4 pb-3'>
+                <Alert
+                  className='border-green-900/40'
+                  style={{ background: 'rgba(0,255,135,0.06)' }}
+                >
+                  <AlertDescription className='text-[#00ff87] text-sm flex items-center gap-2'>
+                    <Check className='h-4 w-4' /> Password updated!
+                  </AlertDescription>
+                </Alert>
+              </div>
+            )}
+          </Card>
+
+          {/* Desktop: inline card */}
+          <Card
+            className='border-[rgba(124,92,252,0.12)] overflow-hidden hidden sm:block'
+            style={{ background: 'rgba(13,13,26,0.8)' }}
+          >
+            <CardHeader className='pb-0 px-4 pt-4'>
+              <CardTitle className='text-[10px] font-mono text-[#4a4870] uppercase tracking-widest font-normal flex items-center gap-2'>
                 <Lock className='h-3.5 w-3.5 text-[#7c5cfc]' /> Change Password
               </CardTitle>
               <CardDescription className='text-[#4a4870] text-xs font-mono'>
                 Must be at least 8 characters
               </CardDescription>
             </CardHeader>
-            <Separator className='bg-[rgba(124,92,252,0.1)]' />
-            <CardContent className='pt-4 sm:pt-5 px-4 sm:px-6 pb-4 sm:pb-5'>
+            <Separator className='bg-[rgba(124,92,252,0.1)] mt-3' />
+            <CardContent className='p-4'>
               {pwError && (
                 <Alert
                   className='mb-4 border-red-900/40'
@@ -5048,8 +6315,8 @@ export default function SettingsPage() {
                     { field: 'confirmPassword', label: 'Confirm Password' },
                   ] as const
                 ).map(({ field, label }) => (
-                  <div key={field} className='space-y-2'>
-                    <Label className='font-mono text-[9px] sm:text-[10px] text-[#4a4870] uppercase tracking-widest'>
+                  <div key={field} className='space-y-1.5'>
+                    <Label className='font-mono text-[9px] text-[#4a4870] uppercase tracking-widest'>
                       {label}
                     </Label>
                     <Input
@@ -5060,7 +6327,7 @@ export default function SettingsPage() {
                       }
                       placeholder='••••••••'
                       required
-                      className='border-[rgba(124,92,252,0.15)] text-[#f0efff] focus-visible:ring-[#7c5cfc]/30 focus-visible:border-[rgba(124,92,252,0.4)]'
+                      className='h-11 border-[rgba(124,92,252,0.15)] text-[#f0efff] focus-visible:ring-[#7c5cfc]/30 focus-visible:border-[rgba(124,92,252,0.4)]'
                       style={{ background: 'rgba(8,8,16,0.6)' }}
                     />
                   </div>
@@ -5068,7 +6335,7 @@ export default function SettingsPage() {
                 <Button
                   type='submit'
                   disabled={isChangingPw}
-                  className='w-full gap-2 text-white font-display font-bold mt-1'
+                  className='w-full h-11 gap-2 text-white font-display font-bold'
                   style={{
                     background: 'linear-gradient(135deg, #7c5cfc, #00d4ff)',
                   }}
@@ -5084,25 +6351,25 @@ export default function SettingsPage() {
             </CardContent>
           </Card>
 
-          {/* Notifications card */}
+          {/* ── Notifications ── */}
           <Card
-            className='border-[rgba(124,92,252,0.12)]'
+            className='border-[rgba(124,92,252,0.12)] overflow-hidden'
             style={{ background: 'rgba(13,13,26,0.8)' }}
           >
-            <CardHeader className='pb-2 px-4 sm:px-6 pt-4 sm:pt-5'>
-              <CardTitle className='text-[10px] sm:text-[11px] font-mono text-[#4a4870] uppercase tracking-widest font-normal flex items-center gap-2'>
+            <CardHeader className='pb-0 px-4 pt-4'>
+              <CardTitle className='text-[10px] font-mono text-[#4a4870] uppercase tracking-widest font-normal flex items-center gap-2'>
                 <Bell className='h-3.5 w-3.5 text-[#7c5cfc]' /> Notifications
               </CardTitle>
             </CardHeader>
-            <Separator className='bg-[rgba(124,92,252,0.1)]' />
-            <CardContent className='pt-4 sm:pt-5 px-4 sm:px-6 pb-4 sm:pb-5 space-y-3'>
+            <Separator className='bg-[rgba(124,92,252,0.1)] mt-3' />
+            <CardContent className='p-4 space-y-2.5'>
               {notificationItems.map((item) => (
                 <div
                   key={item.id}
                   className='flex items-center justify-between p-3 rounded-xl'
                   style={{ background: 'rgba(8,8,16,0.6)' }}
                 >
-                  <div className='space-y-0.5 mr-4'>
+                  <div className='space-y-0.5 mr-4 flex-1 min-w-0'>
                     <p className='font-sans text-sm text-[#f0efff]'>
                       {item.label}
                     </p>
@@ -5122,7 +6389,7 @@ export default function SettingsPage() {
                   setSettingsSaved(true);
                   setTimeout(() => setSettingsSaved(false), 2000);
                 }}
-                className='w-full gap-2 text-white font-display font-bold'
+                className='w-full h-11 gap-2 text-white font-display font-bold mt-1'
                 style={{
                   background: 'linear-gradient(135deg, #7c5cfc, #00d4ff)',
                 }}
@@ -5137,8 +6404,100 @@ export default function SettingsPage() {
               </Button>
             </CardContent>
           </Card>
+
+          {/* ── App info ── */}
+          <div className='text-center py-2'>
+            <p className='font-mono text-[10px] text-[#4a4870]'>
+              ExpenseAI · v1.0.0
+            </p>
+            <p className='font-mono text-[9px] text-[#4a4870] opacity-50 mt-0.5'>
+              AI-powered expense tracking
+            </p>
+          </div>
         </div>
-      </ScrollArea>
+      </div>
+
+      {/* ── Mobile: change password bottom sheet ── */}
+      <Sheet
+        open={showPasswordSheet}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPwError('');
+          }
+          setShowPasswordSheet(open);
+        }}
+      >
+        <SheetContent
+          side='bottom'
+          className='rounded-t-3xl'
+          style={{
+            background: '#0d0d1a',
+            border: '1px solid rgba(124,92,252,0.2)',
+            maxHeight: '90dvh',
+            overflowY: 'auto',
+            paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))',
+          }}
+        >
+          <SheetHeader className='mb-5'>
+            <SheetTitle className='font-display text-[#f0efff]'>
+              Change Password
+            </SheetTitle>
+          </SheetHeader>
+
+          {pwError && (
+            <Alert
+              className='mb-4 border-red-900/40'
+              style={{ background: 'rgba(255,59,92,0.08)' }}
+            >
+              <AlertDescription className='text-red-400 text-sm'>
+                {pwError}
+              </AlertDescription>
+            </Alert>
+          )}
+
+          <form onSubmit={handleChangePassword} className='space-y-4'>
+            {(
+              [
+                { field: 'currentPassword', label: 'Current Password' },
+                { field: 'newPassword', label: 'New Password' },
+                { field: 'confirmPassword', label: 'Confirm Password' },
+              ] as const
+            ).map(({ field, label }) => (
+              <div key={field} className='space-y-1.5'>
+                <Label className='font-mono text-[10px] text-[#4a4870] uppercase tracking-widest'>
+                  {label}
+                </Label>
+                <Input
+                  type='password'
+                  value={pwForm[field]}
+                  onChange={(e) =>
+                    setPwForm((p) => ({ ...p, [field]: e.target.value }))
+                  }
+                  placeholder='••••••••'
+                  required
+                  className='h-12 border-[rgba(124,92,252,0.15)] text-[#f0efff] focus-visible:ring-[#7c5cfc]/30 focus-visible:border-[rgba(124,92,252,0.4)]'
+                  style={{ background: 'rgba(8,8,16,0.6)' }}
+                />
+              </div>
+            ))}
+            <Button
+              type='submit'
+              disabled={isChangingPw}
+              className='w-full h-12 gap-2 text-white font-display font-bold mt-2'
+              style={{
+                background: 'linear-gradient(135deg, #7c5cfc, #00d4ff)',
+              }}
+            >
+              {isChangingPw ? (
+                <Loader2 className='h-4 w-4 animate-spin' />
+              ) : (
+                <Lock className='h-4 w-4' />
+              )}
+              Update Password
+            </Button>
+          </form>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
