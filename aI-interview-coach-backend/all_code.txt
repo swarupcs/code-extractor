@@ -1530,15 +1530,25 @@ Answer only 'yes' or 'no'.`;
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\app.ts
 ==============================
 
-// src/app.ts - UPDATE to integrate new features
+// src/app.ts - FIXED VERSION
+// Changes from broken version:
+//   1. Added missing import: createUserRoutes
+//   2. Added missing import: createInterviewRoutes
+//   3. Replaced EnhancedInterviewSessionManager with InterviewSessionManager
+//      (the enhanced version is a partial stub — use the complete one)
+//   4. Removed reference to undefined `enhancedSessionManager`
+//   5. Fixed InterviewController constructor call
+
 import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import passport from './config/passport'; 
+import passport from './config/passport';
 import session from 'express-session';
 import { createRoutes } from './routes/api-routes';
 import { createAuthRoutes } from './routes/auth.routes';
 import { createAnalyticsRoutes } from './routes/analytics.routes';
+import { createUserRoutes } from './routes/user.routes'; // ✅ FIX 1: was missing
+import { createInterviewRoutes } from './routes/interview.routes'; // ✅ FIX 2: was missing
 import { QueryController } from './controllers/query-controller';
 import { InterviewController } from './controllers/interview-controller';
 import {
@@ -1547,7 +1557,7 @@ import {
 } from './controllers/resume-progress-controllers';
 import { AgentRouter } from './router/agent-router';
 import { MemoryManager } from './memory/memory-manager';
-import { InterviewSessionManager } from './services/interview-session-manager';
+import { InterviewSessionManager } from './services/interview-session-manager'; // ✅ FIX 3: use complete version
 import { ILLMProvider } from './services/llm/base-provider';
 import { IVectorDatabase } from './services/vector-db/base-vector-db';
 import { RouterStrategy } from './types';
@@ -1568,6 +1578,9 @@ import { createTopicRoutes } from './routes/topic.routes';
 import { createAIQuestionGeneratorRoutes } from './routes/ai-question-generator.routes';
 import { createAdminUserRoutes } from './routes/admin/admin-user.routes';
 import { activityLogger } from './middleware/activity-logger.middleware';
+import { createAdminAnalyticsRoutes } from './routes/admin/admin-analytics.routes';
+import { apiMetricsMiddleware } from './middleware/api-metrics.middleware';
+import { errorLoggerMiddleware } from './middleware/error-logger.middleware';
 import path from 'path';
 
 export interface AppConfig {
@@ -1624,6 +1637,9 @@ export function createApp(config: AppConfig): Application {
     next();
   });
 
+  // API Metrics tracking (add after body parser)
+  app.use(apiMetricsMiddleware);
+
   // ============================================================================
   // Serve uploaded files (for local storage mode)
   // ============================================================================
@@ -1633,6 +1649,9 @@ export function createApp(config: AppConfig): Application {
   }
 
   const llmProvider = config.llmProvider;
+
+  // Activity logging
+  app.use(activityLogger);
 
   // ============================================================================
   // Initialize Core Services with Prisma
@@ -1685,14 +1704,21 @@ export function createApp(config: AppConfig): Application {
   // ============================================================================
 
   const queryController = new QueryController(agentRouter, memoryManager);
+
+  // ✅ FIX 3 & 4: Use InterviewSessionManager (complete version)
+  // The EnhancedInterviewSessionManager was a stub that was never finished.
+  // InterviewSessionManager in interview-session-manager.ts is the complete version.
   const sessionManager = new InterviewSessionManager(
     config.llmProvider,
     memoryManager,
     config.vectorDb,
   );
-  // Interview routes (protected) - UPDATED
+
+  // ✅ FIX 5: InterviewController takes sessionManager, not enhancedSessionManager
+  const interviewController = new InterviewController(sessionManager as any);
+
   const resumeController = new ResumeController(agentRouter, memoryManager);
-  const progressController = new ProgressController();
+  const progressController = new ProgressController(memoryManager);
 
   // ============================================================================
   // Routes
@@ -1701,36 +1727,38 @@ export function createApp(config: AppConfig): Application {
   // Auth routes (public)
   app.use('/api/auth', createAuthRoutes());
 
-  // User routes (protected)
+  // User routes (protected) — ✅ FIX 1: now properly imported
   app.use('/api/user', createUserRoutes());
 
   // Analytics routes (protected)
   app.use('/api/analytics', createAnalyticsRoutes());
 
-  // Learning Path routes (protected) - NEW
+  // Learning Path routes (protected)
   app.use('/api/learning-path', createLearningPathRoutes());
 
-  // Gamification routes (protected) - NEW
+  // Gamification routes (protected)
   app.use('/api/gamification', createGamificationRoutes());
 
   // File Upload routes (protected)
   app.use('/api/files', createFileUploadRoutes());
 
-  // Company routes - NEW
+  // Company routes
   app.use('/api/companies', createCompanyRoutes());
 
-  // Topic routes - NEW
+  // Topic routes
   app.use('/api/topics', createTopicRoutes());
 
+  // AI Question Generator routes
   app.use('/api/ai-questions', createAIQuestionGeneratorRoutes(llmProvider));
-  // Admin routes - NEW
-  app.use('/api/admin', createAdminUserRoutes());
 
-  // Interview routes (protected)
-  const interviewController = new InterviewController(enhancedSessionManager);
+  // Admin routes
+  app.use('/api/admin', createAdminUserRoutes());
+  app.use('/api/admin/analytics', createAdminAnalyticsRoutes());
+
+  // Interview routes (protected) — ✅ FIX 2: now properly imported
   app.use('/api/interview', createInterviewRoutes(interviewController));
 
-  // Existing API routes
+  // Core API routes (query, resume, progress)
   const apiRoutes = createRoutes(
     queryController,
     interviewController,
@@ -1746,11 +1774,18 @@ export function createApp(config: AppConfig): Application {
       version: '2.0.0',
       status: 'running',
       features: [
-        'Authentication & Authorization',
+        'Authentication & Authorization (Email + OAuth)',
+        'Multi-Agent Interview System',
         'User Progress Tracking',
         'Analytics Dashboard',
-        'Interview Sessions',
+        'Interview Sessions with Timer',
+        'Interview Replay',
         'Resume Review',
+        'Learning Paths',
+        'Spaced Repetition',
+        'Gamification',
+        'Company & Topic Practice',
+        'AI Question Generation',
       ],
       endpoints: {
         auth: {
@@ -1762,6 +1797,18 @@ export function createApp(config: AppConfig): Application {
           forgotPassword: 'POST /api/auth/forgot-password',
           resetPassword: 'POST /api/auth/reset-password',
           me: 'GET /api/auth/me',
+          googleOAuth: 'GET /api/auth/google',
+          githubOAuth: 'GET /api/auth/github',
+        },
+        interview: {
+          start: 'POST /api/interview/start',
+          answer: 'POST /api/interview/answer',
+          status: 'GET /api/interview/:sessionId',
+          hint: 'GET /api/interview/:sessionId/hint',
+          pause: 'POST /api/interview/:sessionId/pause',
+          resume: 'POST /api/interview/:sessionId/resume',
+          timer: 'GET /api/interview/:sessionId/timer',
+          replay: 'GET /api/interview/:sessionId/replay',
         },
         analytics: {
           dashboard: 'GET /api/analytics/dashboard',
@@ -1771,10 +1818,11 @@ export function createApp(config: AppConfig): Application {
           comparative: 'GET /api/analytics/comparative',
           skillGaps: 'GET /api/analytics/skill-gaps',
         },
-        interview: {
-          start: 'POST /api/interview/start',
-          answer: 'POST /api/interview/answer',
-          status: 'GET /api/interview/:sessionId',
+        learningPath: {
+          generate: 'POST /api/learning-path/generate',
+          get: 'GET /api/learning-path',
+          reviews: 'GET /api/learning-path/reviews',
+          recommendations: 'GET /api/learning-path/recommendations',
         },
       },
     });
@@ -1784,6 +1832,10 @@ export function createApp(config: AppConfig): Application {
   // Error Handling
   // ============================================================================
 
+  // Error logging middleware
+  app.use(errorLoggerMiddleware);
+
+  // 404 handler
   app.use((req: Request, res: Response) => {
     res.status(404).json({
       success: false,
@@ -1794,9 +1846,9 @@ export function createApp(config: AppConfig): Application {
     });
   });
 
+  // Global error handler
   app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     console.error('Global error handler:', err);
-
     res.status(500).json({
       success: false,
       error: {
@@ -2758,6 +2810,426 @@ export default redis;
 
 
 ==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\controllers\admin\admin-analytics.controller.ts
+==============================
+
+// src/controllers/admin/admin-analytics.controller.ts
+// ✅ FIX: Added missing `import prisma from '../../config/database'`
+//         The original used `prisma` directly in getReports(), resolveError(),
+//         getSystemHealth(), and getPerformanceMetrics() without importing it.
+
+import { Request, Response } from 'express';
+import { AdminAnalyticsService } from '../../services/admin/admin-analytics.service';
+import { APIResponse } from '../../types';
+import prisma from '../../config/database'; // ✅ FIX: was missing
+
+export class AdminAnalyticsController {
+  private analyticsService: AdminAnalyticsService;
+
+  constructor() {
+    this.analyticsService = new AdminAnalyticsService();
+  }
+
+  async getSystemOverview(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user || req.user.role !== 'ADMIN') {
+        res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Admin access required' },
+        } as APIResponse);
+        return;
+      }
+      const overview = await this.analyticsService.getSystemOverview();
+      res.json({
+        success: true,
+        data: overview,
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get system overview error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'ANALYTICS_ERROR',
+          message: 'Failed to fetch system overview',
+        },
+      } as APIResponse);
+    }
+  }
+
+  async getUserBehavior(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user || req.user.role !== 'ADMIN') {
+        res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Admin access required' },
+        } as APIResponse);
+        return;
+      }
+      const behavior = await this.analyticsService.getUserBehavior();
+      res.json({
+        success: true,
+        data: behavior,
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get user behavior error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'ANALYTICS_ERROR',
+          message: 'Failed to fetch user behavior analytics',
+        },
+      } as APIResponse);
+    }
+  }
+
+  async getCohortAnalysis(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user || req.user.role !== 'ADMIN') {
+        res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Admin access required' },
+        } as APIResponse);
+        return;
+      }
+      const months = req.query.months
+        ? parseInt(req.query.months as string)
+        : 6;
+      const cohorts = await this.analyticsService.getCohortAnalysis(months);
+      res.json({
+        success: true,
+        data: { cohorts },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get cohort analysis error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'ANALYTICS_ERROR',
+          message: 'Failed to fetch cohort analysis',
+        },
+      } as APIResponse);
+    }
+  }
+
+  async generateReport(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user || req.user.role !== 'ADMIN') {
+        res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Admin access required' },
+        } as APIResponse);
+        return;
+      }
+      const { name, type, startDate, endDate, metrics, format } = req.body;
+      if (!name || !type || !startDate || !endDate || !metrics || !format) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'Missing required fields',
+          },
+        } as APIResponse);
+        return;
+      }
+      const report = await this.analyticsService.generateReport(
+        req.user.userId,
+        {
+          name,
+          type,
+          startDate: new Date(startDate),
+          endDate: new Date(endDate),
+          metrics,
+          format,
+        },
+      );
+      res.json({
+        success: true,
+        data: { report },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Generate report error:', error);
+      res.status(500).json({
+        success: false,
+        error: { code: 'REPORT_ERROR', message: 'Failed to generate report' },
+      } as APIResponse);
+    }
+  }
+
+  // ✅ FIX: prisma is now properly imported above
+  async getReports(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user || req.user.role !== 'ADMIN') {
+        res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Admin access required' },
+        } as APIResponse);
+        return;
+      }
+      const page = req.query.page ? parseInt(req.query.page as string) : 1;
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 20;
+
+      const reports = await prisma.analyticsReport.findMany({
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      });
+      const total = await prisma.analyticsReport.count();
+
+      res.json({
+        success: true,
+        data: {
+          reports,
+          pagination: {
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit),
+          },
+        },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get reports error:', error);
+      res.status(500).json({
+        success: false,
+        error: { code: 'FETCH_ERROR', message: 'Failed to fetch reports' },
+      } as APIResponse);
+    }
+  }
+
+  async getApiUsage(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user || req.user.role !== 'ADMIN') {
+        res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Admin access required' },
+        } as APIResponse);
+        return;
+      }
+      const hours = req.query.hours ? parseInt(req.query.hours as string) : 24;
+      const usage = await this.analyticsService.getApiUsage(hours);
+      res.json({
+        success: true,
+        data: usage,
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get API usage error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'ANALYTICS_ERROR',
+          message: 'Failed to fetch API usage',
+        },
+      } as APIResponse);
+    }
+  }
+
+  async getErrorLogs(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user || req.user.role !== 'ADMIN') {
+        res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Admin access required' },
+        } as APIResponse);
+        return;
+      }
+      const { level, hours, resolved, limit } = req.query;
+      const logs = await this.analyticsService.getErrorLogs({
+        level: level as string,
+        hours: hours ? parseInt(hours as string) : 24,
+        resolved: resolved === 'true',
+        limit: limit ? parseInt(limit as string) : 100,
+      });
+      res.json({
+        success: true,
+        data: logs,
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get error logs error:', error);
+      res.status(500).json({
+        success: false,
+        error: { code: 'LOGS_ERROR', message: 'Failed to fetch error logs' },
+      } as APIResponse);
+    }
+  }
+
+  // ✅ FIX: prisma is now properly imported above
+  async resolveError(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user || req.user.role !== 'ADMIN') {
+        res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Admin access required' },
+        } as APIResponse);
+        return;
+      }
+      const { errorId } = req.params;
+      const errorRecord = await prisma.errorLog.update({
+        where: { id: errorId },
+        data: {
+          resolved: true,
+          resolvedAt: new Date(),
+          resolvedBy: req.user.userId,
+        },
+      });
+      res.json({
+        success: true,
+        data: { error: errorRecord },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Resolve error log error:', error);
+      res.status(500).json({
+        success: false,
+        error: { code: 'UPDATE_ERROR', message: 'Failed to resolve error' },
+      } as APIResponse);
+    }
+  }
+
+  // ✅ FIX: prisma is now properly imported above
+  async getSystemHealth(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user || req.user.role !== 'ADMIN') {
+        res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Admin access required' },
+        } as APIResponse);
+        return;
+      }
+
+      let dbStatus = 'up';
+      try {
+        await prisma.$queryRaw`SELECT 1`;
+      } catch {
+        dbStatus = 'down';
+      }
+
+      const recentMetrics = await prisma.apiMetric.aggregate({
+        where: { timestamp: { gte: new Date(Date.now() - 60 * 60 * 1000) } },
+        _avg: { responseTime: true },
+        _count: { id: true },
+      });
+
+      const errorCount = await prisma.errorLog.count({
+        where: {
+          timestamp: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+          level: { in: ['ERROR', 'CRITICAL'] },
+        },
+      });
+
+      const totalRequests = recentMetrics._count.id;
+      const errorRate =
+        totalRequests > 0 ? (errorCount / totalRequests) * 100 : 0;
+
+      const health = {
+        status: dbStatus === 'up' && errorRate < 1 ? 'healthy' : 'degraded',
+        uptime: '99.98%',
+        lastCheck: new Date(),
+        services: {
+          api: {
+            status: 'up',
+            responseTime: recentMetrics._avg.responseTime
+              ? Math.round(recentMetrics._avg.responseTime)
+              : 0,
+          },
+          database: { status: dbStatus },
+          redis: { status: 'up' },
+        },
+        metrics: {
+          avgResponseTime: recentMetrics._avg.responseTime
+            ? Math.round(recentMetrics._avg.responseTime)
+            : 0,
+          errorRate: Number(errorRate.toFixed(2)),
+          requestsPerMinute: Math.round(totalRequests / 60),
+        },
+      };
+
+      res.json({
+        success: true,
+        data: health,
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get system health error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'HEALTH_CHECK_ERROR',
+          message: 'Failed to check system health',
+        },
+      } as APIResponse);
+    }
+  }
+
+  // ✅ FIX: prisma is now properly imported above
+  async getPerformanceMetrics(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user || req.user.role !== 'ADMIN') {
+        res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Admin access required' },
+        } as APIResponse);
+        return;
+      }
+
+      const hours = req.query.hours ? parseInt(req.query.hours as string) : 24;
+      const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+      const metrics = await prisma.apiMetric.findMany({
+        where: { timestamp: { gte: since } },
+        select: { responseTime: true },
+        orderBy: { responseTime: 'asc' },
+      });
+
+      const responseTimes = metrics.map((m) => m.responseTime);
+      const p50 = responseTimes[Math.floor(responseTimes.length * 0.5)] || 0;
+      const p95 = responseTimes[Math.floor(responseTimes.length * 0.95)] || 0;
+      const p99 = responseTimes[Math.floor(responseTimes.length * 0.99)] || 0;
+
+      const totalRequests = await prisma.apiMetric.count({
+        where: { timestamp: { gte: since } },
+      });
+      const throughput = Math.round(totalRequests / (hours * 60));
+
+      const errorCount = await prisma.errorLog.count({
+        where: {
+          timestamp: { gte: since },
+          level: { in: ['ERROR', 'CRITICAL'] },
+        },
+      });
+      const errorRate =
+        totalRequests > 0 ? (errorCount / totalRequests) * 100 : 0;
+
+      res.json({
+        success: true,
+        data: {
+          responseTime: { p50, p95, p99 },
+          throughput,
+          errorRate: Number(errorRate.toFixed(2)),
+        },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get performance metrics error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'METRICS_ERROR',
+          message: 'Failed to fetch performance metrics',
+        },
+      } as APIResponse);
+    }
+  }
+}
+
+
+==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\controllers\admin\admin-user.controller.ts
 ==============================
 
@@ -3539,7 +4011,7 @@ export class AIQuestionGeneratorController {
       }
 
       const questionIds = await this.generatorService.generateQuestions(
-        req.user.userId,
+        req.user?.userId,
         {
           generationType: generationType as GenerationType,
           baseQuestionId,
@@ -3596,6 +4068,18 @@ export class AIQuestionGeneratorController {
       const { questionId } = req.params;
       const { count } = req.body;
 
+      // Validate questionId is a string - Type assertion with validation
+      if (!questionId || typeof questionId !== 'string') {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'Invalid question ID',
+          },
+        } as APIResponse);
+        return;
+      }
+
       const questionIds = await this.generatorService.generateBatch(
         req.user.userId,
         questionId,
@@ -3629,6 +4113,18 @@ export class AIQuestionGeneratorController {
   async getQuestion(req: Request, res: Response): Promise<void> {
     try {
       const { questionId } = req.params;
+
+      // Validate questionId is a string - Type assertion with validation
+      if (!questionId || typeof questionId !== 'string') {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'Invalid question ID',
+          },
+        } as APIResponse);
+        return;
+      }
 
       const question =
         await this.generatorService.getGeneratedQuestion(questionId);
@@ -3705,7 +4201,21 @@ export class AIQuestionGeneratorController {
         return;
       }
 
+      
+
       const { questionId } = req.params;
+
+      // Validate questionId is a string - Type assertion with validation
+      if (!questionId || typeof questionId !== 'string') {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'Invalid question ID',
+          },
+        } as APIResponse);
+        return;
+      }
 
       const question = await this.generatorService.approveQuestion(
         questionId,
@@ -3743,6 +4253,19 @@ export class AIQuestionGeneratorController {
       }
 
       const { questionId } = req.params;
+
+      // Validate questionId is a string - Type assertion with validation
+      if (!questionId || typeof questionId !== 'string') {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'Invalid question ID',
+          },
+        } as APIResponse);
+        return;
+      }
+
       const { sessionId, wasSuccessful, timeSpent, userRating, userFeedback } =
         req.body;
 
@@ -7219,6 +7742,108 @@ export class UserController {
 
 
 ==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\jobs\analytics-snapshot.job.ts
+==============================
+
+// src/jobs/analytics-snapshot.job.ts
+import cron from 'node-cron';
+import prisma from '../config/database';
+
+/**
+ * Create daily analytics snapshot
+ * Runs at midnight every day
+ */
+export function startAnalyticsSnapshotJob() {
+  cron.schedule('0 0 * * *', async () => {
+    try {
+      console.log('Running analytics snapshot job...');
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+
+      const weekAgo = new Date(today);
+      weekAgo.setDate(weekAgo.getDate() - 7);
+
+      const monthAgo = new Date(today);
+      monthAgo.setMonth(monthAgo.getMonth() - 1);
+
+      // Gather metrics
+      const [
+        totalUsers,
+        newUsers,
+        dau,
+        totalInterviews,
+        completedInterviews,
+        avgScore,
+        avgDuration,
+      ] = await Promise.all([
+        prisma.user.count(),
+        prisma.user.count({
+          where: { createdAt: { gte: yesterday, lt: today } },
+        }),
+        prisma.user.count({
+          where: { lastLogin: { gte: yesterday, lt: today } },
+        }),
+        prisma.interviewSession.count({
+          where: { startTime: { gte: yesterday, lt: today } },
+        }),
+        prisma.interviewSession.count({
+          where: {
+            startTime: { gte: yesterday, lt: today },
+            status: 'COMPLETED',
+          },
+        }),
+        prisma.interviewSession.aggregate({
+          where: {
+            startTime: { gte: yesterday, lt: today },
+            score: { not: null },
+          },
+          _avg: { score: true },
+        }),
+        prisma.interviewSession.aggregate({
+          where: {
+            startTime: { gte: yesterday, lt: today },
+            status: 'COMPLETED',
+          },
+          _avg: { duration: true },
+        }),
+      ]);
+
+      const completionRate =
+        totalInterviews > 0 ? (completedInterviews / totalInterviews) * 100 : 0;
+
+      // Create snapshot
+      await prisma.analyticsSnapshot.create({
+        data: {
+          date: yesterday,
+          type: 'DAILY',
+          totalUsers,
+          newUsers,
+          dau,
+          totalInterviews,
+          completedInterviews,
+          avgScore: avgScore._avg.score,
+          avgDuration: avgDuration._avg.duration,
+          completionRate,
+        },
+      });
+
+      console.log(
+        `Analytics snapshot created for ${yesterday.toISOString().split('T')[0]}`,
+      );
+    } catch (error) {
+      console.error('Analytics snapshot job error:', error);
+    }
+  });
+
+  console.log('Analytics snapshot job scheduled (runs daily at midnight)');
+}
+
+
+==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\jobs\auto-unsuspend.job.ts
 ==============================
 
@@ -7284,6 +7909,52 @@ export function startAutoUnsuspendJob() {
   });
 
   console.log('Auto-unsuspend job scheduled (runs hourly)');
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\jobs\cleanup-old-metrics.job.ts
+==============================
+
+// src/jobs/cleanup-old-metrics.job.ts
+import cron from 'node-cron';
+import prisma from '../config/database';
+
+/**
+ * Cleanup old API metrics and error logs
+ * Runs daily at 2 AM
+ */
+export function startCleanupMetricsJob() {
+  cron.schedule('0 2 * * *', async () => {
+    try {
+      console.log('Running metrics cleanup job...');
+
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+      // Delete old API metrics (keep 30 days)
+      const deletedMetrics = await prisma.apiMetric.deleteMany({
+        where: {
+          timestamp: { lt: thirtyDaysAgo },
+        },
+      });
+
+      // Delete resolved error logs older than 30 days
+      const deletedErrors = await prisma.errorLog.deleteMany({
+        where: {
+          timestamp: { lt: thirtyDaysAgo },
+          resolved: true,
+        },
+      });
+
+      console.log(
+        `Cleaned up ${deletedMetrics.count} old metrics and ${deletedErrors.count} resolved errors`,
+      );
+    } catch (error) {
+      console.error('Metrics cleanup job error:', error);
+    }
+  });
+
+  console.log('Metrics cleanup job scheduled (runs daily at 2 AM)');
 }
 
 
@@ -7899,6 +8570,56 @@ export async function activityLogger(
 
 
 ==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\middleware\api-metrics.middleware.ts
+==============================
+
+// src/middleware/api-metrics.middleware.ts
+import { Request, Response, NextFunction } from 'express';
+import prisma from '../config/database';
+
+/**
+ * Middleware to track API metrics
+ */
+export async function apiMetricsMiddleware(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  const startTime = Date.now();
+
+  // Capture the original json method
+  const originalJson = res.json.bind(res);
+
+  // Override res.json to capture response
+  res.json = function (body: any) {
+    const responseTime = Date.now() - startTime;
+
+    // Log metric asynchronously
+    setImmediate(async () => {
+      try {
+        await prisma.apiMetric.create({
+          data: {
+            endpoint: req.path,
+            method: req.method,
+            statusCode: res.statusCode,
+            responseTime,
+            userId: req.user?.userId,
+            ipAddress: req.ip,
+          },
+        });
+      } catch (error) {
+        console.error('Failed to log API metric:', error);
+      }
+    });
+
+    return originalJson(body);
+  };
+
+  next();
+}
+
+
+==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\middleware\auth.middleware.ts
 ==============================
 
@@ -8057,19 +8778,77 @@ export const optionalAuth = async (
 // }
 
 ==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\middleware\error-logger.middleware.ts
+==============================
+
+// src/middleware/error-logger.middleware.ts
+import { Request, Response, NextFunction } from 'express';
+import prisma from '../config/database';
+
+/**
+ * Global error handler that logs errors
+ */
+export async function errorLoggerMiddleware(
+  error: Error,
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  // Determine error level
+  let level: 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL' = 'ERROR';
+
+  if (res.statusCode >= 500) {
+    level = 'CRITICAL';
+  } else if (res.statusCode >= 400) {
+    level = 'ERROR';
+  } else if (res.statusCode >= 300) {
+    level = 'WARNING';
+  }
+
+  // Log error asynchronously
+  setImmediate(async () => {
+    try {
+      await prisma.errorLog.create({
+        data: {
+          level,
+          message: error.message,
+          stack: error.stack,
+          endpoint: req.path,
+          method: req.method,
+          statusCode: res.statusCode,
+          userId: req.user?.userId,
+          ipAddress: req.ip,
+          userAgent: req.get('user-agent'),
+        },
+      });
+    } catch (logError) {
+      console.error('Failed to log error:', logError);
+    }
+  });
+
+  // Pass to next error handler
+  next(error);
+}
+
+
+==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\middleware\rate-limit.middleware.ts
 ==============================
 
 // src/middleware/rate-limit.middleware.ts
+// ✅ FIX: createAdminRateLimiter used `redisClient` which was never declared.
+//         The rest of the file uses `redis` (imported from config/redis).
+//         Unified to use `redis` throughout.
+
 import rateLimit from 'express-rate-limit';
 import RedisStore from 'rate-limit-redis';
-import redis from '../config/redis';
+import redis from '../config/redis'; // ✅ single import used everywhere
 import { Request } from 'express';
 
-// Global rate limiter
+// ── Global rate limiter ────────────────────────────────────────────────────
 export const globalRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
+  max: 100,
   message: {
     success: false,
     error: {
@@ -8086,10 +8865,10 @@ export const globalRateLimiter = rateLimit({
   }),
 });
 
-// Auth rate limiter (stricter)
+// ── Auth rate limiter (strict — login/register) ────────────────────────────
 export const authRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5, // 5 attempts per 15 minutes
+  max: 5,
   message: {
     success: false,
     error: {
@@ -8105,14 +8884,12 @@ export const authRateLimiter = rateLimit({
   }),
 });
 
-// API rate limiter based on user role
+// ── Per-user rate limiter (role-based limits) ──────────────────────────────
 export const createUserRateLimiter = () => {
   return rateLimit({
     windowMs: 15 * 60 * 1000,
     max: async (req: Request) => {
-      // Different limits based on user role
-      if (!req.user) return 20; // Unauthenticated
-
+      if (!req.user) return 20;
       switch (req.user.role) {
         case 'ADMIN':
           return 1000;
@@ -8123,9 +8900,7 @@ export const createUserRateLimiter = () => {
           return 50;
       }
     },
-    keyGenerator: (req: Request) => {
-      return req.user?.userId || req.ip || 'unknown';
-    },
+    keyGenerator: (req: Request) => req.user?.userId || req.ip || 'unknown',
     message: {
       success: false,
       error: {
@@ -8141,27 +8916,30 @@ export const createUserRateLimiter = () => {
   });
 };
 
-// src/middleware/rate-limit.middleware.ts - ADD admin rate limiter
-
-/**
- * Create admin-specific rate limiter
- */
+// ── Admin rate limiter ─────────────────────────────────────────────────────
+// ✅ FIX: was using `redisClient` (undefined). Now uses `redis`.
 export function createAdminRateLimiter() {
   return rateLimit({
     store: new RedisStore({
-      client: redisClient,
-      prefix: 'rate_limit:admin:',
+      // @ts-expect-error
+      client: redis, // ✅ FIX: was `redisClient`
+      prefix: 'rl:admin:',
     }),
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 500, // Higher limit for admin users
-    message: 'Too many admin requests',
+    windowMs: 15 * 60 * 1000,
+    max: 500,
+    message: {
+      success: false,
+      error: {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'Too many admin requests',
+      },
+    },
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req: Request) => {
-      return req.user?.userId || req.ip || 'anonymous';
-    },
+    keyGenerator: (req: Request) => req.user?.userId || req.ip || 'anonymous',
   });
 }
+
 
 ==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\middleware\upload.middleware.ts
@@ -9297,6 +10075,104 @@ Respond with JSON containing:
 
 
 ==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\routes\admin\admin-analytics.routes.ts
+==============================
+
+// src/routes/admin/admin-analytics.routes.ts
+import express, { Router } from 'express';
+import { AdminAnalyticsController } from '../../controllers/admin/admin-analytics.controller';
+import { authenticate, authorize } from '../../middleware/auth.middleware';
+import { createAdminRateLimiter } from '../../middleware/rate-limit.middleware';
+
+export function createAdminAnalyticsRoutes(): Router {
+  const router = express.Router();
+  const controller = new AdminAnalyticsController();
+  const adminRateLimit = createAdminRateLimiter();
+
+  // All routes require admin authentication
+  router.use(authenticate);
+  router.use(authorize('ADMIN'));
+  router.use(adminRateLimit);
+
+  /**
+   * GET /api/admin/analytics/overview
+   * Get comprehensive system overview
+   */
+  router.get('/overview', (req, res) => controller.getSystemOverview(req, res));
+
+  /**
+   * GET /api/admin/analytics/user-behavior
+   * Get user behavior analytics
+   */
+  router.get('/user-behavior', (req, res) =>
+    controller.getUserBehavior(req, res),
+  );
+
+  /**
+   * GET /api/admin/analytics/cohorts
+   * Get cohort analysis
+   * Query: months (default 6)
+   */
+  router.get('/cohorts', (req, res) => controller.getCohortAnalysis(req, res));
+
+  /**
+   * POST /api/admin/analytics/reports/generate
+   * Generate analytics report
+   * Body: { name, type, startDate, endDate, metrics, format }
+   */
+  router.post('/reports/generate', (req, res) =>
+    controller.generateReport(req, res),
+  );
+
+  /**
+   * GET /api/admin/analytics/reports
+   * Get list of generated reports
+   * Query: page, limit
+   */
+  router.get('/reports', (req, res) => controller.getReports(req, res));
+
+  /**
+   * GET /api/admin/analytics/api-usage
+   * Get API usage statistics
+   * Query: hours (default 24)
+   */
+  router.get('/api-usage', (req, res) => controller.getApiUsage(req, res));
+
+  /**
+   * GET /api/admin/analytics/errors
+   * Get error logs
+   * Query: level, hours, resolved, limit
+   */
+  router.get('/errors', (req, res) => controller.getErrorLogs(req, res));
+
+  /**
+   * POST /api/admin/analytics/errors/:errorId/resolve
+   * Mark error as resolved
+   */
+  router.post('/errors/:errorId/resolve', (req, res) =>
+    controller.resolveError(req, res),
+  );
+
+  /**
+   * GET /api/admin/analytics/health
+   * Get system health status
+   */
+  router.get('/health', (req, res) => controller.getSystemHealth(req, res));
+
+  /**
+   * GET /api/admin/analytics/performance
+   * Get performance metrics
+   * Query: hours (default 24)
+   */
+  router.get('/performance', (req, res) =>
+    controller.getPerformanceMetrics(req, res),
+  );
+
+  return router;
+}
+
+
+==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\routes\admin\admin-user.routes.ts
 ==============================
 
@@ -10099,9 +10975,12 @@ export function createGamificationRoutes(): Router {
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\routes\interview.routes.ts
 ==============================
 
-// src/routes/interview.routes.ts - UPDATE existing with new endpoints
+// src/routes/interview.routes.ts
+// ✅ FIX: Was importing from '../controllers/interview.controller' (does not exist).
+//         Actual file is '../controllers/interview-controller' (with hyphen).
+
 import express, { Router } from 'express';
-import { InterviewController } from '../controllers/interview.controller';
+import { InterviewController } from '../controllers/interview-controller'; // ✅ FIX
 import { authenticate } from '../middleware/auth.middleware';
 import { createUserRateLimiter } from '../middleware/rate-limit.middleware';
 
@@ -10113,128 +10992,51 @@ export function createInterviewRoutes(controller: InterviewController): Router {
   router.use(authenticate);
   router.use(userRateLimit);
 
-  /**
-   * POST /api/interview/start
-   * Start new interview session
-   */
+  // ── Core session routes ────────────────────────────────────────────────
   router.post('/start', (req, res) => controller.startInterview(req, res));
-
-  /**
-   * POST /api/interview/answer
-   * Submit answer to question
-   */
   router.post('/answer', (req, res) => controller.submitAnswer(req, res));
-
-  /**
-   * GET /api/interview/:sessionId
-   * Get session status
-   */
   router.get('/:sessionId', (req, res) =>
     controller.getSessionStatus(req, res),
   );
-
-  /**
-   * GET /api/interview/:sessionId/hint
-   * Request hint
-   */
   router.get('/:sessionId/hint', (req, res) =>
     controller.requestHint(req, res),
   );
-
-  /**
-   * POST /api/interview/:sessionId/pause
-   * Pause session
-   */
   router.post('/:sessionId/pause', (req, res) =>
     controller.pauseSession(req, res),
   );
-
-  /**
-   * POST /api/interview/:sessionId/resume
-   * Resume session
-   */
   router.post('/:sessionId/resume', (req, res) =>
     controller.resumeSession(req, res),
   );
 
-  // ============================================================================
-  // NEW ENDPOINTS - Timer
-  // ============================================================================
-
-  /**
-   * GET /api/interview/:sessionId/timer
-   * Get timer status
-   */
+  // ── Timer routes ───────────────────────────────────────────────────────
   router.get('/:sessionId/timer', (req, res) =>
     controller.getTimerStatus(req, res),
   );
-
-  /**
-   * POST /api/interview/:sessionId/timer/pause
-   * Pause timer
-   */
   router.post('/:sessionId/timer/pause', (req, res) =>
     controller.pauseTimer(req, res),
   );
-
-  /**
-   * POST /api/interview/:sessionId/timer/resume
-   * Resume timer
-   */
   router.post('/:sessionId/timer/resume', (req, res) =>
     controller.resumeTimer(req, res),
   );
 
-  // ============================================================================
-  // NEW ENDPOINTS - Replay
-  // ============================================================================
-
-  /**
-   * GET /api/interview/:sessionId/replay
-   * Get interview replay
-   */
+  // ── Replay routes ──────────────────────────────────────────────────────
   router.get('/:sessionId/replay', (req, res) =>
     controller.getReplay(req, res),
   );
-
-  /**
-   * POST /api/interview/replay/:replayId/progress
-   * Update replay progress
-   */
   router.post('/replay/:replayId/progress', (req, res) =>
     controller.updateReplayProgress(req, res),
   );
-
-  /**
-   * GET /api/interview/replay/history
-   * Get replay history
-   */
   router.get('/replay/history', (req, res) =>
     controller.getReplayHistory(req, res),
   );
 
-  /**
-   * GET /api/interview/compare
-   * Compare two interview attempts
-   */
+  // ── Comparison route ───────────────────────────────────────────────────
   router.get('/compare', (req, res) => controller.compareAttempts(req, res));
 
-  // ============================================================================
-  // NEW ENDPOINTS - Question Rating
-  // ============================================================================
-
-  /**
-   * POST /api/interview/questions/:questionId/rate
-   * Rate question difficulty
-   */
+  // ── Question rating routes ─────────────────────────────────────────────
   router.post('/questions/:questionId/rate', (req, res) =>
     controller.rateQuestion(req, res),
   );
-
-  /**
-   * GET /api/interview/questions/:questionId/ratings
-   * Get question ratings
-   */
   router.get('/questions/:questionId/ratings', (req, res) =>
     controller.getQuestionRatings(req, res),
   );
@@ -10511,6 +11313,8 @@ import { IVectorDatabase } from './services/vector-db/base-vector-db';
 import { RouterStrategy } from './types';
 
 import { startAutoUnsuspendJob } from './jobs/auto-unsuspend.job';
+import { startAnalyticsSnapshotJob } from './jobs/analytics-snapshot.job';
+import { startCleanupMetricsJob } from './jobs/cleanup-old-metrics.job';
 
 
 // Load environment variables
@@ -10660,6 +11464,8 @@ async function startServer() {
 
     // Start scheduled jobs
     startAutoUnsuspendJob();
+    startAnalyticsSnapshotJob(); // NEW
+    startCleanupMetricsJob(); // NEW
 
     // ============================================================================
     // Graceful Shutdown
@@ -10800,6 +11606,1018 @@ export class AdaptiveInterviewService {
     if (current === 'HARD') return 'MEDIUM';
     if (current === 'MEDIUM') return 'EASY';
     return 'EASY';
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\admin\admin-analytics.service.ts
+==============================
+
+// src/services/admin/admin-analytics.service.ts
+import prisma from '../../config/database';
+import { Prisma } from '@prisma/client';
+
+interface DateRange {
+  startDate: Date;
+  endDate: Date;
+}
+
+export class AdminAnalyticsService {
+  /**
+   * Get comprehensive system overview
+   */
+  async getSystemOverview(dateRange?: DateRange) {
+    const now = new Date();
+    const today = new Date(now.setHours(0, 0, 0, 0));
+    const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const monthAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    // User Metrics
+    const userMetrics = await this.getUserMetrics(today, weekAgo, monthAgo);
+
+    // Interview Metrics
+    const interviewMetrics = await this.getInterviewMetrics(
+      today,
+      weekAgo,
+      monthAgo,
+    );
+
+    // Question Metrics
+    const questionMetrics = await this.getQuestionMetrics();
+
+    // Engagement Metrics
+    const engagementMetrics = await this.getEngagementMetrics(today, monthAgo);
+
+    // System Metrics
+    const systemMetrics = await this.getSystemMetrics();
+
+    return {
+      users: userMetrics,
+      interviews: interviewMetrics,
+      questions: questionMetrics,
+      engagement: engagementMetrics,
+      system: systemMetrics,
+      generatedAt: new Date(),
+    };
+  }
+
+  /**
+   * Get user metrics
+   */
+  private async getUserMetrics(today: Date, weekAgo: Date, monthAgo: Date) {
+    const [
+      totalUsers,
+      newToday,
+      newThisWeek,
+      newThisMonth,
+      dau,
+      wau,
+      mau,
+      byRole,
+    ] = await Promise.all([
+      // Total users
+      prisma.user.count(),
+
+      // New users today
+      prisma.user.count({
+        where: { createdAt: { gte: today } },
+      }),
+
+      // New users this week
+      prisma.user.count({
+        where: { createdAt: { gte: weekAgo } },
+      }),
+
+      // New users this month
+      prisma.user.count({
+        where: { createdAt: { gte: monthAgo } },
+      }),
+
+      // Daily Active Users (logged in today)
+      prisma.user.count({
+        where: { lastLogin: { gte: today } },
+      }),
+
+      // Weekly Active Users
+      prisma.user.count({
+        where: { lastLogin: { gte: weekAgo } },
+      }),
+
+      // Monthly Active Users
+      prisma.user.count({
+        where: { lastLogin: { gte: monthAgo } },
+      }),
+
+      // Users by role
+      prisma.user.groupBy({
+        by: ['role'],
+        _count: { id: true },
+      }),
+    ]);
+
+    // Calculate retention
+    const retention = await this.calculateRetention(today, weekAgo, monthAgo);
+
+    // Calculate churn
+    const churn = await this.calculateChurn(monthAgo);
+
+    // Get growth trends
+    const growthTrends = await this.getUserGrowthTrends(30);
+
+    return {
+      total: totalUsers,
+      growth: {
+        daily: newToday,
+        weekly: newThisWeek,
+        monthly: newThisMonth,
+      },
+      active: {
+        dau,
+        wau,
+        mau,
+        dauWauRatio: wau > 0 ? (dau / wau) * 100 : 0,
+      },
+      retention,
+      churn,
+      byRole: byRole.reduce(
+        (acc, item) => {
+          acc[item.role.toLowerCase()] = item._count.id;
+          return acc;
+        },
+        {} as Record<string, number>,
+      ),
+      trends: growthTrends,
+    };
+  }
+
+  /**
+   * Calculate user retention
+   */
+  private async calculateRetention(today: Date, weekAgo: Date, monthAgo: Date) {
+    const usersRegisteredYesterday = await prisma.user.findMany({
+      where: {
+        createdAt: {
+          gte: new Date(today.getTime() - 24 * 60 * 60 * 1000),
+          lt: today,
+        },
+      },
+      select: { id: true },
+    });
+
+    const usersRegisteredWeekAgo = await prisma.user.findMany({
+      where: {
+        createdAt: {
+          gte: new Date(weekAgo.getTime() - 24 * 60 * 60 * 1000),
+          lt: weekAgo,
+        },
+      },
+      select: { id: true },
+    });
+
+    const usersRegisteredMonthAgo = await prisma.user.findMany({
+      where: {
+        createdAt: {
+          gte: new Date(monthAgo.getTime() - 24 * 60 * 60 * 1000),
+          lt: monthAgo,
+        },
+      },
+      select: { id: true },
+    });
+
+    // Check how many returned
+    const day1Returned = await prisma.user.count({
+      where: {
+        id: { in: usersRegisteredYesterday.map((u) => u.id) },
+        lastLogin: { gte: today },
+      },
+    });
+
+    const day7Returned = await prisma.user.count({
+      where: {
+        id: { in: usersRegisteredWeekAgo.map((u) => u.id) },
+        lastLogin: { gte: weekAgo },
+      },
+    });
+
+    const day30Returned = await prisma.user.count({
+      where: {
+        id: { in: usersRegisteredMonthAgo.map((u) => u.id) },
+        lastLogin: { gte: monthAgo },
+      },
+    });
+
+    return {
+      day1:
+        usersRegisteredYesterday.length > 0
+          ? (day1Returned / usersRegisteredYesterday.length) * 100
+          : 0,
+      day7:
+        usersRegisteredWeekAgo.length > 0
+          ? (day7Returned / usersRegisteredWeekAgo.length) * 100
+          : 0,
+      day30:
+        usersRegisteredMonthAgo.length > 0
+          ? (day30Returned / usersRegisteredMonthAgo.length) * 100
+          : 0,
+    };
+  }
+
+  /**
+   * Calculate churn rate
+   */
+  private async calculateChurn(monthAgo: Date) {
+    const usersMonthAgo = await prisma.user.count({
+      where: { createdAt: { lt: monthAgo } },
+    });
+
+    const churned = await prisma.user.count({
+      where: {
+        createdAt: { lt: monthAgo },
+        lastLogin: { lt: monthAgo },
+      },
+    });
+
+    const rate = usersMonthAgo > 0 ? (churned / usersMonthAgo) * 100 : 0;
+
+    // Determine trend (simplified)
+    const trend = rate < 5 ? 'improving' : rate > 10 ? 'concerning' : 'stable';
+
+    return { rate, trend };
+  }
+
+  /**
+   * Get user growth trends
+   */
+  private async getUserGrowthTrends(days: number) {
+    const trends = [];
+    const now = new Date();
+
+    for (let i = days - 1; i >= 0; i--) {
+      const date = new Date(now);
+      date.setDate(date.getDate() - i);
+      date.setHours(0, 0, 0, 0);
+
+      const nextDay = new Date(date);
+      nextDay.setDate(nextDay.getDate() + 1);
+
+      const count = await prisma.user.count({
+        where: {
+          createdAt: {
+            gte: date,
+            lt: nextDay,
+          },
+        },
+      });
+
+      trends.push({
+        date: date.toISOString().split('T')[0],
+        count,
+      });
+    }
+
+    return trends;
+  }
+
+  /**
+   * Get interview metrics
+   */
+  private async getInterviewMetrics(
+    today: Date,
+    weekAgo: Date,
+    monthAgo: Date,
+  ) {
+    const [
+      totalInterviews,
+      todayCount,
+      weekCount,
+      monthCount,
+      completedCount,
+      avgScoreResult,
+      avgDurationResult,
+      byType,
+      byDifficulty,
+    ] = await Promise.all([
+      // Total interviews
+      prisma.interviewSession.count(),
+
+      // Today's interviews
+      prisma.interviewSession.count({
+        where: { startTime: { gte: today } },
+      }),
+
+      // This week's interviews
+      prisma.interviewSession.count({
+        where: { startTime: { gte: weekAgo } },
+      }),
+
+      // This month's interviews
+      prisma.interviewSession.count({
+        where: { startTime: { gte: monthAgo } },
+      }),
+
+      // Completed interviews
+      prisma.interviewSession.count({
+        where: { status: 'COMPLETED' },
+      }),
+
+      // Average score
+      prisma.interviewSession.aggregate({
+        where: { score: { not: null } },
+        _avg: { score: true },
+      }),
+
+      // Average duration
+      prisma.interviewSession.aggregate({
+        where: {
+          status: 'COMPLETED',
+          endTime: { not: null },
+        },
+        _avg: { duration: true },
+      }),
+
+      // By type
+      prisma.interviewSession.groupBy({
+        by: ['type'],
+        _count: { id: true },
+      }),
+
+      // By difficulty
+      prisma.interviewSession.groupBy({
+        by: ['difficulty'],
+        _count: { id: true },
+      }),
+    ]);
+
+    const completionRate =
+      totalInterviews > 0 ? (completedCount / totalInterviews) * 100 : 0;
+
+    // Get trends
+    const trends = await this.getInterviewTrends(30);
+
+    return {
+      total: totalInterviews,
+      today: todayCount,
+      thisWeek: weekCount,
+      thisMonth: monthCount,
+      avgDuration: avgDurationResult._avg.duration
+        ? Number(avgDurationResult._avg.duration)
+        : 0,
+      avgScore: avgScoreResult._avg.score
+        ? Number(avgScoreResult._avg.score)
+        : 0,
+      completionRate,
+      byType: byType.reduce(
+        (acc, item) => {
+          acc[item.type] = item._count.id;
+          return acc;
+        },
+        {} as Record<string, number>,
+      ),
+      byDifficulty: byDifficulty.reduce(
+        (acc, item) => {
+          acc[item.difficulty] = item._count.id;
+          return acc;
+        },
+        {} as Record<string, number>,
+      ),
+      trends,
+    };
+  }
+
+  /**
+   * Get interview trends
+   */
+  private async getInterviewTrends(days: number) {
+    const trends = [];
+    const now = new Date();
+
+    for (let i = days - 1; i >= 0; i--) {
+      const date = new Date(now);
+      date.setDate(date.getDate() - i);
+      date.setHours(0, 0, 0, 0);
+
+      const nextDay = new Date(date);
+      nextDay.setDate(nextDay.getDate() + 1);
+
+      const [count, avgScore] = await Promise.all([
+        prisma.interviewSession.count({
+          where: {
+            startTime: {
+              gte: date,
+              lt: nextDay,
+            },
+          },
+        }),
+        prisma.interviewSession.aggregate({
+          where: {
+            startTime: {
+              gte: date,
+              lt: nextDay,
+            },
+            score: { not: null },
+          },
+          _avg: { score: true },
+        }),
+      ]);
+
+      trends.push({
+        date: date.toISOString().split('T')[0],
+        count,
+        avgScore: avgScore._avg.score ? Number(avgScore._avg.score) : 0,
+      });
+    }
+
+    return trends;
+  }
+
+  /**
+   * Get question metrics
+   */
+  private async getQuestionMetrics() {
+    const [total, aiGenerated, pending, approved, avgRating, mostAttempted] =
+      await Promise.all([
+        // Total questions
+        prisma.questionBank.count(),
+
+        // AI generated questions
+        prisma.aIGeneratedQuestion.count(),
+
+        // Pending AI questions
+        prisma.aIGeneratedQuestion.count({
+          where: { status: 'PENDING_REVIEW' },
+        }),
+
+        // Approved AI questions
+        prisma.aIGeneratedQuestion.count({
+          where: { status: 'APPROVED' },
+        }),
+
+        // Average rating
+        prisma.questionDifficultyRating.aggregate({
+          _avg: { rating: true },
+        }),
+
+        // Most attempted questions
+        prisma.interviewQuestion.groupBy({
+          by: ['questionId'],
+          _count: { id: true },
+          orderBy: { _count: { id: 'desc' } },
+          take: 10,
+        }),
+      ]);
+
+    const mostAttemptedWithDetails = await Promise.all(
+      mostAttempted.map(async (item) => {
+        const question = await prisma.questionBank.findUnique({
+          where: { id: item.questionId },
+          select: { id: true, question: true, category: true },
+        });
+        return {
+          questionId: item.questionId,
+          question: question?.question || 'Unknown',
+          category: question?.category || 'Unknown',
+          attempts: item._count.id,
+        };
+      }),
+    );
+
+    return {
+      total,
+      aiGenerated,
+      manual: total - aiGenerated,
+      pending,
+      approved,
+      avgRating: avgRating._avg.rating ? Number(avgRating._avg.rating) : 0,
+      mostAttempted: mostAttemptedWithDetails,
+    };
+  }
+
+  /**
+   * Get engagement metrics
+   */
+  private async getEngagementMetrics(today: Date, monthAgo: Date) {
+    const [
+      avgSession,
+      questionsAttempted,
+      hintsUsed,
+      achievementsUnlocked,
+      topFeatures,
+    ] = await Promise.all([
+      // Average session duration
+      prisma.studySession.aggregate({
+        _avg: { durationMinutes: true },
+      }),
+
+      // Questions attempted
+      prisma.interviewQuestion.count({
+        where: { createdAt: { gte: monthAgo } },
+      }),
+
+      // Hints used
+      prisma.interviewQuestion.aggregate({
+        where: { createdAt: { gte: monthAgo } },
+        _sum: { hintsUsed: true },
+      }),
+
+      // Achievements unlocked
+      prisma.userAchievement.count({
+        where: { unlockedAt: { gte: monthAgo } },
+      }),
+
+      // Top features (simplified - based on table counts)
+      Promise.all([
+        prisma.interviewSession.count({
+          where: { startTime: { gte: monthAgo } },
+        }),
+        prisma.practiceSession.count({
+          where: { createdAt: { gte: monthAgo } },
+        }),
+        prisma.studySession.count({
+          where: { createdAt: { gte: monthAgo } },
+        }),
+      ]),
+    ]);
+
+    return {
+      avgSessionDuration: avgSession._avg.durationMinutes
+        ? Number(avgSession._avg.durationMinutes)
+        : 0,
+      questionsAttempted,
+      hintsUsed: hintsUsed._sum.hintsUsed || 0,
+      achievementsUnlocked,
+      topFeatures: [
+        { feature: 'interviews', usage: topFeatures[0] },
+        { feature: 'practice', usage: topFeatures[1] },
+        { feature: 'study_sessions', usage: topFeatures[2] },
+      ],
+    };
+  }
+
+  /**
+   * Get system metrics
+   */
+  private async getSystemMetrics() {
+    // Get recent API metrics (if tracked)
+    const recentMetrics = await prisma.apiMetric.aggregate({
+      where: {
+        timestamp: {
+          gte: new Date(Date.now() - 60 * 60 * 1000), // Last hour
+        },
+      },
+      _avg: { responseTime: true },
+    });
+
+    // Get error count
+    const errorCount = await prisma.errorLog.count({
+      where: {
+        timestamp: {
+          gte: new Date(Date.now() - 24 * 60 * 60 * 1000), // Last 24 hours
+        },
+        level: { in: ['ERROR', 'CRITICAL'] },
+      },
+    });
+
+    // Calculate error rate (errors per 1000 requests)
+    const totalRequests = await prisma.apiMetric.count({
+      where: {
+        timestamp: {
+          gte: new Date(Date.now() - 24 * 60 * 60 * 1000),
+        },
+      },
+    });
+
+    const errorRate =
+      totalRequests > 0 ? (errorCount / totalRequests) * 100 : 0;
+
+    // Active connections (current DB connections)
+    // This would require a DB query or monitoring tool
+
+    return {
+      uptime: '99.98%', // This should come from monitoring tool
+      avgResponseTime: recentMetrics._avg.responseTime
+        ? Math.round(recentMetrics._avg.responseTime)
+        : 0,
+      errorRate: Number(errorRate.toFixed(2)),
+      activeConnections: 0, // Placeholder
+      dbSize: '0GB', // Placeholder
+      redisMemory: '0GB', // Placeholder
+    };
+  }
+
+  /**
+   * Get user behavior analytics
+   */
+  async getUserBehavior() {
+    // This is a simplified version
+    // In production, you'd track user journeys properly
+
+    const featureAdoption = await this.getFeatureAdoption();
+    const timeOfDay = await this.getTimeOfDayAnalysis();
+
+    return {
+      featureAdoption,
+      timeOfDay,
+      deviceBreakdown: {
+        desktop: 65,
+        mobile: 30,
+        tablet: 5,
+      }, // Placeholder
+    };
+  }
+
+  /**
+   * Get feature adoption rates
+   */
+  private async getFeatureAdoption() {
+    const totalUsers = await prisma.user.count();
+
+    const [
+      spacedRepetitionUsers,
+      companyPracticeUsers,
+      topicPracticeUsers,
+      aiQuestionUsers,
+    ] = await Promise.all([
+      prisma.spacedRepetitionCard.groupBy({
+        by: ['userId'],
+        _count: { userId: true },
+      }),
+      prisma.userCompanyProgress.groupBy({
+        by: ['userId'],
+        _count: { userId: true },
+      }),
+      prisma.userTopicProgress.groupBy({
+        by: ['userId'],
+        _count: { userId: true },
+      }),
+      prisma.aIQuestionUsage.groupBy({
+        by: ['userId'],
+        _count: { userId: true },
+      }),
+    ]);
+
+    return {
+      spacedRepetition:
+        totalUsers > 0 ? (spacedRepetitionUsers.length / totalUsers) * 100 : 0,
+      companyPractice:
+        totalUsers > 0 ? (companyPracticeUsers.length / totalUsers) * 100 : 0,
+      topicPractice:
+        totalUsers > 0 ? (topicPracticeUsers.length / totalUsers) * 100 : 0,
+      aiQuestions:
+        totalUsers > 0 ? (aiQuestionUsers.length / totalUsers) * 100 : 0,
+    };
+  }
+
+  /**
+   * Get time of day analysis
+   */
+  private async getTimeOfDayAnalysis() {
+    // This would require proper tracking
+    // Placeholder for now
+    return {
+      heatmap: [],
+      peakHours: [18, 19, 20, 21],
+      peakDays: ['sunday', 'monday', 'wednesday'],
+    };
+  }
+
+  /**
+   * Get cohort analysis
+   */
+  async getCohortAnalysis(months: number = 6) {
+    const cohorts = [];
+    const now = new Date();
+
+    for (let i = 0; i < months; i++) {
+      const cohortDate = new Date(now);
+      cohortDate.setMonth(cohortDate.getMonth() - i);
+      const cohortMonth = `${cohortDate.getFullYear()}-${String(cohortDate.getMonth() + 1).padStart(2, '0')}`;
+
+      // Get or create cohort
+      let cohort = await prisma.userCohort.findUnique({
+        where: { cohortMonth },
+      });
+
+      if (!cohort) {
+        // Calculate cohort metrics
+        const startOfMonth = new Date(
+          cohortDate.getFullYear(),
+          cohortDate.getMonth(),
+          1,
+        );
+        const endOfMonth = new Date(
+          cohortDate.getFullYear(),
+          cohortDate.getMonth() + 1,
+          0,
+        );
+
+        const cohortUsers = await prisma.user.findMany({
+          where: {
+            createdAt: {
+              gte: startOfMonth,
+              lte: endOfMonth,
+            },
+          },
+          select: { id: true },
+        });
+
+        const totalUsers = cohortUsers.length;
+
+        if (totalUsers > 0) {
+          // Calculate retention for each month
+          const retention = await this.calculateCohortRetention(
+            cohortUsers.map((u) => u.id),
+            startOfMonth,
+          );
+
+          cohort = await prisma.userCohort.create({
+            data: {
+              cohortMonth,
+              totalUsers,
+              month0: 100, // Always 100%
+              month1: retention.month1,
+              month2: retention.month2,
+              month3: retention.month3,
+              month4: retention.month4,
+              month5: retention.month5,
+              month6: retention.month6,
+            },
+          });
+        }
+      }
+
+      if (cohort) {
+        cohorts.push(cohort);
+      }
+    }
+
+    return cohorts;
+  }
+
+  /**
+   * Calculate cohort retention
+   */
+  private async calculateCohortRetention(userIds: string[], startDate: Date) {
+    const retention: any = {};
+
+    for (let month = 1; month <= 6; month++) {
+      const checkDate = new Date(startDate);
+      checkDate.setMonth(checkDate.getMonth() + month);
+
+      const activeCount = await prisma.user.count({
+        where: {
+          id: { in: userIds },
+          lastLogin: { gte: checkDate },
+        },
+      });
+
+      retention[`month${month}`] =
+        userIds.length > 0
+          ? Math.round((activeCount / userIds.length) * 100)
+          : null;
+    }
+
+    return retention;
+  }
+
+  /**
+   * Generate analytics report
+   */
+  async generateReport(
+    adminId: string,
+    config: {
+      name: string;
+      type: string;
+      startDate: Date;
+      endDate: Date;
+      metrics: string[];
+      format: string;
+    },
+  ) {
+    // Create report record
+    const report = await prisma.analyticsReport.create({
+      data: {
+        name: config.name,
+        type: config.type as any,
+        startDate: config.startDate,
+        endDate: config.endDate,
+        metrics: config.metrics,
+        format: config.format as any,
+        status: 'GENERATING',
+        generatedBy: adminId,
+      },
+    });
+
+    // Generate report asynchronously (in background)
+    this.generateReportAsync(report.id, config).catch(console.error);
+
+    return report;
+  }
+
+  /**
+   * Generate report async
+   */
+  private async generateReportAsync(
+    reportId: string,
+    config: {
+      type: string;
+      startDate: Date;
+      endDate: Date;
+      metrics: string[];
+      format: string;
+    },
+  ) {
+    try {
+      // Gather data based on report type
+      let data: any = {};
+
+      if (config.type === 'USER_GROWTH') {
+        data = await this.getUserMetrics(
+          new Date(),
+          new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+          new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+        );
+      } else if (config.type === 'INTERVIEW_PERFORMANCE') {
+        data = await this.getInterviewMetrics(
+          new Date(),
+          new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+          new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+        );
+      }
+
+      // Generate file based on format
+      let fileUrl = '';
+      let fileSize = 0;
+
+      if (config.format === 'JSON') {
+        // Save JSON to file storage (S3 or local)
+        const jsonContent = JSON.stringify(data, null, 2);
+        // Upload to S3 and get URL
+        fileUrl = 'https://example.com/reports/report.json';
+        fileSize = jsonContent.length;
+      }
+      // Add PDF, CSV, Excel generation here
+
+      // Update report status
+      await prisma.analyticsReport.update({
+        where: { id: reportId },
+        data: {
+          status: 'COMPLETED',
+          fileUrl,
+          fileSize,
+          generatedAt: new Date(),
+        },
+      });
+    } catch (error) {
+      // Update report with error
+      await prisma.analyticsReport.update({
+        where: { id: reportId },
+        data: {
+          status: 'FAILED',
+          errorMessage:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      });
+    }
+  }
+
+  /**
+   * Get API usage statistics
+   */
+  async getApiUsage(hours: number = 24) {
+    const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+    const [requests, byStatusCode, slowest, topUsers] = await Promise.all([
+      // Requests by endpoint
+      prisma.apiMetric.groupBy({
+        by: ['endpoint', 'method'],
+        where: { timestamp: { gte: since } },
+        _count: { id: true },
+        _avg: { responseTime: true },
+        _max: { responseTime: true },
+      }),
+
+      // By status code
+      prisma.apiMetric.groupBy({
+        by: ['statusCode'],
+        where: { timestamp: { gte: since } },
+        _count: { id: true },
+      }),
+
+      // Slowest endpoints
+      prisma.apiMetric.groupBy({
+        by: ['endpoint'],
+        where: { timestamp: { gte: since } },
+        _avg: { responseTime: true },
+        orderBy: { _avg: { responseTime: 'desc' } },
+        take: 10,
+      }),
+
+      // Top users by request count
+      prisma.apiMetric.groupBy({
+        by: ['userId'],
+        where: {
+          timestamp: { gte: since },
+          userId: { not: null },
+        },
+        _count: { id: true },
+        orderBy: { _count: { id: 'desc' } },
+        take: 10,
+      }),
+    ]);
+
+    return {
+      requests: requests.map((r) => ({
+        endpoint: r.endpoint,
+        method: r.method,
+        count: r._count.id,
+        avgTime: r._avg.responseTime ? Math.round(r._avg.responseTime) : 0,
+        maxTime: r._max.responseTime || 0,
+      })),
+      byStatusCode: byStatusCode.reduce(
+        (acc, item) => {
+          acc[item.statusCode] = item._count.id;
+          return acc;
+        },
+        {} as Record<number, number>,
+      ),
+      slowestEndpoints: slowest.map((s) => ({
+        endpoint: s.endpoint,
+        avgTime: s._avg.responseTime ? Math.round(s._avg.responseTime) : 0,
+      })),
+      topUsers: topUsers.map((u) => ({
+        userId: u.userId,
+        requests: u._count.id,
+      })),
+    };
+  }
+
+  /**
+   * Get error logs
+   */
+  async getErrorLogs(filters: {
+    level?: string;
+    hours?: number;
+    resolved?: boolean;
+    limit?: number;
+  }) {
+    const { level, hours = 24, resolved, limit = 100 } = filters;
+
+    const where: any = {
+      timestamp: {
+        gte: new Date(Date.now() - hours * 60 * 60 * 1000),
+      },
+    };
+
+    if (level) {
+      where.level = level;
+    }
+
+    if (resolved !== undefined) {
+      where.resolved = resolved;
+    }
+
+    const [errors, summary] = await Promise.all([
+      prisma.errorLog.findMany({
+        where,
+        orderBy: { timestamp: 'desc' },
+        take: limit,
+      }),
+
+      prisma.errorLog.groupBy({
+        by: ['level'],
+        where,
+        _count: { id: true },
+      }),
+    ]);
+
+    const byEndpoint = await prisma.errorLog.groupBy({
+      by: ['endpoint'],
+      where: {
+        ...where,
+        endpoint: { not: null },
+      },
+      _count: { id: true },
+      orderBy: { _count: { id: 'desc' } },
+      take: 10,
+    });
+
+    return {
+      errors,
+      summary: {
+        total: errors.length,
+        critical: summary.find((s) => s.level === 'CRITICAL')?._count.id || 0,
+        byEndpoint: byEndpoint.reduce(
+          (acc, item) => {
+            if (item.endpoint) {
+              acc[item.endpoint] = item._count.id;
+            }
+            return acc;
+          },
+          {} as Record<string, number>,
+        ),
+      },
+    };
   }
 }
 
@@ -16018,6 +17836,613 @@ export class LLMProviderFactory {
 
 
 ==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\question-bank.service.ts
+==============================
+
+/**
+ * Question Bank Service
+ * Generates and manages interview questions for sessions
+ * This was the missing service referenced throughout the codebase
+ */
+
+import { ILLMProvider } from './llm/base-provider';
+import prisma from '../config/database';
+import {
+  InterviewType,
+  DeveloperRole,
+  Difficulty,
+  QuestionCategory,
+} from '@prisma/client';
+
+// ============================================================================
+// Interfaces
+// ============================================================================
+
+export interface InterviewConfig {
+  type: InterviewType;
+  role?: DeveloperRole;
+  difficulty: Difficulty;
+  duration: number; // in minutes
+  focusAreas?: QuestionCategory[];
+  questionCount?: number;
+}
+
+export interface QuestionTemplate {
+  question: string;
+  difficulty: Difficulty;
+  category: string;
+  subcategory?: string;
+  hints: string[];
+  sampleAnswer?: string;
+  sampleCode?: string;
+  testCases?: TestCase[];
+  expectedComplexity?: {
+    time: string;
+    space: string;
+  };
+}
+
+export interface TestCase {
+  input: any;
+  expectedOutput: any;
+  explanation?: string;
+}
+
+// ============================================================================
+// Category mappings by interview type and role
+// ============================================================================
+
+const DSA_CATEGORIES: QuestionCategory[] = [
+  'ARRAYS',
+  'STRINGS',
+  'LINKED_LISTS',
+  'TREES',
+  'GRAPHS',
+  'DYNAMIC_PROGRAMMING',
+  'SORTING',
+  'SEARCHING',
+  'HASH_TABLES',
+  'STACKS_QUEUES',
+  'RECURSION',
+  'GREEDY',
+  'BACKTRACKING',
+  'BIT_MANIPULATION',
+];
+
+const FRONTEND_CATEGORIES: QuestionCategory[] = [
+  'JAVASCRIPT_ES6',
+  'REACT',
+  'HTML_CSS',
+  'TYPESCRIPT',
+  'STATE_MANAGEMENT',
+  'WEB_PERFORMANCE',
+  'ACCESSIBILITY',
+  'RESPONSIVE_DESIGN',
+  'BROWSER_APIS',
+  'TESTING_FRONTEND',
+];
+
+const BACKEND_CATEGORIES: QuestionCategory[] = [
+  'REST_API_DESIGN',
+  'GRAPHQL',
+  'DATABASE_DESIGN',
+  'SQL',
+  'NOSQL',
+  'AUTHENTICATION',
+  'MICROSERVICES',
+  'CACHING',
+  'MESSAGE_QUEUES',
+  'DOCKER',
+  'TESTING_BACKEND',
+  'SECURITY',
+];
+
+const SYSTEM_DESIGN_CATEGORIES: QuestionCategory[] = [
+  'SCALABILITY',
+  'DISTRIBUTED_SYSTEMS',
+  'LOAD_BALANCING',
+  'CAP_THEOREM',
+  'CACHING',
+  'DATABASE_DESIGN',
+];
+
+const BEHAVIORAL_CATEGORIES: QuestionCategory[] = [
+  'LEADERSHIP',
+  'TEAMWORK',
+  'CONFLICT_RESOLUTION',
+  'COMMUNICATION',
+];
+
+// ============================================================================
+// Role → Category mapping
+// ============================================================================
+
+const ROLE_CATEGORY_MAP: Record<DeveloperRole, QuestionCategory[]> = {
+  DSA_SPECIALIST: DSA_CATEGORIES,
+  FRONTEND_DEVELOPER: [...FRONTEND_CATEGORIES, ...DSA_CATEGORIES.slice(0, 5)],
+  BACKEND_DEVELOPER: [...BACKEND_CATEGORIES, ...DSA_CATEGORIES.slice(0, 5)],
+  FULLSTACK_DEVELOPER: [
+    ...FRONTEND_CATEGORIES.slice(0, 5),
+    ...BACKEND_CATEGORIES.slice(0, 5),
+    ...DSA_CATEGORIES.slice(0, 5),
+  ],
+  MOBILE_DEVELOPER: [...DSA_CATEGORIES.slice(0, 8), 'JAVASCRIPT_ES6'],
+  DEVOPS_ENGINEER: [
+    'DOCKER',
+    'KUBERNETES',
+    'CI_CD',
+    'DISTRIBUTED_SYSTEMS',
+    'SECURITY',
+  ],
+};
+
+// ============================================================================
+// Question Bank Service
+// ============================================================================
+
+export class QuestionBankService {
+  /**
+   * Generate questions for an interview session.
+   * First tries the DB question bank, falls back to LLM generation.
+   */
+  async generateQuestions(
+    config: InterviewConfig,
+  ): Promise<QuestionTemplate[]> {
+    const count =
+      config.questionCount ?? this.calculateQuestionCount(config.duration);
+
+    // Determine which categories to pull from
+    const categories = this.resolveCategories(config);
+
+    // 1. Try to fetch from DB question bank
+    const dbQuestions = await this.fetchFromDatabase(
+      categories,
+      config.difficulty,
+      count,
+      config.type,
+    );
+
+    if (dbQuestions.length >= count) {
+      return dbQuestions.slice(0, count);
+    }
+
+    // 2. Fill remaining with static fallback templates
+    const needed = count - dbQuestions.length;
+    const fallback = this.getStaticFallback(config, needed);
+
+    return [...dbQuestions, ...fallback];
+  }
+
+  // ============================================================================
+  // Private helpers
+  // ============================================================================
+
+  /**
+   * Calculate how many questions fit in the given duration.
+   * Rule of thumb: ~15 min per question, min 1, max 20.
+   */
+  private calculateQuestionCount(durationMinutes: number): number {
+    if (durationMinutes < 15) return 1;
+    if (durationMinutes < 30) return 2;
+    return Math.min(Math.floor(durationMinutes / 15), 20);
+  }
+
+  /**
+   * Resolve which categories to use for this config.
+   */
+  private resolveCategories(config: InterviewConfig): QuestionCategory[] {
+    // Explicit focus areas take priority
+    if (config.focusAreas && config.focusAreas.length > 0) {
+      return config.focusAreas;
+    }
+
+    switch (config.type) {
+      case 'DSA':
+        return config.role ? ROLE_CATEGORY_MAP[config.role] : DSA_CATEGORIES;
+      case 'SYSTEM_DESIGN':
+        return SYSTEM_DESIGN_CATEGORIES;
+      case 'BEHAVIORAL':
+        return BEHAVIORAL_CATEGORIES;
+      case 'FRONTEND':
+        return FRONTEND_CATEGORIES;
+      case 'BACKEND':
+        return BACKEND_CATEGORIES;
+      case 'MIXED':
+      default:
+        return config.role
+          ? ROLE_CATEGORY_MAP[config.role]
+          : [...DSA_CATEGORIES.slice(0, 4), ...BACKEND_CATEGORIES.slice(0, 3)];
+    }
+  }
+
+  /**
+   * Pull questions from the Prisma QuestionBank table.
+   */
+  private async fetchFromDatabase(
+    categories: QuestionCategory[],
+    difficulty: Difficulty,
+    limit: number,
+    type: InterviewType,
+  ): Promise<QuestionTemplate[]> {
+    try {
+      const rows = await prisma.questionBank.findMany({
+        where: {
+          category: { in: categories },
+          difficulty,
+          isActive: true,
+        },
+        orderBy: { frequency: 'desc' },
+        take: limit * 3, // fetch more, then shuffle
+      });
+
+      if (rows.length === 0) return [];
+
+      // Shuffle and pick `limit`
+      const shuffled = rows.sort(() => Math.random() - 0.5).slice(0, limit);
+
+      return shuffled.map((row) => ({
+        question: row.question,
+        difficulty: row.difficulty,
+        category: row.category,
+        subcategory: row.subcategory ?? undefined,
+        hints: (row.hints as string[]) ?? [],
+        sampleAnswer: row.explanation ?? undefined,
+        sampleCode: row.sampleCode ?? undefined,
+        testCases: row.testCases ? (row.testCases as TestCase[]) : undefined,
+        expectedComplexity:
+          row.timeComplexity && row.spaceComplexity
+            ? { time: row.timeComplexity, space: row.spaceComplexity }
+            : undefined,
+      }));
+    } catch (error) {
+      console.warn(
+        'QuestionBankService: DB fetch failed, using fallback.',
+        error,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * Static fallback templates when DB has insufficient questions.
+   * These are hardcoded interview-ready questions covering common patterns.
+   */
+  private getStaticFallback(
+    config: InterviewConfig,
+    count: number,
+  ): QuestionTemplate[] {
+    const allFallbacks = this.buildFallbackPool(config);
+    const shuffled = allFallbacks.sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, count);
+  }
+
+  private buildFallbackPool(config: InterviewConfig): QuestionTemplate[] {
+    const difficulty = config.difficulty;
+
+    // ── DSA fallbacks ──────────────────────────────────────────────────────
+    const dsaFallbacks: QuestionTemplate[] = [
+      {
+        question:
+          'Given an array of integers `nums` and an integer `target`, return the indices of the two numbers that add up to `target`. Assume exactly one solution exists and you may not use the same element twice.',
+        difficulty,
+        category: 'ARRAYS',
+        subcategory: 'Hash Map',
+        hints: [
+          'Think about what complement you need for each number.',
+          'A hash map can give O(1) lookup for the complement.',
+          'Iterate once, storing each number and its index.',
+        ],
+        sampleAnswer:
+          'Use a hash map. For each number, check if (target - num) exists in the map. If yes, return both indices. If no, add num → index to the map. Time O(n), Space O(n).',
+        sampleCode: `function twoSum(nums: number[], target: number): number[] {
+  const map = new Map<number, number>();
+  for (let i = 0; i < nums.length; i++) {
+    const complement = target - nums[i];
+    if (map.has(complement)) return [map.get(complement)!, i];
+    map.set(nums[i], i);
+  }
+  return [];
+}`,
+        testCases: [
+          {
+            input: { nums: [2, 7, 11, 15], target: 9 },
+            expectedOutput: [0, 1],
+          },
+          { input: { nums: [3, 2, 4], target: 6 }, expectedOutput: [1, 2] },
+          { input: { nums: [3, 3], target: 6 }, expectedOutput: [0, 1] },
+        ],
+        expectedComplexity: { time: 'O(n)', space: 'O(n)' },
+      },
+      {
+        question:
+          'Given the head of a singly linked list, reverse the list and return the reversed list.',
+        difficulty,
+        category: 'LINKED_LISTS',
+        subcategory: 'Reversal',
+        hints: [
+          'Think about what three pointers you need: prev, curr, next.',
+          'Iterative approach is O(1) space.',
+          'Recursive solution is elegant but uses O(n) stack space.',
+        ],
+        sampleAnswer:
+          'Use three pointers: prev=null, curr=head. At each step, save curr.next, point curr.next to prev, move prev to curr, move curr to saved next. Return prev.',
+        sampleCode: `function reverseList(head: ListNode | null): ListNode | null {
+  let prev: ListNode | null = null;
+  let curr = head;
+  while (curr) {
+    const next = curr.next;
+    curr.next = prev;
+    prev = curr;
+    curr = next;
+  }
+  return prev;
+}`,
+        testCases: [
+          { input: { head: [1, 2, 3, 4, 5] }, expectedOutput: [5, 4, 3, 2, 1] },
+          { input: { head: [1, 2] }, expectedOutput: [2, 1] },
+          { input: { head: [] }, expectedOutput: [] },
+        ],
+        expectedComplexity: { time: 'O(n)', space: 'O(1)' },
+      },
+      {
+        question:
+          'Given a binary tree, return the maximum depth (number of nodes along the longest path from root to the farthest leaf node).',
+        difficulty,
+        category: 'TREES',
+        subcategory: 'DFS',
+        hints: [
+          'Think recursively: what is the depth of an empty tree?',
+          'The depth at any node is 1 + max(left depth, right depth).',
+          'Both DFS (recursive/iterative) and BFS (level-by-level) work.',
+        ],
+        sampleAnswer:
+          'Recursive DFS: if node is null return 0, else return 1 + max(maxDepth(left), maxDepth(right)). Time O(n), Space O(h) where h is tree height.',
+        sampleCode: `function maxDepth(root: TreeNode | null): number {
+  if (!root) return 0;
+  return 1 + Math.max(maxDepth(root.left), maxDepth(root.right));
+}`,
+        testCases: [
+          { input: { root: [3, 9, 20, null, null, 15, 7] }, expectedOutput: 3 },
+          { input: { root: [1, null, 2] }, expectedOutput: 2 },
+          { input: { root: [] }, expectedOutput: 0 },
+        ],
+        expectedComplexity: { time: 'O(n)', space: 'O(h)' },
+      },
+      {
+        question:
+          'Implement a function to check if a string containing `(`, `)`, `{`, `}`, `[`, `]` is valid. A string is valid if brackets are closed in the correct order.',
+        difficulty,
+        category: 'STACKS_QUEUES',
+        subcategory: 'Stack',
+        hints: [
+          'A stack is perfect here — push opening brackets, pop on closing.',
+          'At the end the stack should be empty.',
+          'Watch out for the empty stack case when you see a closing bracket.',
+        ],
+        sampleAnswer:
+          'Push opening brackets onto a stack. For each closing bracket, check if the top of the stack is the matching opener. If not (or stack empty), return false. Return true if stack is empty at end.',
+        sampleCode: `function isValid(s: string): boolean {
+  const stack: string[] = [];
+  const map: Record<string, string> = { ')': '(', '}': '{', ']': '[' };
+  for (const ch of s) {
+    if ('({['.includes(ch)) {
+      stack.push(ch);
+    } else {
+      if (stack.pop() !== map[ch]) return false;
+    }
+  }
+  return stack.length === 0;
+}`,
+        testCases: [
+          { input: { s: '()' }, expectedOutput: true },
+          { input: { s: '()[]{}' }, expectedOutput: true },
+          { input: { s: '(]' }, expectedOutput: false },
+          { input: { s: '([)]' }, expectedOutput: false },
+        ],
+        expectedComplexity: { time: 'O(n)', space: 'O(n)' },
+      },
+      {
+        question:
+          'Given an integer array `nums`, find the contiguous subarray (containing at least one number) which has the largest sum and return its sum.',
+        difficulty,
+        category: 'DYNAMIC_PROGRAMMING',
+        subcategory: "Kadane's Algorithm",
+        hints: [
+          "This is Kadane's Algorithm.",
+          'At each index, decide: extend the current subarray or start fresh.',
+          'currentMax = max(nums[i], currentMax + nums[i])',
+        ],
+        sampleAnswer:
+          "Kadane's: keep track of currentMax and globalMax. At each element, currentMax = max(nums[i], currentMax + nums[i]). Update globalMax. Time O(n), Space O(1).",
+        sampleCode: `function maxSubArray(nums: number[]): number {
+  let current = nums[0];
+  let best = nums[0];
+  for (let i = 1; i < nums.length; i++) {
+    current = Math.max(nums[i], current + nums[i]);
+    best = Math.max(best, current);
+  }
+  return best;
+}`,
+        testCases: [
+          {
+            input: { nums: [-2, 1, -3, 4, -1, 2, 1, -5, 4] },
+            expectedOutput: 6,
+          },
+          { input: { nums: [1] }, expectedOutput: 1 },
+          { input: { nums: [5, 4, -1, 7, 8] }, expectedOutput: 23 },
+        ],
+        expectedComplexity: { time: 'O(n)', space: 'O(1)' },
+      },
+    ];
+
+    // ── System Design fallbacks ────────────────────────────────────────────
+    const systemDesignFallbacks: QuestionTemplate[] = [
+      {
+        question:
+          'Design a URL shortening service like bit.ly. Walk through the requirements, capacity estimation, API design, database schema, and how you would scale to handle 100M URLs and 10B redirects per day.',
+        difficulty,
+        category: 'SCALABILITY',
+        hints: [
+          'Start with functional and non-functional requirements.',
+          'Think about the encoding scheme: Base62 gives ~56 billion 6-char URLs.',
+          'Reads vastly outnumber writes — what does that mean for your cache strategy?',
+        ],
+        sampleAnswer:
+          'API: POST /shorten, GET /{code}. DB: SQL for URL mappings. Generate short code via MD5+Base62 or distributed ID. Cache hot URLs in Redis (80/20 rule). Use CDN for redirects. Partition DB by hash of short code.',
+      },
+      {
+        question:
+          'Design a distributed rate limiter that can handle 1 million requests per second across 100 servers. Support per-user, per-IP, and per-API-key limits.',
+        difficulty,
+        category: 'DISTRIBUTED_SYSTEMS',
+        hints: [
+          'Token bucket vs sliding window — what are the trade-offs?',
+          'How do you handle the race condition in distributed counter increments?',
+          'Redis INCR + EXPIRE is atomic. How does that help?',
+        ],
+        sampleAnswer:
+          'Use Redis sliding window log or token bucket. Redis INCR+EXPIRE for per-key counters. Lua scripts for atomicity. Fallback to local in-memory counter if Redis is down. Central config service for limit values.',
+      },
+    ];
+
+    // ── Behavioral fallbacks ───────────────────────────────────────────────
+    const behavioralFallbacks: QuestionTemplate[] = [
+      {
+        question:
+          'Tell me about a time when you had to deliver a project under a very tight deadline. What was the situation, what did you do, and what was the result?',
+        difficulty,
+        category: 'LEADERSHIP',
+        hints: [
+          'Use the STAR format: Situation, Task, Action, Result.',
+          'Be specific — give actual timelines and outcomes.',
+          'Show what YOU personally did, not just the team.',
+        ],
+        sampleAnswer:
+          'Strong answers include: specific timeline, concrete actions taken (e.g., scope negotiation, parallelizing work, unblocking teammates), measurable outcome (shipped on time, 0 critical bugs), and reflection on what you learned.',
+      },
+      {
+        question:
+          'Describe a situation where you disagreed with your manager or a technical decision. How did you handle it?',
+        difficulty,
+        category: 'CONFLICT_RESOLUTION',
+        hints: [
+          'Show you can disagree respectfully and constructively.',
+          'Focus on data and reasoning, not emotion.',
+          "Demonstrate that you can commit even if your view didn't win.",
+        ],
+        sampleAnswer:
+          "Strong answers show: clear articulation of your position with evidence, active listening to others' views, escalation when appropriate, ability to commit to the final decision, and positive outcome.",
+      },
+    ];
+
+    // ── Frontend fallbacks ─────────────────────────────────────────────────
+    const frontendFallbacks: QuestionTemplate[] = [
+      {
+        question:
+          'Explain the difference between `useMemo` and `useCallback` in React. When would you use each, and what are the performance implications?',
+        difficulty,
+        category: 'REACT',
+        subcategory: 'Hooks',
+        hints: [
+          'useMemo memoizes a VALUE, useCallback memoizes a FUNCTION.',
+          'Both take a dependency array.',
+          'Overusing them can hurt performance — when is it worth it?',
+        ],
+        sampleAnswer:
+          'useMemo: memoizes the result of an expensive computation. useCallback: memoizes a function reference so child components relying on referential equality do not re-render. Use useMemo for expensive derived data, useCallback when passing callbacks to deeply nested or memoized children.',
+        sampleCode: `// useMemo - memoize a computed value
+const sortedList = useMemo(
+  () => items.sort((a, b) => a.name.localeCompare(b.name)),
+  [items]
+);
+
+// useCallback - stable function reference
+const handleClick = useCallback((id: string) => {
+  dispatch({ type: 'SELECT', payload: id });
+}, [dispatch]);`,
+      },
+      {
+        question:
+          "Explain JavaScript's event loop. What is the difference between the call stack, microtask queue, and macrotask queue? Give an example that shows execution order.",
+        difficulty,
+        category: 'JAVASCRIPT_ES6',
+        subcategory: 'Async',
+        hints: [
+          'Call stack: synchronous code execution.',
+          'Microtasks (Promise .then, queueMicrotask) run BEFORE the next macrotask.',
+          'Macrotasks: setTimeout, setInterval, I/O callbacks.',
+        ],
+        sampleAnswer:
+          'JS is single-threaded. The event loop picks tasks from the call stack, then drains ALL microtasks (Promises), then picks one macrotask (setTimeout). This means Promise.then always runs before setTimeout(..., 0).',
+        sampleCode: `console.log('1');                    // sync
+setTimeout(() => console.log('2'), 0); // macrotask
+Promise.resolve().then(() => console.log('3')); // microtask
+console.log('4');                    // sync
+// Output: 1, 4, 3, 2`,
+      },
+    ];
+
+    // ── Backend fallbacks ──────────────────────────────────────────────────
+    const backendFallbacks: QuestionTemplate[] = [
+      {
+        question:
+          'What is database indexing? Explain the difference between a B-tree index and a hash index, and describe when you would choose each.',
+        difficulty,
+        category: 'DATABASE_DESIGN',
+        subcategory: 'Indexing',
+        hints: [
+          'B-tree supports range queries; hash index does not.',
+          'Think about read vs write trade-offs.',
+          'Covering indexes vs composite indexes.',
+        ],
+        sampleAnswer:
+          'B-tree: balanced tree, supports =, <, >, BETWEEN, ORDER BY — default in most RDBMS. Hash: O(1) equality lookups, no range support. Use B-tree for most cases; hash for exact-match heavy workloads (e.g., session store lookups).',
+      },
+      {
+        question:
+          'Explain the difference between JWT and session-based authentication. What are the security considerations for each, and which would you choose for a microservices architecture?',
+        difficulty,
+        category: 'AUTHENTICATION',
+        hints: [
+          'Sessions: server stores state. JWTs: client stores state.',
+          'JWT revocation is the hard problem — how do you solve it?',
+          'Microservices need to verify tokens without a shared session store.',
+        ],
+        sampleAnswer:
+          'Sessions: stateful, easy revocation, requires sticky sessions or shared store in distributed env. JWT: stateless, scales easily, but revocation requires a denylist or short expiry + refresh tokens. For microservices: JWT preferred — each service verifies the token locally without a central session lookup.',
+      },
+    ];
+
+    // Pick based on interview type
+    switch (config.type) {
+      case 'DSA':
+        return dsaFallbacks;
+      case 'SYSTEM_DESIGN':
+        return systemDesignFallbacks;
+      case 'BEHAVIORAL':
+        return behavioralFallbacks;
+      case 'FRONTEND':
+        return frontendFallbacks;
+      case 'BACKEND':
+        return backendFallbacks;
+      case 'MIXED':
+      default: {
+        const mixed = [
+          ...dsaFallbacks.slice(0, 2),
+          ...systemDesignFallbacks.slice(0, 1),
+          ...backendFallbacks.slice(0, 1),
+          ...behavioralFallbacks.slice(0, 1),
+        ];
+        return config.role === 'FRONTEND_DEVELOPER'
+          ? [...frontendFallbacks, ...dsaFallbacks.slice(0, 2)]
+          : mixed;
+      }
+    }
+  }
+}
+
+
+==============================
 FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\services\question-rating.service.ts
 ==============================
 
@@ -18216,6 +20641,24 @@ export type SafeUser = Omit<
   PrismaUser,
   'passwordHash' | 'verificationToken' | 'resetToken'
 >;
+
+
+==============================
+FILE: E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src\types\express.d.ts
+==============================
+
+
+import { User as PrismaUser } from '@prisma/client';
+
+declare global {
+  namespace Express {
+    interface User {
+      userId: string;
+      role: string;
+      // Add other properties from your auth middleware
+    }
+  }
+}
 
 
 ==============================

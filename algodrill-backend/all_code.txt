@@ -1,0 +1,3910 @@
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\app.js
+==============================
+
+import express from 'express';
+import axios from "axios";
+import dotenv from 'dotenv';
+import cookieParser from 'cookie-parser';
+import authRoutes from './routes/auth.routes.js';
+import problemRoutes from './routes/problem.route.js';
+import submissionRoutes from './routes/submission.routes.js';
+import cors from 'cors';
+import runCode from './routes/runCode.routes.js';
+import sheetsRoutes from './routes/sheets.routes.js';
+import userStatsRoutes from './routes/userStats.routes.js';
+import discussionsRoutes from './routes/discussions.routes.js';
+import leaderboardRoutes from './routes/leaderboard.route.js';
+import roadmapRoutes from './routes/roadmaps.routes.js';
+
+dotenv.config();
+
+const app = express();
+
+dotenv.config();
+
+// axios.defaults.headers.common['X-Auth-Token'] = 'chaicodecodebox';
+
+const allowedOrigins = process.env.ALLOWED_ORIGINS.split(',').map(
+  (origin) => origin.trim().replace(/\r/g, ''), // strip carriage returns
+);
+
+console.log('allowedOrigins', allowedOrigins);
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps or curl)
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      } else {
+        return callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true,
+  })
+);
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+
+app.get('/', (req, res) => {
+  res.send('Welcome to the leetlab-API!');
+});
+
+app.use('/api/v1/auth', authRoutes);
+
+app.use('/api/v1/problems', problemRoutes);
+
+app.use('/api/v1/codeExecutor', runCode);
+app.use('/api/v1/submission', submissionRoutes);
+app.use('/api/v1/sheets', sheetsRoutes);
+
+app.use("/api/v1/userStats", userStatsRoutes)
+app.use('/api/v1/discussions', discussionsRoutes);
+app.use('/api/v1/leaderboard', leaderboardRoutes);
+app.use('/api/v1/roadmaps', roadmapRoutes);
+
+app.use('/ping', (req, res) => {
+  res.status(200).json({ message: 'pong' });
+});
+
+const PORT = process.env.PORT || 8080;
+
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
+
+export default app;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\config\passport.js
+==============================
+
+import passport from 'passport';
+import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
+import { db } from '../libs/db.js';
+import jwt from 'jsonwebtoken';
+
+
+// Helper function to generate unique username by adding suffix if needed
+async function generateUniqueUsername(baseUsername) {
+  let username = baseUsername;
+  let suffix = 0;
+
+  // Check if username exists
+  while (true) {
+    const existing = await db.user.findUnique({
+      where: { username },
+    });
+    if (!existing) {
+      // Not found, username is unique
+      return username;
+    }
+    suffix++;
+    username = `${baseUsername}${suffix}`;
+  }
+}
+
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackURL: process.env.GOOGLE_CALLBACK_URL,
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      const { id, displayName, emails, photos } = profile;
+
+      const email = emails[0].value;
+      const baseUsername = email.split('@')[0];
+
+      try {
+        // Check if user already exists
+        let user = await db.user.findUnique({
+          where: { googleId: id },
+        });
+
+        if (!user) {
+          // Check if email already exists (user registered using email/password)
+          const existingUser = await db.user.findUnique({
+            where: { email },
+          });
+
+          if (existingUser) {
+            // Optionally update their account to link Google
+            user = await db.user.update({
+              where: { email: emails[0].value },
+              data: {
+                googleId: id,
+                image: photos[0]?.value,
+                // Add username if missing:
+                username:
+                  existingUser.username ||
+                  (await generateUniqueUsername(baseUsername)),
+              },
+            });
+          } else {
+            // New user via Google: create with unique username
+            const username = await generateUniqueUsername(baseUsername);
+            user = await db.user.create({
+              data: {
+                googleId: id,
+                name: displayName,
+                email: emails[0].value,
+                image: photos[0]?.value,
+                password: 'google_oauth', // Placeholder
+                username,
+              },
+            });
+          }
+        }
+
+        return done(null, user);
+      } catch (err) {
+        return done(err, null);
+      }
+    }
+  )
+);
+
+passport.serializeUser((user, done) => {
+  done(null, user.id);
+});
+
+passport.deserializeUser(async (id, done) => {
+  try {
+    const user = await db.user.findUnique({ where: { id } });
+    done(null, user);
+  } catch (err) {
+    done(err, null);
+  }
+});
+
+ 
+export default passport;
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\controllers\auth.controller.js
+==============================
+
+import bcrypt from 'bcryptjs';
+import { db } from '../libs/db.js';
+import { UserRole } from '../generated/prisma/index.js';
+import jwt from 'jsonwebtoken';
+
+const envType = process.env.NODE_ENV;
+
+export const register = async (req, res) => {
+  const { email, password, name } = req.body;
+
+  try {
+    const existingUser = await db.user.findUnique({
+      where: { email },
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ error: 'User already exists' });
+    }
+
+    // Extract base username from email
+    const baseUsername = email.split('@')[0].toLowerCase();
+
+    // Find all usernames starting with baseUsername
+    const similarUsers = await db.user.findMany({
+      where: {
+        username: {
+          startsWith: baseUsername,
+        },
+      },
+      select: {
+        username: true,
+      },
+    });
+
+    // Create a Set of existing usernames for quick lookup
+    const existingUsernames = new Set(similarUsers.map((u) => u.username));
+
+    // Generate unique username with suffix if needed
+    let username = baseUsername;
+    let suffix = 0;
+    while (existingUsernames.has(username)) {
+      suffix++;
+      username = `${baseUsername}_${suffix}`;
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create new user with unique username
+    const newUser = await db.user.create({
+      data: {
+        email,
+        password: hashedPassword,
+        name,
+        role: UserRole.USER,
+        username,
+      },
+    });
+
+    const token = jwt.sign({ id: newUser.id }, process.env.JWT_SECRET, {
+      expiresIn: '7d',
+    });
+
+    res.cookie('jwt', token, {
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: process.env.NODE_ENV !== 'development',
+      maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'User created successfully',
+      user: {
+        id: newUser.id,
+        email: newUser.email,
+        name: newUser.name,
+        role: newUser.role,
+        image: newUser.image,
+        username: newUser.username,
+      },
+    });
+  } catch (error) {
+    console.error('Error creating user:', error);
+    res.status(500).json({
+      error: 'Error creating user',
+    });
+  }
+};
+
+export const login = async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    const user = await db.user.findUnique({
+      where: {
+        email,
+      },
+    });
+
+    if (!user) {
+      return res.status(401).json({
+        error: 'User not found',
+      });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({
+        error: 'Invalid credentials',
+      });
+    }
+
+    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, {
+      expiresIn: '7d',
+    });
+
+    res.cookie('jwt', token, {
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: process.env.NODE_ENV !== 'development',
+      maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'User logged in successfully',
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        username: user.username, // added username here
+        role: user.role,
+        image: user.image,
+      },
+    });
+  } catch (error) {
+    console.error('Error logging in user:', error);
+    res.status(500).json({
+      error: 'Error logging in user',
+    });
+  }
+};
+
+export const logout = async (req, res) => {
+  try {
+    res.clearCookie('jwt', {
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: process.env.NODE_ENV !== 'development',
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'User logged out successfully',
+    });
+  } catch (error) {
+    console.error('Error logging out user:', error);
+    res.status(500).json({
+      error: 'Error logging out user',
+    });
+  }
+};
+
+export const check = async (req, res) => {
+  try {
+    res.status(200).json({
+      success: true,
+      message: 'User authenticated successfully',
+      user: req.user,
+    });
+  } catch (error) {
+    console.error('Error checking user:', error);
+    res.status(500).json({
+      error: 'Error checking user',
+    });
+  }
+};
+
+export const getUserDetails = async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const userDetails = await db.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        name: true,
+        role: true,
+        image: true,
+        bio: true,
+        location: true,
+        githubUrl: true,
+        twitterUrl: true,
+        website: true,
+        createdAt: true,
+      },
+    });
+
+    if (!userDetails) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'User not found' });
+    }
+
+    // Rank = number of users with more solved problems than this user + 1
+    const userSolvedCount = await db.problemSolved.count({
+      where: { userId },
+    });
+
+    const usersAhead = await db.problemSolved.groupBy({
+      by: ['userId'],
+      _count: { problemId: true },
+      having: { problemId: { _count: { gt: userSolvedCount } } },
+    });
+
+    const rank = usersAhead.length + 1;
+
+    res.status(200).json({
+      success: true,
+      message: 'User details fetched successfully',
+      user: {
+        id: userDetails.id,
+        email: userDetails.email,
+        username: userDetails.username,
+        displayName: userDetails.name,
+        role: userDetails.role,
+        avatarUrl: userDetails.image,
+        bio: userDetails.bio ?? null,
+        location: userDetails.location ?? null,
+        github: userDetails.githubUrl ?? null,
+        twitter: userDetails.twitterUrl ?? null,
+        website: userDetails.website ?? null,
+        joinDate: userDetails.createdAt.toLocaleDateString('en-US', {
+          month: 'short',
+          year: 'numeric',
+        }),
+        rank,
+      },
+    });
+  } catch (error) {
+    console.error('getUserDetails error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+};
+
+export const updateUserProfile = async (req, res) => {
+  const userId = req.user.id;
+  const { name, bio, location, githubUrl, twitterUrl, website } = req.body;
+
+  try {
+    const updated = await db.user.update({
+      where: { id: userId },
+      data: {
+        ...(name !== undefined && { name }),
+        ...(bio !== undefined && { bio }),
+        ...(location !== undefined && { location }),
+        ...(githubUrl !== undefined && { githubUrl }),
+        ...(twitterUrl !== undefined && { twitterUrl }),
+        ...(website !== undefined && { website }),
+      },
+      select: {
+        id: true,
+        name: true,
+        bio: true,
+        location: true,
+        githubUrl: true,
+        twitterUrl: true,
+        website: true,
+      },
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: updated,
+    });
+  } catch (error) {
+    console.error('updateUserProfile error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+};
+
+export const googleAuth = (req, res, next) => {
+  // This is just a passthrough for passport
+  next();
+};
+
+export const googleAuthCallback = (req, res) => {
+  const user = req.user;
+  const envType = process.env.NODE_ENV;
+
+  if (!user) {
+    // Redirect to login with error query param
+    if (envType === 'production') {
+      return res.redirect(
+        `${process.env.CLIENT_PROD_URL}/login?error=google_login_failed`
+      );
+    } else if (envType === 'development') {
+      return res.redirect(
+        `${process.env.CLIENT_DEV_URL}/login?error=google_login_failed`
+      );
+    } else {
+      return res.redirect(`/login?error=google_login_failed`);
+    }
+  }
+
+  const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, {
+    expiresIn: '7d',
+  });
+
+  res.cookie('jwt', token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: envType !== 'development',
+    maxAge: 1000 * 60 * 60 * 24 * 7,
+  });
+
+  // Redirect to frontend with success query param
+  if (envType === 'production') {
+    return res.redirect(
+      `${process.env.CLIENT_PROD_URL}/auth/google/callback?success=google_login`
+    );
+  } else if (envType === 'development') {
+    return res.redirect(
+      `${process.env.CLIENT_DEV_URL}/auth/google/callback?success=google_login`
+    );
+  } else {
+    return res.redirect(`/auth/google/callback?success=google_login`);
+  }
+};
+
+export const getCurrentUser = (req, res) => {
+  if (req.isAuthenticated()) {
+    res.status(200).json(req.user);
+  } else {
+    res.status(401).json({ message: 'Not authenticated' });
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\controllers\discussions.controller.js
+==============================
+
+import { db } from '../libs/db.js';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const computeVotes = (votes, userId) => {
+  const upvotes = votes.filter((v) => v.value === 1).length;
+  const downvotes = votes.filter((v) => v.value === -1).length;
+  const userVote = userId ? (votes.find((v) => v.userId === userId)?.value ?? 0) : 0;
+  return { upvotes, downvotes, userVote };
+};
+
+const formatComment = (comment, userId) => {
+  const { upvotes, downvotes, userVote } = computeVotes(comment.votes || [], userId);
+  return {
+    id: comment.id,
+    content: comment.content,
+    author: comment.author,
+    discussionId: comment.discussionId,
+    parentId: comment.parentId,
+    isEdited: comment.isEdited,
+    createdAt: comment.createdAt,
+    updatedAt: comment.updatedAt,
+    upvotes,
+    downvotes,
+    userVote,
+    replies: (comment.replies || []).map((r) => formatComment(r, userId)),
+  };
+};
+
+const formatDiscussion = (discussion, userId) => {
+  const { upvotes, downvotes, userVote } = computeVotes(discussion.votes || [], userId);
+  const bookmarked = userId
+    ? (discussion.bookmarks || []).some((b) => b.userId === userId)
+    : false;
+  return {
+    id: discussion.id,
+    title: discussion.title,
+    content: discussion.content,
+    contentType: discussion.contentType,
+    codeContent: discussion.codeContent,
+    codeLanguage: discussion.codeLanguage,
+    category: discussion.category,
+    tags: discussion.tags,
+    company: discussion.company,
+    position: discussion.position,
+    problemId: discussion.problemId,
+    problemTitle: discussion.problemTitle,
+    problemDifficulty: discussion.problemDifficulty,
+    authorId: discussion.authorId,
+    author: discussion.author,
+    isEdited: discussion.isEdited,
+    createdAt: discussion.createdAt,
+    updatedAt: discussion.updatedAt,
+    upvotes,
+    downvotes,
+    userVote,
+    bookmarked,
+    commentCount: discussion._count?.comments ?? 0,
+    comments: discussion.comments
+      ? discussion.comments.map((c) => formatComment(c, userId))
+      : undefined,
+  };
+};
+
+const COMMENT_INCLUDE = {
+  author: { select: { id: true, username: true, image: true } },
+  votes: { select: { userId: true, value: true } },
+  replies: {
+    include: {
+      author: { select: { id: true, username: true, image: true } },
+      votes: { select: { userId: true, value: true } },
+      replies: {
+        include: {
+          author: { select: { id: true, username: true, image: true } },
+          votes: { select: { userId: true, value: true } },
+        },
+      },
+    },
+  },
+};
+
+// ─── Discussions ───────────────────────────────────────────────────────────────
+
+export const createDiscussion = async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const {
+      title,
+      content,
+      codeContent,
+      codeLanguage,
+      category,
+      problemId,
+      problemTitle,
+      problemDifficulty,
+      company,
+      position,
+      tags,
+    } = req.body;
+
+    if (!title?.trim() || !content?.trim() || !category) {
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+    if (title.trim().length > 120) return res.status(400).json({ message: 'Title must be 120 characters or less' });
+    if (content.trim().length > 5000) return res.status(400).json({ message: 'Content must be 5000 characters or less' });
+    if (codeContent && codeContent.length > 8000) return res.status(400).json({ message: 'Code snippet must be 8000 characters or less' });
+    if (tags && tags.length > 5) return res.status(400).json({ message: 'Maximum 5 tags allowed' });
+    if (tags && tags.some((t) => t.length > 20)) return res.status(400).json({ message: 'Each tag must be 20 characters or less' });
+
+    const newDiscussion = await db.discussion.create({
+      data: {
+        title: title.trim(),
+        content: content.trim(),
+        contentType: codeContent ? 'code' : 'text',
+        codeContent: codeContent || null,
+        codeLanguage: codeLanguage || null,
+        category,
+        problemId: problemId || null,
+        problemTitle: problemTitle || null,
+        problemDifficulty: problemDifficulty || null,
+        company: company || null,
+        position: position || null,
+        tags: tags || [],
+        author: { connect: { id: userId } },
+      },
+      include: {
+        author: { select: { id: true, username: true, image: true } },
+        votes: { select: { userId: true, value: true } },
+        bookmarks: { select: { userId: true } },
+        _count: { select: { comments: true } },
+      },
+    });
+
+    res.status(201).json({
+      message: 'Discussion created successfully',
+      data: formatDiscussion(newDiscussion, userId),
+    });
+  } catch (err) {
+    console.error('Error creating discussion:', err);
+    res.status(500).json({ message: 'Error creating discussion' });
+  }
+};
+
+export const getAllDiscussions = async (req, res) => {
+  const userId = req.user?.id ?? null;
+  try {
+    const discussions = await db.discussion.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        author: { select: { id: true, username: true, image: true } },
+        votes: { select: { userId: true, value: true } },
+        bookmarks: { select: { userId: true } },
+        _count: { select: { comments: true } },
+      },
+    });
+
+    res.status(200).json({
+      message: discussions.length > 0 ? 'Discussions fetched successfully' : 'No discussions found',
+      data: discussions.map((d) => formatDiscussion(d, userId)),
+    });
+  } catch (err) {
+    console.error('Error fetching discussions:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
+export const getSingleDiscussion = async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user?.id ?? null;
+
+  try {
+    const discussion = await db.discussion.findUnique({
+      where: { id },
+      include: {
+        author: { select: { id: true, username: true, image: true } },
+        votes: { select: { userId: true, value: true } },
+        bookmarks: { select: { userId: true } },
+        comments: {
+          where: { parentId: null },
+          orderBy: { createdAt: 'asc' },
+          include: COMMENT_INCLUDE,
+        },
+        _count: { select: { comments: true } },
+      },
+    });
+
+    if (!discussion) {
+      return res.status(404).json({ message: 'Discussion not found' });
+    }
+
+    res.status(200).json({ message: 'Discussion fetched successfully', data: formatDiscussion(discussion, userId) });
+  } catch (err) {
+    console.error('Error fetching single discussion:', err);
+    res.status(500).json({ message: 'Error fetching discussion' });
+  }
+};
+
+export const updateDiscussion = async (req, res) => {
+  const userId = req.user.id;
+  const { id } = req.params;
+  const { title, content, codeContent, codeLanguage, category, tags, company, position } = req.body;
+
+  if (!title?.trim() || !content?.trim() || !category) {
+    return res.status(400).json({ message: 'Missing required fields' });
+  }
+  if (title.trim().length > 120) return res.status(400).json({ message: 'Title must be 120 characters or less' });
+  if (content.trim().length > 5000) return res.status(400).json({ message: 'Content must be 5000 characters or less' });
+  if (codeContent && codeContent.length > 8000) return res.status(400).json({ message: 'Code snippet must be 8000 characters or less' });
+  if (tags && tags.length > 5) return res.status(400).json({ message: 'Maximum 5 tags allowed' });
+  if (tags && tags.some((t) => t.length > 20)) return res.status(400).json({ message: 'Each tag must be 20 characters or less' });
+
+  try {
+    const discussion = await db.discussion.findUnique({
+      where: { id },
+      select: { authorId: true },
+    });
+
+    if (!discussion) {
+      return res.status(404).json({ message: 'Discussion not found' });
+    }
+
+    if (discussion.authorId !== userId) {
+      return res.status(403).json({ message: 'Unauthorized to update this discussion' });
+    }
+
+    const updatedDiscussion = await db.discussion.update({
+      where: { id },
+      data: {
+        title: title.trim(),
+        content: content.trim(),
+        contentType: codeContent ? 'code' : 'text',
+        codeContent: codeContent || null,
+        codeLanguage: codeLanguage || null,
+        category,
+        tags: tags || [],
+        company: company || null,
+        position: position || null,
+        isEdited: true,
+      },
+      include: {
+        author: { select: { id: true, username: true, image: true } },
+        votes: { select: { userId: true, value: true } },
+        bookmarks: { select: { userId: true } },
+        _count: { select: { comments: true } },
+      },
+    });
+
+    res.status(200).json({
+      message: 'Discussion updated successfully',
+      data: formatDiscussion(updatedDiscussion, userId),
+    });
+  } catch (err) {
+    console.error('Error updating discussion:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
+export const deleteDiscussion = async (req, res) => {
+  const userId = req.user.id;
+  const { id } = req.params;
+
+  try {
+    const discussion = await db.discussion.findUnique({
+      where: { id },
+      select: { authorId: true },
+    });
+
+    if (!discussion) {
+      return res.status(404).json({ message: 'Discussion not found' });
+    }
+
+    if (discussion.authorId !== userId) {
+      return res.status(403).json({ message: 'Unauthorized to delete this discussion' });
+    }
+
+    await db.discussion.delete({ where: { id } });
+
+    res.status(200).json({ message: 'Discussion deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting discussion:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
+// ─── Comments ─────────────────────────────────────────────────────────────────
+
+export const createComment = async (req, res) => {
+  const userId = req.user.id;
+  const { discussionId, content, parentId } = req.body;
+
+  if (!discussionId || !content?.trim()) {
+    return res.status(400).json({ message: 'discussionId and content are required' });
+  }
+  if (content.trim().length > 3000) return res.status(400).json({ message: 'Comment must be 3000 characters or less' });
+
+  try {
+    const discussion = await db.discussion.findUnique({ where: { id: discussionId } });
+    if (!discussion) {
+      return res.status(404).json({ message: 'Discussion not found' });
+    }
+
+    if (parentId) {
+      const parentComment = await db.comment.findUnique({ where: { id: parentId } });
+      if (!parentComment) {
+        return res.status(404).json({ message: 'Parent comment not found' });
+      }
+      if (parentComment.discussionId !== discussionId) {
+        return res.status(400).json({ message: 'Parent comment must belong to the same discussion' });
+      }
+
+      // Enforce max nesting depth of 3 (matches frontend maxDepth)
+      let depth = 1;
+      let currentParentId = parentComment.parentId;
+      while (currentParentId) {
+        if (depth >= 3) {
+          return res.status(400).json({ message: 'Maximum comment nesting depth reached' });
+        }
+        const ancestor = await db.comment.findUnique({
+          where: { id: currentParentId },
+          select: { parentId: true },
+        });
+        if (!ancestor) break;
+        currentParentId = ancestor.parentId;
+        depth++;
+      }
+    }
+
+    const newComment = await db.comment.create({
+      data: {
+        content: content.trim(),
+        discussionId,
+        parentId: parentId || null,
+        authorId: userId,
+      },
+      include: COMMENT_INCLUDE,
+    });
+
+    res.status(201).json({
+      message: 'Comment created successfully',
+      data: formatComment(newComment, userId),
+    });
+  } catch (err) {
+    console.error('Error creating comment:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
+export const getAllComments = async (req, res) => {
+  const { discussionId } = req.params;
+  const userId = req.user?.id ?? null;
+
+  try {
+    const discussion = await db.discussion.findUnique({ where: { id: discussionId } });
+    if (!discussion) {
+      return res.status(404).json({ message: 'Discussion not found' });
+    }
+
+    const comments = await db.comment.findMany({
+      where: { discussionId, parentId: null },
+      include: COMMENT_INCLUDE,
+      orderBy: { createdAt: 'asc' },
+    });
+
+    res.status(200).json({
+      message: 'Comments fetched successfully',
+      data: comments.map((c) => formatComment(c, userId)),
+    });
+  } catch (err) {
+    console.error('Error fetching comments:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
+export const updateComment = async (req, res) => {
+  const { id } = req.params;
+  const { content } = req.body;
+  const userId = req.user.id;
+
+  if (!content?.trim()) {
+    return res.status(400).json({ message: 'Content is required' });
+  }
+  if (content.trim().length > 3000) return res.status(400).json({ message: 'Comment must be 3000 characters or less' });
+
+  try {
+    const existingComment = await db.comment.findUnique({ where: { id } });
+
+    if (!existingComment) {
+      return res.status(404).json({ message: 'Comment not found' });
+    }
+
+    if (existingComment.authorId !== userId) {
+      return res.status(403).json({ message: 'Forbidden - Not the comment author' });
+    }
+
+    const updated = await db.comment.update({
+      where: { id },
+      data: { content: content.trim(), isEdited: true },
+      include: COMMENT_INCLUDE,
+    });
+
+    res.status(200).json({
+      message: 'Comment updated successfully',
+      data: formatComment(updated, userId),
+    });
+  } catch (err) {
+    console.error('Error updating comment:', err);
+    res.status(500).json({ message: 'Error updating comment' });
+  }
+};
+
+export const deleteComment = async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+
+  try {
+    const existingComment = await db.comment.findUnique({ where: { id } });
+
+    if (!existingComment) {
+      return res.status(404).json({ message: 'Comment not found' });
+    }
+
+    if (existingComment.authorId !== userId) {
+      return res.status(403).json({ message: 'Forbidden - Not the comment author' });
+    }
+
+    await db.comment.delete({ where: { id } });
+
+    res.status(200).json({ message: 'Comment deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting comment:', err);
+    res.status(500).json({ message: 'Error deleting comment' });
+  }
+};
+
+// ─── Votes ────────────────────────────────────────────────────────────────────
+
+export const voteDiscussion = async (req, res) => {
+  const userId = req.user.id;
+  const { id } = req.params;
+  const { value } = req.body; // 1, -1, or 0 (0 = remove vote)
+
+  if (![1, -1, 0].includes(value)) {
+    return res.status(400).json({ message: 'Invalid vote value. Must be 1, -1, or 0' });
+  }
+
+  try {
+    if (value === 0) {
+      await db.vote.deleteMany({ where: { userId, discussionId: id } });
+    } else {
+      await db.vote.upsert({
+        where: { userId_discussionId: { userId, discussionId: id } },
+        create: { userId, discussionId: id, value },
+        update: { value },
+      });
+    }
+
+    const votes = await db.vote.findMany({
+      where: { discussionId: id },
+      select: { userId: true, value: true },
+    });
+
+    const upvotes = votes.filter((v) => v.value === 1).length;
+    const downvotes = votes.filter((v) => v.value === -1).length;
+    const userVote = votes.find((v) => v.userId === userId)?.value ?? 0;
+
+    res.status(200).json({ message: 'Vote updated', upvotes, downvotes, userVote });
+  } catch (err) {
+    console.error('Error voting on discussion:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
+export const voteComment = async (req, res) => {
+  const userId = req.user.id;
+  const { id } = req.params;
+  const { value } = req.body; // 1, -1, or 0
+
+  if (![1, -1, 0].includes(value)) {
+    return res.status(400).json({ message: 'Invalid vote value. Must be 1, -1, or 0' });
+  }
+
+  try {
+    if (value === 0) {
+      await db.vote.deleteMany({ where: { userId, commentId: id } });
+    } else {
+      await db.vote.upsert({
+        where: { userId_commentId: { userId, commentId: id } },
+        create: { userId, commentId: id, value },
+        update: { value },
+      });
+    }
+
+    const votes = await db.vote.findMany({
+      where: { commentId: id },
+      select: { userId: true, value: true },
+    });
+
+    const upvotes = votes.filter((v) => v.value === 1).length;
+    const downvotes = votes.filter((v) => v.value === -1).length;
+    const userVote = votes.find((v) => v.userId === userId)?.value ?? 0;
+
+    res.status(200).json({ message: 'Vote updated', upvotes, downvotes, userVote });
+  } catch (err) {
+    console.error('Error voting on comment:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
+// ─── Bookmarks ────────────────────────────────────────────────────────────────
+
+export const toggleBookmark = async (req, res) => {
+  const userId = req.user.id;
+  const { id } = req.params; // discussionId
+
+  try {
+    const existing = await db.bookmark.findUnique({
+      where: { userId_discussionId: { userId, discussionId: id } },
+    });
+
+    if (existing) {
+      await db.bookmark.delete({
+        where: { userId_discussionId: { userId, discussionId: id } },
+      });
+      res.status(200).json({ message: 'Bookmark removed', bookmarked: false });
+    } else {
+      await db.bookmark.create({ data: { userId, discussionId: id } });
+      res.status(200).json({ message: 'Bookmark added', bookmarked: true });
+    }
+  } catch (err) {
+    console.error('Error toggling bookmark:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
+export const getBookmarkedDiscussions = async (req, res) => {
+  const userId = req.user.id;
+
+  try {
+    const bookmarks = await db.bookmark.findMany({
+      where: { userId },
+      include: {
+        discussion: {
+          include: {
+            author: { select: { id: true, username: true, image: true } },
+            votes: { select: { userId: true, value: true } },
+            bookmarks: { select: { userId: true } },
+            _count: { select: { comments: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const discussions = bookmarks.map((b) => formatDiscussion(b.discussion, userId));
+
+    res.status(200).json({
+      message: discussions.length > 0 ? 'Bookmarks fetched successfully' : 'No bookmarks found',
+      data: discussions,
+    });
+  } catch (err) {
+    console.error('Error fetching bookmarks:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\controllers\leaderboard.controller.js
+==============================
+
+import { db } from '../libs/db.js';
+
+import { format, subDays } from 'date-fns';
+
+export const getLeaderboardData = async (req, res) => {
+  try {
+    // Step 1: Get all unique solved problems per user via ProblemSolved
+    const allSolved = await db.problemSolved.findMany({
+      select: {
+        userId: true,
+        problemId: true,
+        createdAt: true,
+      },
+    });
+
+    // Step 2: Group by userId → unique problems + solve dates
+    const userMap = new Map();
+    for (const { userId, problemId, createdAt } of allSolved) {
+      if (!userMap.has(userId)) {
+        userMap.set(userId, { problems: new Set(), dates: [] });
+      }
+      userMap.get(userId).problems.add(problemId);
+      userMap.get(userId).dates.push(createdAt);
+    }
+
+    // Step 3: Compute streak and score per user
+    const computeStreak = (dates) => {
+      if (!dates.length) return 0;
+
+      const uniqueDays = [
+        ...new Set(dates.map((d) => format(new Date(d), 'yyyy-MM-dd'))),
+      ].sort((a, b) => b.localeCompare(a)); // newest first
+
+      const today = format(new Date(), 'yyyy-MM-dd');
+      const yesterday = format(subDays(new Date(), 1), 'yyyy-MM-dd');
+
+      if (uniqueDays[0] !== today && uniqueDays[0] !== yesterday) return 0;
+
+      let streak = 1;
+      for (let i = 1; i < uniqueDays.length; i++) {
+        const expected = format(
+          subDays(new Date(uniqueDays[i - 1]), 1),
+          'yyyy-MM-dd'
+        );
+        if (uniqueDays[i] === expected) {
+          streak++;
+        } else {
+          break;
+        }
+      }
+      return streak;
+    };
+
+    // Score formula: solved * 50 + streak * 10
+    const leaderboardRaw = Array.from(userMap.entries()).map(
+      ([userId, { problems, dates }]) => {
+        const solved = problems.size;
+        const streak = computeStreak(dates);
+        const score = solved * 50 + streak * 10;
+        return { userId, solved, streak, score };
+      }
+    );
+
+    // Step 4: Sort by score desc, then solved desc
+    leaderboardRaw.sort((a, b) => b.score - a.score || b.solved - a.solved);
+
+    // Step 5: Fetch user details for all ranked users
+    const userIds = leaderboardRaw.map((e) => e.userId);
+    const users = await db.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, username: true, name: true, image: true },
+    });
+
+    const userInfoMap = {};
+    users.forEach((u) => {
+      userInfoMap[u.id] = {
+        username: u.username || u.name || 'Unknown',
+        name: u.name || u.username || 'Unknown',
+        image: u.image || null,
+      };
+    });
+
+    const leaderboard = leaderboardRaw.map((entry, index) => ({
+      rank: index + 1,
+      username: userInfoMap[entry.userId]?.username ?? 'Unknown',
+      name: userInfoMap[entry.userId]?.name ?? 'Unknown',
+      image: userInfoMap[entry.userId]?.image ?? null,
+      solved: entry.solved,
+      streak: entry.streak,
+      score: entry.score,
+    }));
+
+    res.status(200).json({
+      success: true,
+      message: 'Leaderboard fetched successfully',
+      data: leaderboard,
+    });
+  } catch (error) {
+    console.error('Failed to fetch leaderboard:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal Server Error',
+    });
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\controllers\playlist.controller.js
+==============================
+
+import { db } from '../libs/db.js';
+
+export const createSheet = async (req, res) => {
+  try {
+    const { name, description, topics } = req.body;
+    const userId = req.user.id;
+
+    // Collect all unique problem IDs from all topics
+    const allProblemIds = [
+      ...new Set(topics.flatMap((topic) => topic.problemIds)),
+    ];
+
+    // Create sheet and link all problems in a transaction
+    const sheet = await db.$transaction(async (tx) => {
+      const createdSheet = await tx.sheet.create({
+        data: {
+          name,
+          description,
+          userId,
+        },
+      });
+
+      // Link problems to sheet via ProblemInSheet
+      if (allProblemIds.length > 0) {
+        await tx.problemInSheet.createMany({
+          data: allProblemIds.map((problemId) => ({
+            sheetId: createdSheet.id,
+            problemId,
+          })),
+          skipDuplicates: true,
+        });
+      }
+
+      // Return sheet with problems included
+      return tx.sheet.findUnique({
+        where: { id: createdSheet.id },
+        include: {
+          problems: {
+            include: {
+              problem: {
+                select: {
+                  id: true,
+                  title: true,
+                  problemNumber: true,
+                  difficulty: true,
+                  tags: true,
+                  companyTags: true,
+                },
+              },
+            },
+          },
+          user: {
+            select: {
+              id: true,
+              name: true,
+              username: true,
+              image: true,
+            },
+          },
+        },
+      });
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Sheet created successfully',
+      sheet,
+    });
+  } catch (error) {
+    console.error('Error creating sheet:', error);
+
+    // Handle unique constraint violation (duplicate sheet name per user)
+    if (error.code === 'P2002') {
+      return res.status(409).json({
+        message: 'A sheet with this name already exists.',
+      });
+    }
+
+    res.status(500).json({
+      message: 'Failed to create sheet',
+    });
+  }
+};
+
+export const getAllSheetDetails = async (req, res) => {
+  try {
+    // Fetch all sheets with user and problem details
+    const sdeSheets = await db.Sheet.findMany({
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            username: true,
+            image: true,
+          },
+        },
+        problems: {
+          include: {
+            problem: {
+              select: {
+                id: true,
+                title: true,
+                problemNumber: true,
+                difficulty: true,
+                tags: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    // Post-process to add extra fields
+    const processedSheets = sdeSheets.map((sheet) => {
+      const totalProblems = sheet.problems.length;
+
+      // Flatten all tags and remove duplicates
+      const allTags = Array.from(
+        new Set(sheet.problems.flatMap((p) => p.problem.tags || []))
+      );
+
+      // Get unique difficulties
+      const allDifficulties = Array.from(
+        new Set(sheet.problems.map((p) => p.problem.difficulty))
+      );
+
+      return {
+        ...sheet,
+        totalProblems,
+        allTags,
+        allDifficulties,
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'All sheets fetched successfully',
+      sdeSheets: processedSheets,
+    });
+  } catch (error) {
+    console.error('Error fetching sheets:', error);
+    res.status(500).json({ error: 'Failed to fetch sheets' });
+  }
+};
+
+export const getIndividualSheetDetails = async (req, res) => {
+  const { sheetId } = req.params;
+  const userId = req.user?.id ?? null; // ← optional chaining, null if not logged in
+
+  console.log("userId", userId)
+
+  try {
+    const sheet = await db.sheet.findFirst({
+      where: { id: sheetId },
+      include: {
+        user: {
+          select: { id: true, name: true, username: true, image: true },
+        },
+        problems: {
+          include: {
+            problem: {
+              select: {
+                id: true,
+                title: true,
+                problemNumber: true,
+                difficulty: true,
+                tags: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!sheet) {
+      return res.status(404).json({ error: 'Sheet not found' });
+    }
+
+    // Only query ProblemSolved if user is logged in
+    const solvedSet = new Set(
+      userId
+        ? (
+            await db.problemSolved.findMany({
+              where: {
+                userId,
+                problemId: { in: sheet.problems.map((p) => p.problemId) },
+              },
+              select: { problemId: true },
+            })
+          ).map((r) => r.problemId)
+        : [], // anonymous → empty set → all isSolved: false
+    );
+
+    const processedSheet = {
+      ...sheet,
+      totalProblems: sheet.problems.length,
+      allTags: [...new Set(sheet.problems.flatMap((p) => p.problem.tags || []))],
+      allDifficulties: [...new Set(sheet.problems.map((p) => p.problem.difficulty))],
+      problems: sheet.problems.map((p) => ({
+        ...p,
+        problem: {
+          ...p.problem,
+          isSolved: solvedSet.has(p.problemId),
+        },
+      })),
+    };
+
+    res.status(200).json({
+      success: true,
+      message: 'Sheet fetched successfully',
+      sdeSheet: processedSheet,
+    });
+  } catch (error) {
+    console.error('Error fetching sheet:', error);
+    res.status(500).json({ error: 'Failed to fetch sheet' });
+  }
+};
+
+// check and delete this controller
+export const addProblemToSheet = async (req, res) => {
+  const { sheetId } = req.params;
+  const { problemIds } = req.body;
+
+  console.log('sheetId', sheetId);
+  console.log('problemIds', problemIds);
+
+  try {
+    if (!Array.isArray(problemIds) || problemIds.length === 0) {
+      return res.status(400).json({ error: 'Invalid or missing problemsId' });
+    }
+
+    // Create records fro each problems in the playlist
+    const problemsInSheet = await db.ProblemInSheet.createMany({
+      data: problemIds.map((problemId) => ({
+        sheetId,
+        problemId,
+      })),
+    });
+
+    console.log('problemsInSheet', problemsInSheet);
+
+    res.status(201).json({
+      success: true,
+      message: 'Problems added to Sheet successfully',
+      problemsInSheet,
+    });
+  } catch (error) {
+    console.error('Error Adding problem in  Sheet:', error);
+    res.status(500).json({ error: 'Failed to adding problem in Sheet' });
+  }
+};
+
+export const deleteSheet = async (req, res) => {
+  const { sheetId } = req.params;
+
+  try {
+    const deleteSheet = await db.Sheet.delete({
+      where: {
+        id: sheetId,
+      },
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Sheet deleted successfully',
+      deleteSheet,
+    });
+  } catch (error) {
+    console.error('Error deleting Sheet:', error.message);
+    res.status(500).json({ error: 'Failed to delete Sheet' });
+  }
+};
+
+export const removeProblemFromSheet = async (req, res) => {
+  const { sheetId } = req.params;
+  const { problemIds } = req.body;
+
+  console.log('sheetId', sheetId);
+  console.log('problemIds', problemIds);
+
+  try {
+    if (!Array.isArray(problemIds) || problemIds.length === 0) {
+      return res.status(400).json({ error: 'Invalid or missing problemsId' });
+    }
+
+    const deletedProblem = await db.ProblemInSheet.deleteMany({
+      where: {
+        sheetId,
+        problemId: {
+          in: problemIds,
+        },
+      },
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Problem removed from sheet successfully',
+      deletedProblem,
+    });
+  } catch (error) {
+    console.error('Error removing problem from sheet:', error.message);
+    res.status(500).json({ error: 'Failed to remove problem from sheet' });
+  }
+};
+
+export const updateProblemsInSheet = async (req, res) => {
+  const { sheetId } = req.params;
+  const { problemIds } = req.body;
+
+  console.log('sheetId:', sheetId);
+  console.log('problemIds:', problemIds);
+
+  try {
+    if (!Array.isArray(problemIds)) {
+      return res.status(400).json({ error: 'Invalid or missing problemsId' });
+    }
+
+    // Delete existing problems in the sheet
+    await db.ProblemInSheet.deleteMany({
+      where: { sheetId },
+    });
+
+    // If the new problemIds array is empty, we’re done
+    if (problemIds.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: 'Sheet problems cleared successfully',
+        problemsInSheet: [],
+      });
+    }
+
+    // Insert the new set of problems
+    const problemsInSheet = await db.ProblemInSheet.createMany({
+      data: problemIds.map((problemId) => ({
+        sheetId,
+        problemId,
+      })),
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Sheet problems updated successfully',
+      problemsInSheet,
+    });
+  } catch (error) {
+    console.error('Error updating problems in sheet:', error.message);
+    res.status(500).json({ error: 'Failed to update problems in sheet' });
+  }
+};
+
+export const updateSheet = async (req, res) => {
+  const { sheetId } = req.params;
+  const { name, description, topics } = req.body;
+
+  try {
+    const allProblemIds = [
+      ...new Set(topics.flatMap((topic) => topic.problemIds)),
+    ];
+
+    const sheet = await db.$transaction(async (tx) => {
+      // Update sheet name and description
+      const updatedSheet = await tx.sheet.update({
+        where: { id: sheetId },
+        data: { name, description },
+      });
+
+      // Replace all problems — delete existing then insert new
+      await tx.problemInSheet.deleteMany({
+        where: { sheetId },
+      });
+
+      if (allProblemIds.length > 0) {
+        await tx.problemInSheet.createMany({
+          data: allProblemIds.map((problemId) => ({
+            sheetId: updatedSheet.id,
+            problemId,
+          })),
+          skipDuplicates: true,
+        });
+      }
+
+      return tx.sheet.findUnique({
+        where: { id: sheetId },
+        include: {
+          problems: {
+            include: {
+              problem: {
+                select: {
+                  id: true,
+                  title: true,
+                  problemNumber: true,
+                  difficulty: true,
+                  tags: true,
+                  companyTags: true,
+                },
+              },
+            },
+          },
+          user: {
+            select: {
+              id: true,
+              name: true,
+              username: true,
+              image: true,
+            },
+          },
+        },
+      });
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Sheet updated successfully',
+      sheet,
+    });
+  } catch (error) {
+    console.error('Error updating sheet:', error);
+    if (error.code === 'P2002') {
+      return res.status(409).json({
+        message: 'A sheet with this name already exists.',
+      });
+    }
+    res.status(500).json({ message: 'Failed to update sheet' });
+  }
+};
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\controllers\problem.controller.js
+==============================
+
+import { db } from '../libs/db.js';
+import {
+  getJudge0LanguageId,
+  pollBatchResults,
+  submitBatch,
+} from '../libs/judge0.lib.js';
+
+/*
+  1. It extracts problem details from the request body.
+  2. It iterates through reference solutions for each language and:
+    a. Checks if the language is supported.
+    b. Submits test cases to a judging system (Judge0) and retrieves results.
+    c. Checks if all test cases pass for each language. If any fail, it returns an error.
+  3. If all test cases pass, it creates a new problem in the database using Prisma.
+  4. It returns a success response with the newly created problem.
+  In essence, this endpoint validates problem submissions by running test cases against reference solutions
+   in different languages before creating a new problem in the database.
+*/
+
+function decodeCodeString(code) {
+  return code
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
+}
+
+
+export const createProblem = async (req, res) => {
+  const { problemNumber, problem, testCases } = req.body;
+
+  console.log('problemNumber', problemNumber);
+  console.log('problem', problem);
+  console.log('testCases', testCases);
+
+  if (!problem) {
+    return res.status(400).json({
+      success: false,
+      message: 'Problem data is required in the request body.',
+    });
+  }
+
+  const {
+    title,
+    description,
+    difficulty,
+    tags = [],
+    examples = [],
+    constraints = '',
+    codeSnippets = {},
+    referenceSolutions = {},
+    hints = '',
+    editorial = '',
+    companyTags = [],
+  } = problem;
+
+  if (!title || !description || !difficulty) {
+    return res.status(400).json({
+      success: false,
+      message: 'Title, description, and difficulty are required.',
+    });
+  }
+
+  if (!Array.isArray(companyTags)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Company tags must be an array.',
+    });
+  }
+
+  const sanitizedCompanyTags = companyTags
+    .filter((tag) => typeof tag === 'string' && tag.trim().length > 0)
+    .map((tag) => tag.trim())
+    .slice(0, 20); // Limit to 20 company tags
+
+  try {
+    // Check for existing title or problemNumber
+    const existingProblem = await db.problem.findFirst({
+      where: {
+        OR: [{ title }, ...(problemNumber ? [{ problemNumber }] : [])],
+      },
+    });
+
+    if (existingProblem) {
+      return res.status(409).json({
+        success: false,
+        message: 'Problem with this title or number already exists.',
+      });
+    }
+
+    // Validate reference solutions using Judge0
+    for (const [language, solutionCodeRaw] of Object.entries(referenceSolutions)) {
+
+      const solutionCode = decodeCodeString(solutionCodeRaw);
+
+      const languageId = getJudge0LanguageId(language);
+
+      if (!languageId) {
+        return res.status(400).json({
+          success: false,
+          message: `Language ${language} is not supported`,
+        });
+      }
+
+      const submissions = testCases.map(({ input, expected }) => ({
+        source_code: solutionCode,
+        language_id: languageId,
+        stdin: input,
+        expected_output: expected,
+      }));
+
+      const submissionResults = await submitBatch(submissions);
+      const tokens = submissionResults.map((res) => res.token);
+      const results = await pollBatchResults(tokens);
+
+      console.log('submissionResults', submissionResults);
+      console.log('results', results);
+      console.log("tokens", tokens);
+
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        if (result.status.id !== 3) {
+          return res.status(400).json({
+            success: false,
+            message: `Reference solution failed on testcase #${
+              i + 1
+            } for language ${language}`,
+            details: result,
+          });
+        }
+      }
+    }
+
+    // Save the problem and test cases
+    const newProblem = await db.$transaction(async (tx) => {
+      const createdProblem = await tx.problem.create({
+        data: {
+          problemNumber,
+          title,
+          description,
+          difficulty,
+          tags,
+          examples,
+          constraints,
+          codeSnippets,
+          referenceSolutions,
+          userId: req.user.id,
+          hints,
+          editorial,
+          companyTags: sanitizedCompanyTags,
+        },
+      });
+
+      if (Array.isArray(testCases)) {
+        await tx.testCase.createMany({
+          data: testCases.map((tc) => ({
+            input: tc.input,
+            expected: tc.expected,
+            isPublic: Boolean(tc.isPublic),
+            problemId: createdProblem.id,
+          })),
+        });
+      }
+
+      return createdProblem;
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: 'Problem created successfully',
+      problem: newProblem,
+    });
+  } catch (error) {
+    console.error('Create problem error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal Server Error while creating the problem',
+    });
+  }
+};
+
+
+
+
+export const getAllProblems = async (req, res) => {
+  try {
+    const userId = req.body?.userId || null;
+
+    const problems = await db.problem.findMany({
+      orderBy: {
+        problemNumber: 'asc',
+      },
+      include: {
+        solvedBy: {
+          select: {
+            userId: true,
+          },
+        },
+        testCases: {
+          where: {
+            isPublic: true,
+          },
+          select: {
+            input: true,
+            expected: true,
+          },
+        },
+      },
+    });
+
+    if (!problems || problems.length === 0) {
+      return res.status(404).json({ error: 'Problems not found.' });
+    }
+
+    // console.log("problems", problems);
+
+    const problemsWithSolvedFlag = problems.map((problem) => {
+
+      console.log("problem.solvedBy", problem.solvedBy);
+      console.log("userId", userId);
+      const isSolved = userId
+        ? problem.solvedBy.some((entry) => entry.userId === userId)
+        : false;
+
+      return {
+        id: problem.id,
+        isSolved,
+        problemNumber: problem.problemNumber,
+        tags: problem.tags,
+        title: problem.title,
+        updatedAt: problem.updatedAt,
+        createdAt: problem.createdAt,
+        userId: problem.userId,
+        description: problem.description,
+        difficulty: problem.difficulty,
+        companyTags: problem.companyTags,
+      };
+    });
+
+    // console.log('problemsWithSolvedFlag', problemsWithSolvedFlag);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Problems fetched successfully',
+      problems: problemsWithSolvedFlag,
+    });
+  } catch (error) {
+    console.error('Error fetching problems:', error);
+    return res.status(500).json({
+      error: 'Error while fetching problems',
+    });
+  }
+};
+
+
+
+
+export const getProblemById = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const problem = await db.problem.findUnique({
+      where: {
+        id, // You can also support problemNumber: parseInt(id) if needed
+      },
+      include: {
+        testCases: {
+          where: {
+            isPublic: true, // only show public test cases
+          },
+          select: {
+            input: true,
+            expected: true,
+          },
+        },
+        // solvedBy: {
+        //   where: {
+        //     userId: req.user.id,
+        //   },
+        //   select: {
+        //     id: true,
+        //   },
+        // },
+      },
+    });
+
+    if (!problem) {
+      return res.status(404).json({ error: 'Problem not found.' });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Fetched problem successfully',
+      problem: {
+        ...problem,
+        // isSolved: problem.solvedBy.length > 0,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching problem by ID:', error);
+    return res.status(500).json({
+      error: 'Error while fetching problem by ID',
+    });
+  }
+};
+
+
+export const updateProblem = async (req, res) => {
+  const { problemId } = req.params; // from URL like /problems/update-problem/:problemId
+  const { problemNumber, problem, testCases } = req.body;
+
+  if (!problemId) {
+    return res.status(400).json({
+      success: false,
+      message: 'Problem ID is required in URL params.',
+    });
+  }
+
+  try {
+    // Find existing problem by id (UUID or string id)
+    const existingProblem = await db.problem.findUnique({
+      where: { id: problemId },
+    });
+
+    if (!existingProblem) {
+      return res.status(404).json({
+        success: false,
+        message: 'Problem not found.',
+      });
+    }
+
+    // Prepare update data object
+    const updateData = {};
+
+    if (problem) {
+      // Spread problem fields (title, description, difficulty, tags, etc.)
+      updateData.title = problem.title ?? existingProblem.title;
+      updateData.description =
+        problem.description ?? existingProblem.description;
+      updateData.difficulty = problem.difficulty ?? existingProblem.difficulty;
+      updateData.tags = problem.tags ?? existingProblem.tags;
+      updateData.examples = problem.examples ?? existingProblem.examples;
+      updateData.constraints =
+        problem.constraints ?? existingProblem.constraints;
+      updateData.codeSnippets =
+        problem.codeSnippets ?? existingProblem.codeSnippets;
+      updateData.referenceSolutions =
+        problem.referenceSolutions ?? existingProblem.referenceSolutions;
+      updateData.companyTags =
+        problem.companyTags ?? existingProblem.companyTags;
+    }
+
+    // If problemNumber is present in request body, update it
+    if (problemNumber !== undefined) {
+      updateData.problemNumber = problemNumber;
+    }
+
+    // Update the problem record
+    const updatedProblem = await db.problem.update({
+      where: { id: problemId },
+      data: updateData,
+    });
+
+    // TODO: Update testCases if you have testCases logic and relations
+    // This part depends on your schema and may need deletes/inserts or updateMany
+
+    return res.json({
+      success: true,
+      message: 'Problem updated successfully',
+      data: updatedProblem,
+    });
+  } catch (error) {
+    console.error('Update problem error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal Server Error while updating the problem',
+    });
+  }
+};
+
+
+
+
+
+export const deleteProblem = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Check if the problem exists
+    const problem = await db.problem.findUnique({
+      where: { id },
+    });
+
+    if (!problem) {
+      return res.status(404).json({ error: 'Problem not found' });
+    }
+
+    // Delete the problem (related entries will be removed via onDelete: Cascade)
+    await db.problem.delete({
+      where: { id },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Problem deleted successfully',
+    });
+  } catch (error) {
+    console.error('Error while deleting problem:', error);
+    return res.status(500).json({
+      error: 'An error occurred while deleting the problem',
+    });
+  }
+};
+
+
+export const getAllProblemsSolvedByUser = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized: User ID missing in request',
+      });
+    }
+
+    // Fetch problems solved by the user
+    const problems = await db.problem.findMany({
+      where: {
+        solvedBy: {
+          some: { userId },
+        },
+      },
+      // Include solvedBy relation filtered to current user if you want details
+      include: {
+        solvedBy: {
+          where: { userId },
+          select: { createdAt: true }, // example: select only date solved, adjust as needed
+        },
+      },
+      orderBy: { updatedAt: 'desc' }, // optional: latest updated first
+      // skip: 0, // optional pagination
+      // take: 20,
+    });
+
+    if (!problems.length) {
+      return res.status(200).json({
+        success: true,
+        message: 'You have not solved any problems yet.',
+        problems: [],
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Problems fetched successfully',
+      problems,
+    });
+  } catch (error) {
+    console.error('Error fetching problems:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch problems',
+    });
+  }
+};
+
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\controllers\roadmaps.controller.js
+==============================
+
+import { db } from '../libs/db.js';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const formatRoadmap = (roadmap, completedTopicIds = []) => ({
+  id: roadmap.id,
+  name: roadmap.name,
+  slug: roadmap.slug,
+  description: roadmap.description,
+  icon: roadmap.icon,
+  color: roadmap.color,
+  isPublished: roadmap.isPublished,
+  sections: roadmap.sections,
+  order: roadmap.order,
+  completedTopicIds,
+  createdAt: roadmap.createdAt,
+  updatedAt: roadmap.updatedAt,
+});
+
+// ─── Public Endpoints ─────────────────────────────────────────────────────────
+
+export const getAllRoadmaps = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const roadmaps = await db.roadmap.findMany({
+      where: { isPublished: true },
+      orderBy: { order: 'asc' },
+    });
+
+    let progressMap = {};
+    if (userId) {
+      const progresses = await db.roadmapProgress.findMany({
+        where: { userId },
+        select: { roadmapId: true, completedTopicIds: true },
+      });
+      progressMap = Object.fromEntries(
+        progresses.map((p) => [p.roadmapId, p.completedTopicIds]),
+      );
+    }
+
+    return res.json({
+      message: 'Roadmaps fetched successfully',
+      data: roadmaps.map((r) => formatRoadmap(r, progressMap[r.id] ?? [])),
+    });
+  } catch (error) {
+    console.error('getAllRoadmaps error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const getRoadmap = async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const userId = req.user?.id;
+
+    const roadmap = await db.roadmap.findUnique({ where: { slug } });
+    if (!roadmap || !roadmap.isPublished) {
+      return res.status(404).json({ message: 'Roadmap not found' });
+    }
+
+    let completedTopicIds = [];
+    if (userId) {
+      const progress = await db.roadmapProgress.findUnique({
+        where: { userId_roadmapId: { userId, roadmapId: roadmap.id } },
+        select: { completedTopicIds: true },
+      });
+      completedTopicIds = progress?.completedTopicIds ?? [];
+    }
+
+    return res.json({
+      message: 'Roadmap fetched successfully',
+      data: formatRoadmap(roadmap, completedTopicIds),
+    });
+  } catch (error) {
+    console.error('getRoadmap error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+// ─── Progress ─────────────────────────────────────────────────────────────────
+
+export const saveProgress = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const { completedTopicIds } = req.body;
+
+    if (!Array.isArray(completedTopicIds)) {
+      return res.status(400).json({ message: 'completedTopicIds must be an array' });
+    }
+
+    const roadmap = await db.roadmap.findUnique({ where: { id }, select: { id: true } });
+    if (!roadmap) {
+      return res.status(404).json({ message: 'Roadmap not found' });
+    }
+
+    const progress = await db.roadmapProgress.upsert({
+      where: { userId_roadmapId: { userId, roadmapId: id } },
+      update: { completedTopicIds, updatedAt: new Date() },
+      create: { userId, roadmapId: id, completedTopicIds },
+    });
+
+    return res.json({
+      message: 'Progress saved',
+      data: { completedTopicIds: progress.completedTopicIds },
+    });
+  } catch (error) {
+    console.error('saveProgress error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const resetProgress = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    await db.roadmapProgress.deleteMany({ where: { userId, roadmapId: id } });
+
+    return res.json({ message: 'Progress reset' });
+  } catch (error) {
+    console.error('resetProgress error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+// ─── Admin Endpoints ──────────────────────────────────────────────────────────
+
+export const getAllRoadmapsAdmin = async (req, res) => {
+  try {
+    const roadmaps = await db.roadmap.findMany({ orderBy: { order: 'asc' } });
+    return res.json({
+      message: 'Roadmaps fetched',
+      data: roadmaps.map((r) => formatRoadmap(r)),
+    });
+  } catch (error) {
+    console.error('getAllRoadmapsAdmin error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const getRoadmapAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const roadmap = await db.roadmap.findUnique({ where: { id } });
+    if (!roadmap) return res.status(404).json({ message: 'Roadmap not found' });
+    return res.json({ message: 'Roadmap fetched', data: formatRoadmap(roadmap) });
+  } catch (error) {
+    console.error('getRoadmapAdmin error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const createRoadmap = async (req, res) => {
+  try {
+    const { name, slug, description, icon, color, isPublished, sections, order } = req.body;
+
+    if (!name?.trim() || !slug?.trim()) {
+      return res.status(400).json({ message: 'Name and slug are required' });
+    }
+
+    const existing = await db.roadmap.findUnique({ where: { slug } });
+    if (existing) {
+      return res.status(409).json({ message: 'A roadmap with this slug already exists' });
+    }
+
+    const roadmap = await db.roadmap.create({
+      data: {
+        name: name.trim(),
+        slug: slug.trim(),
+        description: description?.trim() ?? '',
+        icon: icon ?? 'Binary',
+        color: color ?? 'emerald',
+        isPublished: isPublished ?? false,
+        sections: sections ?? [],
+        order: order ?? 0,
+      },
+    });
+
+    return res.status(201).json({ message: 'Roadmap created', data: formatRoadmap(roadmap) });
+  } catch (error) {
+    console.error('createRoadmap error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const updateRoadmap = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, slug, description, icon, color, isPublished, sections, order } = req.body;
+
+    const existing = await db.roadmap.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ message: 'Roadmap not found' });
+
+    if (slug && slug !== existing.slug) {
+      const conflict = await db.roadmap.findUnique({ where: { slug } });
+      if (conflict) return res.status(409).json({ message: 'A roadmap with this slug already exists' });
+    }
+
+    const roadmap = await db.roadmap.update({
+      where: { id },
+      data: {
+        ...(name !== undefined && { name: name.trim() }),
+        ...(slug !== undefined && { slug: slug.trim() }),
+        ...(description !== undefined && { description: description.trim() }),
+        ...(icon !== undefined && { icon }),
+        ...(color !== undefined && { color }),
+        ...(isPublished !== undefined && { isPublished }),
+        ...(sections !== undefined && { sections }),
+        ...(order !== undefined && { order }),
+      },
+    });
+
+    return res.json({ message: 'Roadmap updated', data: formatRoadmap(roadmap) });
+  } catch (error) {
+    console.error('updateRoadmap error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const deleteRoadmap = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await db.roadmap.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ message: 'Roadmap not found' });
+
+    await db.roadmap.delete({ where: { id } });
+    return res.json({ message: 'Roadmap deleted' });
+  } catch (error) {
+    console.error('deleteRoadmap error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const togglePublish = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await db.roadmap.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ message: 'Roadmap not found' });
+
+    const roadmap = await db.roadmap.update({
+      where: { id },
+      data: { isPublished: !existing.isPublished },
+    });
+
+    return res.json({
+      message: roadmap.isPublished ? 'Roadmap published' : 'Roadmap unpublished',
+      data: formatRoadmap(roadmap),
+    });
+  } catch (error) {
+    console.error('togglePublish error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\controllers\runProblem.controller.js
+==============================
+
+import { db } from '../libs/db.js';
+import { formatMemory } from '../libs/formatMemory.js';
+import {
+  getLanguageName,
+  pollBatchResults,
+  submitBatch,
+} from '../libs/judge0.lib.js';
+
+// ─── Helper: safely get status description ───────────────────────────────────
+const getStatusDescription = (result) => {
+  if (!result) return 'Unknown';
+  if (typeof result.status === 'string') return result.status;
+  if (result.status?.description) return result.status.description;
+  if (result.status?.id) {
+    const STATUS_MAP = {
+      1: 'In Queue',
+      2: 'Processing',
+      3: 'Accepted',
+      4: 'Wrong Answer',
+      5: 'Time Limit Exceeded',
+      6: 'Compilation Error',
+      7: 'Runtime Error (SIGSEGV)',
+      8: 'Runtime Error (SIGXFSZ)',
+      9: 'Runtime Error (SIGFPE)',
+      10: 'Runtime Error (SIGABRT)',
+      11: 'Runtime Error (NZEC)',
+      12: 'Runtime Error (Other)',
+      13: 'Internal Error',
+      14: 'Exec Format Error',
+    };
+    return STATUS_MAP[result.status.id] ?? `Status ${result.status.id}`;
+  }
+  return 'Unknown';
+};
+
+// ─── runProblem ───────────────────────────────────────────────────────────────
+
+export const runProblem = async (req, res) => {
+  try {
+    const { source_code, language_id, problemId } = req.body;
+
+    if (!source_code || !language_id || !problemId) {
+      return res.status(400).json({
+        error: 'source_code, language_id and problemId are required',
+      });
+    }
+
+    const publicTestCases = await db.testCase.findMany({
+      where: { problemId, isPublic: true },
+      orderBy: { id: 'asc' },
+      select: { input: true, expected: true },
+    });
+
+    if (!publicTestCases.length) {
+      return res.status(404).json({ error: 'No public test cases found.' });
+    }
+
+    const submissions = publicTestCases.map(({ input }) => ({
+      source_code,
+      language_id,
+      stdin: input,
+    }));
+
+    // Step 1: submit, get tokens
+    const submitResponse = await submitBatch(submissions);
+    const tokens = submitResponse.map((r) => r.token);
+
+    // Step 2: poll until done
+    const results = await pollBatchResults(tokens);
+
+    let allPassed = true;
+    const detailedResults = results.map((result, i) => {
+      const stdout = result.stdout?.trim() ?? '';
+      const expected_output = publicTestCases[i].expected.trim();
+      const passed = stdout === expected_output;
+      if (!passed) allPassed = false;
+
+      return {
+        testCase: i + 1,
+        passed,
+        stdout,
+        expected: expected_output,
+        stderr: result.stderr || null,
+        compile_output: result.compile_output || null,
+        status: getStatusDescription(result),
+        memory: result.memory ? formatMemory(result.memory) : undefined,
+        time: result.time ? `${result.time} s` : undefined,
+        _rawTime: result.time ? parseFloat(result.time) : null,
+        _rawMemory: result.memory ? parseFloat(result.memory) : null,
+      };
+    });
+
+    const times = detailedResults
+      .map((r) => r._rawTime)
+      .filter((t) => t !== null && !isNaN(t));
+
+    const memories = detailedResults
+      .map((r) => r._rawMemory)
+      .filter((m) => m !== null && !isNaN(m) && m > 0);
+
+    const avgTime = times.length
+      ? times.reduce((a, b) => a + b, 0) / times.length
+      : null;
+
+    const avgMemory = memories.length
+      ? memories.reduce((a, b) => a + b, 0) / memories.length
+      : null;
+
+    const clientResults = detailedResults.map(
+      ({ _rawTime, _rawMemory, ...rest }) => rest
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Code executed successfully on public test cases.',
+      allPassed,
+      performance: {
+        totalTime: avgTime !== null ? `${avgTime.toFixed(3)} s` : '—',
+        totalMemory: avgMemory !== null ? formatMemory(avgMemory) : '—',
+      },
+      results: clientResults,
+    });
+  } catch (error) {
+    console.error('Error executing code:', error);
+    return res.status(500).json({ error: 'Failed to execute code' });
+  }
+};
+
+// ─── submitProblem ────────────────────────────────────────────────────────────
+
+export const submitProblem = async (req, res) => {
+  try {
+    const { source_code, language_id, problemId } = req.body;
+    const userId = req.user.id;
+
+    if (!source_code || !language_id || !problemId) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const testCases = await db.testCase.findMany({
+      where: { problemId },
+      orderBy: { isPublic: 'desc' },
+      select: { id: true, input: true, expected: true, isPublic: true },
+    });
+
+    if (!testCases?.length) {
+      return res.status(404).json({ error: 'No test cases found' });
+    }
+
+    const submissions = testCases.map(({ input }) => ({
+      source_code,
+      language_id,
+      stdin: input,
+    }));
+
+    // Step 1: submit, get tokens
+    const submitResponse = await submitBatch(submissions);
+    const tokens = submitResponse.map((r) => r.token);
+
+    // Step 2: poll until done
+    const results = await pollBatchResults(tokens);
+
+    let allPassed = true;
+    const detailedResults = results.map((result, i) => {
+      const stdout = result.stdout?.trim() ?? '';
+      const expected = testCases[i].expected?.trim() ?? '';
+      const passed = stdout === expected;
+      if (!passed) allPassed = false;
+
+      return {
+        testCaseId: testCases[i].id,
+        testCase: i + 1,
+        passed,
+        stdout,
+        expected: testCases[i].isPublic ? expected : undefined,
+        stderr: result.stderr || null,
+        compile_output: result.compile_output || null,
+        status: getStatusDescription(result),
+        memory: result.memory ? formatMemory(result.memory) : undefined,
+        time: result.time ? `${result.time} s` : undefined,
+        isPublic: testCases[i].isPublic,
+        _rawTime: result.time ? parseFloat(result.time) : null,
+        _rawMemory: result.memory ? parseFloat(result.memory) : null,
+      };
+    });
+
+    // ✅ Build and save submission
+    const submissionData = {
+      userId,
+      problemId,
+      sourceCode: source_code,
+      language: getLanguageName(language_id),
+      stdin: testCases.map((tc) => tc.input).join('\n'),
+      stdout: JSON.stringify(detailedResults.map((r) => r.stdout)),
+      stderr: detailedResults.some((r) => r.stderr)
+        ? JSON.stringify(detailedResults.map((r) => r.stderr))
+        : null,
+      compileOutput: detailedResults.some((r) => r.compile_output)
+        ? JSON.stringify(detailedResults.map((r) => r.compile_output))
+        : null,
+      status: allPassed ? 'Accepted' : 'Wrong Answer',
+      memory: JSON.stringify(detailedResults.map((r) => r.memory)),
+      time: JSON.stringify(detailedResults.map((r) => r.time)),
+    };
+
+    // Create submission first — testCaseResults need its FK
+    const submission = await db.submission.create({ data: submissionData });
+
+    const testCaseResultsData = detailedResults.map((result) => ({
+      submissionId: submission.id,
+      testCase: result.testCase,
+      passed: result.passed,
+      stdout: result.stdout || '',
+      expected: result.expected || '',
+      stderr: result.stderr,
+      compileOutput: result.compile_output,
+      status: result.status,
+      memory: result.memory,
+      time: result.time,
+    }));
+
+    // ✅ These two writes don't depend on each other — run in parallel
+    await Promise.all([
+      db.testCaseResult.createMany({ data: testCaseResultsData }),
+      allPassed
+        ? db.problemSolved.upsert({
+            where: { userId_problemId: { userId, problemId } },
+            update: {},
+            create: { userId, problemId },
+          })
+        : Promise.resolve(),
+    ]);
+
+    // ✅ Average time and memory from raw Judge0 values
+    const times = detailedResults
+      .map((r) => r._rawTime)
+      .filter((t) => t !== null && !isNaN(t));
+
+    const memories = detailedResults
+      .map((r) => r._rawMemory)
+      .filter((m) => m !== null && !isNaN(m) && m > 0);
+
+    const avgTime = times.length
+      ? times.reduce((a, b) => a + b, 0) / times.length
+      : null;
+
+    const avgMemory = memories.length
+      ? memories.reduce((a, b) => a + b, 0) / memories.length
+      : null;
+
+    const passedCount = detailedResults.filter((r) => r.passed).length;
+
+    return res.status(200).json({
+      success: true,
+      allPassedFlag: allPassed,
+      message: allPassed ? 'All test cases passed!' : 'Some test cases failed.',
+      submission: {
+        language: getLanguageName(language_id),
+        status: allPassed ? 'Accepted' : 'Wrong Answer',
+        performance: {
+          totalTime: avgTime !== null ? `${avgTime.toFixed(3)} s` : '—',
+          totalMemory: avgMemory !== null ? formatMemory(avgMemory) : '—',
+        },
+        testCasesPassed: `${passedCount}/${detailedResults.length}`,
+      },
+    });
+  } catch (error) {
+    console.error('Error submitting problem:', error);
+    return res.status(500).json({ error: 'Failed to submit problem' });
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\controllers\submission.controller.js
+==============================
+
+import { db } from '../libs/db.js';
+
+import { format } from 'date-fns'; // Use to format date
+import { formatMemory } from '../libs/formatMemory.js';
+
+export const getUserSubmissions = async (req, res) => {
+  const userId = req.user.id;
+
+  try {
+    // 1. Fetch all submissions by user
+    const submissions = await db.submission.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        problemId: true,
+        status: true,
+        language: true,
+        createdAt: true,
+        problem: {
+          select: {
+            title: true,
+            difficulty: true,
+            tags: true,
+          },
+        },
+        testCases: {
+          select: {
+            time: true,
+            memory: true,
+          },
+        },
+      },
+    });
+
+    // 2. Fetch total number of problems in platform
+    const totalProblems = await db.problem.count();
+
+    // console.log("submissions", submissions);
+    if (!submissions.length) {
+      return res.status(200).json({
+        message: 'No submissions found',
+        submissions: [],
+        stats: {
+          totalProblemsAvailable: totalProblems,
+          solvedProblemCount: 0,
+        },
+      });
+    }
+
+    console.log('submissions', submissions);
+
+    // 3. Fetch number of problems solved by this user
+    const solvedProblems = await db.problemSolved.findMany({
+      where: { userId },
+      select: { problemId: true },
+      distinct: ['problemId'],
+    });
+
+    const solvedProblemCount = solvedProblems.length;
+
+    const formatted = submissions.map((s) => {
+      const totalTime = s.testCases.reduce(
+        (acc, tc) => acc + (parseFloat(tc.time) || 0),
+        0
+      );
+      const totalMemory = s.testCases.reduce(
+        (acc, tc) => acc + (parseFloat(tc.memory) || 0),
+        0
+      );
+
+      console.log("totalMemory", totalMemory);
+
+      return {
+        id: s.id,
+        problemName: s.problem.title,
+        problemId: s.problemId,
+        problemDifficulty: s.problem.difficulty,
+        tags: s.problem.tags,
+        status: s.status,
+        language: s.language,
+        runtime: `${totalTime.toFixed(2)}ms`,
+        memory: formatMemory(totalMemory),
+        date: format(new Date(s.createdAt), 'MMM d, yyyy'),
+      };
+    });
+
+    console.log("formatted", formatted);
+
+    res.status(200).json({
+      success: true,
+      message: 'Submissions fetched',
+      submissions: formatted,
+      stats: {
+        totalProblemsAvailable:totalProblems,
+        solvedProblemCount,
+      },
+    });
+  } catch (err) {
+    console.error('Failed to fetch submissions:', err);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+};
+
+export const getUserSubmissionsForProblem = async (req, res) => {
+  const userId = req.user.id;
+  const problemId = req.params.problemId; // assuming problemId comes as a URL param
+
+  const convertToKB = (memStr) => {
+    if (typeof memStr === 'number') return memStr;
+    const regex = /([\d.]+)\s*(KB|MB|GB)?/i;
+    const match = memStr.match(regex);
+    if (!match) return 0;
+    const value = parseFloat(match[1]);
+    const unit = match[2] ? match[2].toUpperCase() : 'KB';
+    switch (unit) {
+      case 'MB':
+        return value * 1024;
+      case 'GB':
+        return value * 1024 * 1024;
+      default:
+        return value;
+    }
+  };
+
+  try {
+    const submissions = await db.submission.findMany({
+      where: {
+        userId,
+        problemId,
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        problemId: true,
+        status: true,
+        language: true,
+        createdAt: true,
+        problem: {
+          select: {
+            title: true,
+          },
+        },
+        testCases: {
+          select: {
+            time: true,
+            memory: true,
+          },
+        },
+      },
+    });
+
+
+
+    if (!submissions.length) {
+      return res
+        .status(200)
+        .json({ message: 'No submissions found', total: 0, submissions: [] });
+    }
+
+    const formatted = submissions.map((s) => {
+      const totalTime = s.testCases.reduce(
+        (acc, tc) => acc + (parseFloat(tc.time) || 0),
+        0
+      );
+
+      const testMemory = s.testCases.map((tc) => tc.memory || 0);
+      // console.log("testMemory", testMemory);
+
+      const totalMemoryKB = s.testCases.reduce(
+        (acc, tc) => acc + convertToKB(tc.memory || '0 KB'),
+        0
+      );
+
+
+      return {
+        id: s.id,
+        status: s.status,
+        language: s.language,
+        runtime: `${totalTime.toFixed(2)}ms`,
+        memory: formatMemory(totalMemoryKB),
+        date: format(new Date(s.createdAt), 'MMM d, yyyy'),
+      };
+    });
+
+    // console.log("formatted", formatted);
+
+    res.status(200).json({
+      problemId,
+      problemTitle: submissions[0].problem.title,
+      total: submissions.length,
+      submissions: formatted,
+    });
+  } catch (err) {
+    console.error('Failed to fetch submissions:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
+// export const getAllSubmission = async (req, res) => {
+//   try {
+//     const userId = req.user.id;
+
+//     const submissions = await db.submission.findMany({
+//       where: {
+//         userId: userId,
+//       },
+//     });
+
+//     res.status(200).json({
+//       success: true,
+//       message: 'Submissions fetched successfully',
+//       submissions,
+//     });
+//   } catch (error) {
+//     console.error('Fetch Submissions Error:', error);
+//     res.status(500).json({ error: 'Failed to fetch submissions' });
+//   }
+// };
+
+// export const getSubmissionsForProblem = async (req, res) => {
+//   try {
+//     const userId = req.user.id;
+//     const problemId = req.params.problemId;
+//     const submissions = await db.submission.findMany({
+//       where: {
+//         userId: userId,
+//         problemId: problemId,
+//       },
+//     });
+
+//     res.status(200).json({
+//       success: true,
+//       message: 'Submission fetched successfully',
+//       submissions,
+//     });
+//   } catch (error) {
+//     console.error('Fetch Submissions Error:', error);
+//     res.status(500).json({ error: 'Failed to fetch submissions' });
+//   }
+// };
+
+// export const getAllTheSubmissionsForProblem = async (req, res) => {
+//   try {
+//     const problemId = req.params.problemId;
+//     const submission = await db.submission.count({
+//       where: {
+//         problemId: problemId,
+//       },
+//     });
+
+//     res.status(200).json({
+//       success: true,
+//       message: 'Submissions Fetched successfully',
+//       count: submission,
+//     });
+//   } catch (error) {
+//     console.error('Fetch Submissions Error:', error);
+//     res.status(500).json({ error: 'Failed to fetch submissions' });
+//   }
+// };
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\controllers\userStats.controller.js
+==============================
+
+import { db } from '../libs/db.js';
+import { subDays, format, startOfDay, endOfDay } from 'date-fns';
+
+
+export const getUserHeatMapData = async (req, res) => {
+  const userId = req.user.id;
+  // console.log("userID", userId)
+  try {
+    const startDate = subDays(new Date(), 364);
+    const submissions = await db.submission.findMany({
+      where: { userId, createdAt: { gte: startDate } },
+      select: { createdAt: true },
+    });
+
+    const countByDate = {};
+    submissions.forEach((s) => {
+      const key = format(new Date(s.createdAt), 'yyyy-MM-dd');
+      countByDate[key] = (countByDate[key] || 0) + 1;
+    });
+
+    const today = new Date();
+    const fullData = [];
+    for (let i = 0; i < 365; i++) {
+      const date = subDays(today, i);
+      const formatted = format(date, 'yyyy-MM-dd');
+      fullData.push({ date: formatted, count: countByDate[formatted] || 0 });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Heatmap data fetched successfully',
+      heatmap: fullData.reverse(),
+    });
+  } catch (err) {
+    console.error('Failed to get heatmap data:', err);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+};
+
+export const getUserProgressData = async (req, res) => {
+  const userId = req.user.id;
+  // console.log('userID', userId);
+
+  try {
+    const end = endOfDay(new Date());
+    const start = startOfDay(subDays(new Date(), 6));
+
+    const submissions = await db.submission.findMany({
+      where: { userId, createdAt: { gte: start, lte: end } },
+      select: { createdAt: true },
+    });
+
+    const submissionsByDate = {};
+    submissions.forEach((item) => {
+      const key = format(item.createdAt, 'yyyy-MM-dd');
+      submissionsByDate[key] = (submissionsByDate[key] || 0) + 1;
+    });
+
+    const weeklyData = [];
+    for (let i = 6; i >= 0; i--) {
+      const date = subDays(new Date(), i);
+      const key = format(date, 'yyyy-MM-dd');
+      weeklyData.push({
+        date: key,
+        day: format(date, 'EEE'),
+        problems: submissionsByDate[key] || 0,
+      });
+    }
+
+    const monthlyData = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date();
+      d.setMonth(d.getMonth() - i);
+      const monthStart = new Date(d.getFullYear(), d.getMonth(), 1);
+      const monthEnd = new Date(
+        d.getFullYear(),
+        d.getMonth() + 1,
+        0,
+        23,
+        59,
+        59
+      );
+
+      const [monthSubmissions, monthSolved] = await Promise.all([
+        db.submission.count({
+          where: { userId, createdAt: { gte: monthStart, lte: monthEnd } },
+        }),
+        db.problemSolved.count({
+          where: { userId, createdAt: { gte: monthStart, lte: monthEnd } },
+        }),
+      ]);
+
+      monthlyData.push({
+        month: format(d, 'MMM'),
+        solved: monthSolved,
+        submissions: monthSubmissions,
+      });
+    }
+
+    const allSubmissions = await db.submission.findMany({
+      where: { userId },
+      select: { language: true },
+    });
+
+    const languageCounts = {};
+    allSubmissions.forEach((s) => {
+      languageCounts[s.language] = (languageCounts[s.language] || 0) + 1;
+    });
+
+    const totalLangCount = Object.values(languageCounts).reduce(
+      (a, b) => a + b,
+      0
+    );
+    const languageStats = Object.entries(languageCounts)
+      .map(([language, count]) => ({
+        language,
+        count,
+        percentage:
+          totalLangCount > 0 ? Math.round((count / totalLangCount) * 100) : 0,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    const recentSubmissions = await db.submission.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      select: {
+        status: true,
+        language: true,
+        memory: true,
+        time: true,
+        createdAt: true,
+        problem: {
+          select: { title: true, difficulty: true, id: true },
+        },
+      },
+    });
+
+    const formatTimeAgo = (date) => {
+      const diffMs = Date.now() - new Date(date).getTime();
+      const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
+      if (diffHrs < 1) return 'Just now';
+      if (diffHrs < 24) return `${diffHrs}h ago`;
+      const diffDays = Math.floor(diffHrs / 24);
+      if (diffDays < 7) return `${diffDays}d ago`;
+      return format(new Date(date), 'MMM d');
+    };
+
+    // Parse JSON array fields from Judge0 and average them
+    const parseAvg = (raw, unit) => {
+      if (!raw) return '-';
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const nums = parsed
+            .map((s) => parseFloat(String(s)))
+            .filter((n) => !isNaN(n));
+          if (!nums.length) return '-';
+          const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
+          return `${avg.toFixed(3)}${unit}`;
+        }
+        const num = parseFloat(String(parsed));
+        return isNaN(num) ? '-' : `${num.toFixed(3)}${unit}`;
+      } catch {
+        const num = parseFloat(String(raw));
+        return isNaN(num) ? '-' : `${num.toFixed(3)}${unit}`;
+      }
+    };
+
+    const formattedSubmissions = recentSubmissions.map((s) => ({
+      problem: s.problem.title,
+      problemId: s.problem.id,
+      difficulty:
+        s.problem.difficulty.charAt(0) +
+        s.problem.difficulty.slice(1).toLowerCase(),
+      status: s.status,
+      language: s.language,
+      time: parseAvg(s.time, 's'),
+      memory: parseAvg(s.memory, ' MB'),
+      date: formatTimeAgo(s.createdAt),
+    }));
+
+    console.log('formattedSubmissions', formattedSubmissions);
+
+    res.status(200).json({
+      success: true,
+      message: 'Progress data fetched successfully',
+      data: {
+        weeklyData,
+        monthlyTrend: monthlyData,
+        languageStats,
+        recentSubmissions: formattedSubmissions,
+      },
+    });
+  } catch (error) {
+    console.error('Failed to get user progress data:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+};
+
+export const getUserSolvedStats = async (req, res) => {
+  const userId = req.user.id;
+  // console.log('userID', userId);
+  try {
+    const solvedProblems = await db.problemSolved.findMany({
+      where: { userId },
+      select: { problemId: true },
+      distinct: ['problemId'],
+    });
+
+    const solvedProblemIds = solvedProblems.map((item) => item.problemId);
+
+    const solvedProblemsDetails =
+      solvedProblemIds.length > 0
+        ? await db.problem.findMany({
+            where: { id: { in: solvedProblemIds } },
+            select: { difficulty: true, tags: true },
+          })
+        : [];
+
+    const difficultyStats = { EASY: 0, MEDIUM: 0, HARD: 0 };
+    const tagStats = {};
+    for (const problem of solvedProblemsDetails) {
+      difficultyStats[problem.difficulty]++;
+      for (const tag of problem.tags) {
+        tagStats[tag] = (tagStats[tag] || 0) + 1;
+      }
+    }
+
+    const allProblems = await db.problem.findMany({
+      select: { difficulty: true, tags: true },
+    });
+
+    const totalDifficultyCounts = { EASY: 0, MEDIUM: 0, HARD: 0 };
+    const totalTagCounts = {};
+    for (const problem of allProblems) {
+      totalDifficultyCounts[problem.difficulty]++;
+      for (const tag of problem.tags) {
+        totalTagCounts[tag] = (totalTagCounts[tag] || 0) + 1;
+      }
+    }
+
+    // Streak calculation
+    const allSolvedDates = await db.problemSolved.findMany({
+      where: { userId },
+      select: { createdAt: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const uniqueDates = [
+      ...new Set(
+        allSolvedDates.map((s) => format(new Date(s.createdAt), 'yyyy-MM-dd'))
+      ),
+    ].sort((a, b) => b.localeCompare(a)); // newest first
+
+    let currentStreak = 0;
+    let maxStreak = 0;
+    let tempStreak = 0;
+    const today = format(new Date(), 'yyyy-MM-dd');
+    const yesterday = format(subDays(new Date(), 1), 'yyyy-MM-dd');
+
+    // Current streak
+    if (uniqueDates[0] === today || uniqueDates[0] === yesterday) {
+      currentStreak = 1;
+      for (let i = 1; i < uniqueDates.length; i++) {
+        const prev = subDays(new Date(uniqueDates[i - 1]), 1);
+        const prevFormatted = format(prev, 'yyyy-MM-dd');
+        if (uniqueDates[i] === prevFormatted) {
+          currentStreak++;
+        } else {
+          break;
+        }
+      }
+    }
+
+    // Max streak
+    if (uniqueDates.length > 0) {
+      tempStreak = 1;
+      maxStreak = 1;
+      for (let i = 1; i < uniqueDates.length; i++) {
+        const prev = subDays(new Date(uniqueDates[i - 1]), 1);
+        const prevFormatted = format(prev, 'yyyy-MM-dd');
+        if (uniqueDates[i] === prevFormatted) {
+          tempStreak++;
+          maxStreak = Math.max(maxStreak, tempStreak);
+        } else {
+          tempStreak = 1;
+        }
+      }
+    }
+
+    // Acceptance rate
+    const totalSubmissions = await db.submission.count({ where: { userId } });
+    const acceptedSubmissions = await db.submission.count({
+      where: { userId, status: 'Accepted' },
+    });
+    const acceptanceRate =
+      totalSubmissions > 0
+        ? Math.round((acceptedSubmissions / totalSubmissions) * 100)
+        : 0;
+
+    res.status(200).json({
+      success: true,
+      message: 'Solved stats fetched successfully',
+      data: {
+        difficultyStats,
+        tagStats,
+        totalDifficultyCounts,
+        totalTagCounts,
+        currentStreak,
+        maxStreak,
+        totalSubmissions,
+        acceptanceRate,
+      },
+    });
+  } catch (err) {
+    console.error('Failed to get user solved stats:', err);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+};
+
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\libs\db.js
+==============================
+
+import {PrismaClient} from  "../generated/prisma/index.js"
+
+const globalForPrisma = globalThis;
+
+export const db = globalForPrisma.prisma || new PrismaClient();
+
+if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = db;
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\libs\formatMemory.js
+==============================
+
+/**
+ * Formats memory value from KB to appropriate unit (KB or MB)
+ * @param {number|string} memoryKB - Memory value in KB
+ * @returns {string|undefined} Formatted memory string or undefined if no memory value
+ *
+ * @example
+ * formatMemory(512) // "512 KB"
+ * formatMemory(1536) // "1.50 MB"
+ * formatMemory("2048") // "2.00 MB"
+ * formatMemory(null) // undefined
+ */export const formatMemory = (memoryKB) => {
+   if (memoryKB === undefined || memoryKB === null || memoryKB === '')
+     return undefined;
+   const kb = parseFloat(memoryKB);
+   if (isNaN(kb)) return undefined;
+   if (kb >= 1024) {
+     return `${(kb / 1024).toFixed(2)} MB`;
+   }
+   return `${kb.toFixed(2)} KB`;
+ };
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\libs\judge0.lib.js
+==============================
+
+import axios from 'axios';
+
+export const judge0 = axios.create({
+  baseURL: process.env.JUDGE0_API_URL,
+  timeout: 10000,
+});
+
+export const getJudge0LanguageId = (language) => {
+  const languageMap = {
+    PYTHON: 71,
+    JAVA: 62,
+    JAVASCRIPT: 63,
+  };
+  return languageMap[language.toUpperCase()];
+};
+
+export function getLanguageName(languageId) {
+  const LANGUAGE_NAMES = {
+    74: 'TypeScript',
+    63: 'JavaScript',
+    71: 'Python',
+    62: 'Java',
+  };
+  return LANGUAGE_NAMES[languageId] || 'Unknown';
+}
+
+// ─── submitBatch ──────────────────────────────────────────────────────────────
+// Step 1: Submit all test cases, get back tokens
+export const submitBatch = async (submissions) => {
+  const { data } = await judge0.post(
+    `/submissions/batch`,
+    { submissions },
+    {
+      params: {
+        base64_encoded: false,
+        fields: 'token',
+      },
+    }
+  );
+  return data;
+};
+
+// ─── pollBatchResults ─────────────────────────────────────────────────────────
+// Step 2: Poll until all submissions are done
+// wait=true is NOT supported by this Judge0 instance — polling is the only option
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export const pollBatchResults = async (
+  tokens,
+  {
+    initialDelay = 200, // wait before first poll
+    pollInterval = 300, // poll every 300ms
+    maxWaitTime = 30000,
+  } = {}
+) => {
+  const tokenString = tokens.join(',');
+  const startTime = Date.now();
+
+  await sleep(initialDelay);
+
+  while (true) {
+    if (Date.now() - startTime > maxWaitTime) {
+      throw new Error('Judge0 polling timed out after 30s');
+    }
+
+    try {
+      const { data } = await judge0.get(`/submissions/batch`, {
+        params: {
+          tokens: tokenString,
+          base64_encoded: false,
+          fields: 'token,stdout,stderr,compile_output,status,memory,time',
+        },
+      });
+
+      const results = data?.submissions;
+
+      if (!results?.length) {
+        await sleep(pollInterval);
+        continue;
+      }
+
+      // Status id 1 = In Queue, 2 = Processing — keep polling
+      const allDone = results.every(
+        (r) => r.status?.id !== 1 && r.status?.id !== 2
+      );
+
+      if (allDone) return results;
+    } catch (err) {
+      console.warn('Judge0 poll failed, retrying...', err.code);
+    }
+
+    await sleep(pollInterval);
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\middleware\auth.middleware.js
+==============================
+
+import jwt from "jsonwebtoken";
+import { db } from "../libs/db.js";
+
+/**
+ This is an authentication middleware function in JavaScript. 
+ It checks if a user is authenticated by verifying a JSON Web Token (JWT) stored in a cookie. 
+The middleware performs the following steps:
+  1. It checks if a JWT token is present in the request cookies.
+  2. If no token is found, it returns a 401 Unauthorized response.
+  3. If a token is found, it verifies the token using a secret key (process.env.JWT_SECRET).
+  4. If the token is invalid, it returns a 401 Unauthorized response.
+  5. If the token is valid, it uses the decoded token to find the corresponding user in the database.
+  6. If no user is found, it returns a 404 Not Found response.
+  7. If a user is found, it assigns the user object to the request (req.user) and calls the next middleware function (next()).
+In summary, this middleware function authenticates users by verifying a JWT token and retrieves the corresponding user data from the database.
+ */
+export const authMiddleware = async (req, res, next) => { 
+    try {
+        const token = req.cookies.jwt;
+
+        if(!token) {
+            return res.status(401).json({
+                message: "Unauthorized - No token provided"
+            })
+        }
+
+        let decoded;
+
+        try {
+          decoded = jwt.verify(token, process.env.JWT_SECRET);
+        } catch (error) {
+          return res.status(401).json({
+            message: "Unauthorized - Invalid token",
+          });
+        }
+
+        const user = await db.user.findUnique({
+          where: {
+            id: decoded.id,
+          },
+          select: {
+            id: true,
+            image: true,
+            name: true,
+            username: true,
+            email: true,
+            role: true,
+          },
+        });
+
+        if (!user) {
+          return res.status(404).json({ message: "User not found" });
+        }
+
+        req.user = user;
+        next();
+        
+    } catch (error) {
+
+         console.error("Error authenticating user:", error);
+         res.status(500).json({ message: "Error authenticating user" });
+        
+    }
+}
+
+/**
+ This middleware function `checkAdmin` is used to restrict access to certain routes to admin users only. 
+ Here's a breakdown of what it does:
+
+1. Extracts user ID: It gets the `userId` from `req.user.id`. 
+    This assumes that a previous middleware (like an authentication middleware) has already verified 
+      the user and attached their info to the request.
+
+2. Fetches user role from database: It uses Prisma to find the user by ID and select only their `role`.
+
+3. Checks the role:
+
+   - If the user doesn't exist or their role isn't `"ADMIN"`, it returns a 403 Forbidden response.
+   - If the user `is an admin`, it calls `next()` to pass control to the next middleware or route handler.
+
+4. Handles errors: If something goes wrong during the process (like a database error), 
+    it catches the error, logs it, and returns a 500 Internal Server Error response.
+
+
+ */
+
+export const optionalAuth = async (req, res, next) => {
+  try {
+    const token = req.cookies.jwt;
+    if (!token) {
+      req.user = null;
+      return next();
+    }
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch {
+      req.user = null;
+      return next();
+    }
+    const user = await db.user.findUnique({
+      where: { id: decoded.id },
+      select: { id: true, image: true, name: true, email: true, role: true },
+    });
+    req.user = user || null;
+    next();
+  } catch {
+    req.user = null;
+    next();
+  }
+};
+
+export const checkAdmin = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const user = await db.user.findUnique({
+      where: {
+        id: userId,
+      },
+      select: {
+        role: true,
+      },
+    });
+
+    if (!user || user.role !== "ADMIN") {
+      return res.status(403).json({
+        message: "Access denied - Admins only",
+      });
+    }
+
+    next();
+  } catch (error) {
+    console.error("Error checking admin role:", error);
+    res.status(500).json({ message: "Error checking admin role" });
+  }
+};
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\middleware\optionalAuth.middleware.js
+==============================
+
+// middleware/optionalAuth.middleware.js
+import jwt from 'jsonwebtoken';
+import { db } from '../libs/db.js';
+
+export const optionalAuth = async (req, res, next) => {
+  try {
+    const token = req.cookies?.jwt;
+    console.log("token", token)
+    if (!token) {
+      req.user = null; // no token → anonymous user
+      return next();
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await db.user.findUnique({
+      where: { id: decoded.id },
+      select: { id: true, role: true },
+    });
+
+    console.log("user", user)
+
+    req.user = user ?? null; // invalid token → treat as anonymous
+    next();
+  } catch {
+    req.user = null; // expired/malformed token → treat as anonymous
+    next();
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\routes\auth.routes.js
+==============================
+
+import express from "express";
+import { check, getCurrentUser,  getUserDetails, googleAuth, googleAuthCallback, login, logout, register, updateUserProfile } from "../controllers/auth.controller.js";
+import { authMiddleware } from './../middleware/auth.middleware.js';
+import passport from '../config/passport.js';
+import session from 'express-session';
+
+
+
+// middleware to set COOP headers
+const setCOOPHeaders = (req, res, next) => {
+  // Set Cross-Origin-Opener-Policy to allow communication between windows
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  
+  // Optional: Set other related headers for better compatibility
+  res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none');
+  
+  next();
+};
+
+const authRoutes = express.Router();
+
+// Session middleware for Google SSO
+authRoutes.use(
+    session({
+      secret: process.env.SESSION_SECRET || 'default_secret',
+      resave: false,
+      saveUninitialized: false,
+    })
+  );
+  authRoutes.use(passport.initialize());
+  authRoutes.use(passport.session());
+
+authRoutes.post("/register", register);
+
+authRoutes.post("/login", login);
+
+authRoutes.post("/logout", authMiddleware, logout);
+
+authRoutes.get("/getUserDetails", authMiddleware, getUserDetails)
+
+authRoutes.patch('/updateUserProfile', authMiddleware, updateUserProfile);
+
+authRoutes.get('/me', getCurrentUser);
+
+authRoutes.get("/check", authMiddleware, check);
+
+// Google SSO routes
+authRoutes.get(
+  '/google',
+  googleAuth,
+  passport.authenticate('google', {
+    scope: ['profile', 'email'],
+  })
+);
+
+authRoutes.get(
+  '/google/callback',
+  passport.authenticate('google', {
+    failureRedirect: '/login',
+    session: true,
+  }),
+  googleAuthCallback
+);
+
+
+export default authRoutes;
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\routes\discussions.routes.js
+==============================
+
+import express from 'express';
+import { authMiddleware, optionalAuth } from '../middleware/auth.middleware.js';
+import {
+  createDiscussion,
+  getAllDiscussions,
+  getSingleDiscussion,
+  updateDiscussion,
+  deleteDiscussion,
+  createComment,
+  updateComment,
+  deleteComment,
+  voteDiscussion,
+  voteComment,
+  toggleBookmark,
+  getBookmarkedDiscussions,
+} from '../controllers/discussions.controller.js';
+
+const discussionsRoutes = express.Router();
+
+// ─── Discussion routes ────────────────────────────────────────────────────────
+discussionsRoutes.post('/createDiscussion', authMiddleware, createDiscussion);
+discussionsRoutes.get('/getAllDiscussions', optionalAuth, getAllDiscussions);
+discussionsRoutes.get('/getDiscussion/:id', optionalAuth, getSingleDiscussion);
+discussionsRoutes.put('/updateDiscussion/:id', authMiddleware, updateDiscussion);
+discussionsRoutes.delete('/deleteDiscussion/:id', authMiddleware, deleteDiscussion);
+
+// ─── Comment routes ───────────────────────────────────────────────────────────
+discussionsRoutes.post('/createComment', authMiddleware, createComment);
+discussionsRoutes.put('/updateComment/:id', authMiddleware, updateComment);
+discussionsRoutes.delete('/deleteComment/:id', authMiddleware, deleteComment);
+
+// ─── Vote routes ──────────────────────────────────────────────────────────────
+discussionsRoutes.post('/voteDiscussion/:id', authMiddleware, voteDiscussion);
+discussionsRoutes.post('/voteComment/:id', authMiddleware, voteComment);
+
+// ─── Bookmark routes ──────────────────────────────────────────────────────────
+discussionsRoutes.post('/toggleBookmark/:id', authMiddleware, toggleBookmark);
+discussionsRoutes.get('/bookmarks', authMiddleware, getBookmarkedDiscussions);
+
+export default discussionsRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\routes\leaderboard.route.js
+==============================
+
+import express from 'express';
+import { getLeaderboardData } from '../controllers/leaderboard.controller.js';
+
+
+const leaderboardRoutes = express.Router();
+
+leaderboardRoutes.get('/getLeaderboard', getLeaderboardData);
+
+
+
+export default leaderboardRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\routes\problem.route.js
+==============================
+
+import express from 'express';
+import { authMiddleware, checkAdmin } from '../middleware/auth.middleware.js';
+import {
+  createProblem,
+  deleteProblem,
+  getAllProblems,
+  getAllProblemsSolvedByUser,
+  getProblemById,
+  updateProblem,
+} from '../controllers/problem.controller.js';
+
+const problemRoutes = express.Router();
+
+problemRoutes.post(
+  '/create-problem',
+  authMiddleware,
+  checkAdmin,
+  createProblem
+);
+
+problemRoutes.post('/get-all-problems', getAllProblems);
+
+problemRoutes.get('/get-problem/:id', getProblemById);
+
+problemRoutes.put(
+  '/update-problem/:problemId',
+  authMiddleware,
+  checkAdmin,
+  updateProblem
+);
+
+problemRoutes.delete(
+  '/delete-problem/:id',
+  authMiddleware,
+  checkAdmin,
+  deleteProblem
+);
+
+problemRoutes.get(
+  '/get-solved-problems',
+  authMiddleware,
+  getAllProblemsSolvedByUser
+);
+
+export default problemRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\routes\roadmaps.routes.js
+==============================
+
+import express from 'express';
+import { authMiddleware, checkAdmin, optionalAuth } from '../middleware/auth.middleware.js';
+import {
+  getAllRoadmaps,
+  getRoadmap,
+  saveProgress,
+  resetProgress,
+  getAllRoadmapsAdmin,
+  getRoadmapAdmin,
+  createRoadmap,
+  updateRoadmap,
+  deleteRoadmap,
+  togglePublish,
+} from '../controllers/roadmaps.controller.js';
+
+const roadmapRoutes = express.Router();
+
+// ─── Public (optional auth for progress injection) ────────────────────────────
+roadmapRoutes.get('/getAllRoadmaps', optionalAuth, getAllRoadmaps);
+roadmapRoutes.get('/getRoadmap/:slug', optionalAuth, getRoadmap);
+
+// ─── User progress (auth required) ───────────────────────────────────────────
+roadmapRoutes.post('/progress/:id', authMiddleware, saveProgress);
+roadmapRoutes.delete('/progress/:id', authMiddleware, resetProgress);
+
+// ─── Admin ────────────────────────────────────────────────────────────────────
+roadmapRoutes.get('/admin/getAll', authMiddleware, checkAdmin, getAllRoadmapsAdmin);
+roadmapRoutes.get('/admin/get/:id', authMiddleware, checkAdmin, getRoadmapAdmin);
+roadmapRoutes.post('/createRoadmap', authMiddleware, checkAdmin, createRoadmap);
+roadmapRoutes.put('/updateRoadmap/:id', authMiddleware, checkAdmin, updateRoadmap);
+roadmapRoutes.delete('/deleteRoadmap/:id', authMiddleware, checkAdmin, deleteRoadmap);
+roadmapRoutes.patch('/togglePublish/:id', authMiddleware, checkAdmin, togglePublish);
+
+export default roadmapRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\routes\runCode.routes.js
+==============================
+
+import express from "express";
+import { authMiddleware } from "../middleware/auth.middleware.js";
+import { runProblem, submitProblem } from "../controllers/runProblem.controller.js";
+
+const runCode = express.Router();
+
+runCode.post("/runCode", authMiddleware, runProblem);
+runCode.post("/submitCode", authMiddleware, submitProblem);
+
+export default runCode;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\routes\sheets.routes.js
+==============================
+
+import express from 'express';
+import { authMiddleware } from '../middleware/auth.middleware.js';
+import {
+  addProblemToSheet,
+  createSheet,
+  deleteSheet,
+  getAllSheetDetails,
+  getIndividualSheetDetails,
+  removeProblemFromSheet,
+  updateProblemsInSheet,
+  updateSheet,
+} from '../controllers/playlist.controller.js';
+import { optionalAuth } from '../middleware/optionalAuth.middleware.js';
+
+const sheetsRoutes = express.Router();
+
+sheetsRoutes.get('/',  getAllSheetDetails);
+
+sheetsRoutes.get('/:sheetId', optionalAuth, getIndividualSheetDetails);
+
+sheetsRoutes.post('/createSheet', authMiddleware, createSheet);
+
+sheetsRoutes.post('/:sheetId/addProblem', authMiddleware, addProblemToSheet);
+
+sheetsRoutes.delete('/:sheetId', authMiddleware, deleteSheet);
+
+sheetsRoutes.delete(
+  '/:sheetId/removeProblem',
+  authMiddleware,
+  removeProblemFromSheet
+);
+
+sheetsRoutes.post(
+  '/:sheetId/updateProblems',
+  authMiddleware,
+  updateProblemsInSheet
+);
+
+sheetsRoutes.put('/:sheetId', authMiddleware, updateSheet);
+
+export default sheetsRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\routes\submission.routes.js
+==============================
+
+import express from 'express';
+import { authMiddleware } from '../middleware/auth.middleware.js';
+import {
+  getUserSubmissions,
+  getUserSubmissionsForProblem,
+} from '../controllers/submission.controller.js';
+
+const submissionRoutes = express.Router();
+
+// submissionRoutes.get('/get-all-submissions', authMiddleware, getAllSubmission);
+// submissionRoutes.get(
+//   '/get-submission/:problemId',
+//   authMiddleware,
+//   getSubmissionsForProblem
+// );
+
+// submissionRoutes.get(
+//   '/get-submissions-count/:problemId',
+//   authMiddleware,
+//   getAllTheSubmissionsForProblem
+// );
+
+submissionRoutes.get('/getUserSubmissions', authMiddleware, getUserSubmissions);
+submissionRoutes.get('/getUserSubmissionsForSpecificProblem/:problemId', authMiddleware, getUserSubmissionsForProblem);
+
+
+
+export default submissionRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src\routes\userStats.routes.js
+==============================
+
+import express from 'express';
+import { authMiddleware } from '../middleware/auth.middleware.js';
+import { getUserHeatMapData, getUserProgressData, getUserSolvedStats } from '../controllers/userStats.controller.js';
+
+const userStatsRoutes = express.Router();
+
+
+userStatsRoutes.get('/getUserHeatMapData', authMiddleware, getUserHeatMapData);
+userStatsRoutes.get('/getUserProgress', authMiddleware, getUserProgressData);
+userStatsRoutes.get('/getUserSolvedStats', authMiddleware, getUserSolvedStats);
+
+
+
+export default userStatsRoutes;
+
+
+
+
+

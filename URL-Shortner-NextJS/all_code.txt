@@ -1,0 +1,6463 @@
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\database\page.tsx
+==============================
+
+import { SeedDatabaseButton } from "@/components/admin/seed-database-button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { AlertTriangle, Database, RefreshCcw } from "lucide-react";
+import { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Database Management | Admin | ShortLink",
+  description: "Database management tools for ShortLink application",
+};
+
+export default function DatabasePage() {
+  return (
+    <>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-3xl font-bold tracking-tight">
+          Database Management
+        </h1>
+      </div>
+
+      <div className="grid gap-6">
+        <Card className="shadow-sm">
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <div className="p-2 rounded-md bg-purple-100 dark:bg-purple-900/20 text-purple-500">
+                <Database className="size-5" />
+              </div>
+              <CardTitle>Seed Database</CardTitle>
+            </div>
+            <CardDescription>
+              Populate the database with test data for development and testing
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-md p-4 flex items-center gap-3">
+                <AlertTriangle className="size-5 text-amber-600 dark:text-amber-400 mt-0.5" />
+              </div>
+              <div>
+                <h3 className="font-medium text-amber-800 dark:text-amber-300 mb-1">
+                  Development Use Only
+                </h3>
+                <p className="text-sm text-amber-700 dark:text-amber-400">
+                  This tool is intended for development and testing purposes
+                  only. Seeding the database will create test users, URLs, and
+                  other data.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-muted p-4 rounded-md">
+              <h3 className="font-medium mb-2 flex items-center gap-2">
+                <RefreshCcw className="size-4" />
+                Seed Database with Test Data
+              </h3>
+              <p className="text-sm text-muted-foreground mb-4">
+                This will create test users including an admin user
+                (admin@example.com / admin123), sample URLs, and other test data
+                needed for development.
+              </p>
+              <SeedDatabaseButton />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\layout.tsx
+==============================
+
+import { AdminSidebar } from "@/components/admin/admin-sidebar";
+import { auth } from "@/server/auth";
+import { redirect } from "next/navigation";
+import { ReactNode } from "react";
+
+interface AdminLayoutProps {
+  children: ReactNode;
+}
+
+export default async function AdminLayout({ children }: AdminLayoutProps) {
+  const session = await auth();
+
+  if (!session?.user) {
+    redirect("/login");
+  }
+
+  if (session.user.role !== "admin") {
+    redirect("/dashboard");
+  }
+
+  return (
+    <div className="flex flex-col min-h-screen pt-14">
+      <div className="flex flex-1 w-full">
+        <AdminSidebar />
+        <main className="flex-1 ml-0 md:ml-64 overflow-auto">
+          <div className="container py-6 md:py-8 px-4 md:px-6">{children}</div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\page.tsx
+==============================
+
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  AlertTriangle,
+  ArrowRight,
+  Database,
+  Link2Icon,
+  Users,
+} from "lucide-react";
+import { Metadata } from "next";
+import Link from "next/link";
+
+export const metadata: Metadata = {
+  title: "Admin Dashboard | ShirtLink",
+  description: "Admin dashboard for ShirtLink",
+};
+
+export default function AdminPage() {
+  const adminModules = [
+    {
+      title: "URL Management",
+      description: "View, edit, and manage all shortened URLs",
+      icon: <Link2Icon className="size-5" />,
+      href: "/admin/urls",
+      color: "text-blue-500",
+      bgColor: "bg-blue-100 dark:bg-blue-900/20",
+    },
+    {
+      title: "Flagged URLs",
+      description: "Review and moderate flagged URLs",
+      icon: <AlertTriangle className="size-5" />,
+      href: "/admin/urls/flagged",
+      color: "text-yellow-500",
+      bgColor: "bg-yellow-100 dark:bg-yellow-900/20",
+    },
+    {
+      title: "User Management",
+      description: "Manage user accounts and permissions",
+      icon: <Users className="size-5" />,
+      href: "/admin/users",
+      color: "text-indigo-500",
+      bgColor: "bg-indigo-100 dark:bg-indigo-900/20",
+    },
+    {
+      title: "Database Management",
+      description: "Seed and manage database data",
+      icon: <Database className="size-5" />,
+      href: "/admin/database",
+      color: "text-purple-500",
+      bgColor: "bg-purple-100 dark:bg-purple-900/20",
+    },
+  ];
+
+  return (
+    <>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-3xl font-bold tracking-tight">Admin Dashboard</h1>
+      </div>
+
+      <div className="grid gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {adminModules.map((module) => (
+            <Card key={module.href} className="overflow-hidden">
+              <CardHeader className="pb-2">
+                <div className="flex items-center gap-2">
+                  <div
+                    className={`p-2 rounded-md ${module.bgColor} ${module.color}`}
+                  >
+                    {module.icon}
+                  </div>
+                  <CardTitle className="text-xl">{module.title}</CardTitle>
+                </div>
+                <CardDescription>{module.description}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Link href={module.href}>
+                  <Button
+                    variant={"outline"}
+                    className="w-full justify-between group"
+                  >
+                    Go to {module.title}
+                    <ArrowRight className="size-4 transition-transform group-hover:translate-x-1" />
+                  </Button>
+                </Link>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\urls\flagged\page.tsx
+==============================
+
+import { UrlsTable } from "@/components/admin/urls/urls-table";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { getAllUrls } from "@/server/actions/admin/urls/get-all-urls";
+import { auth } from "@/server/auth";
+import { AlertTriangle, ArrowLeft, ShieldAlert } from "lucide-react";
+import { Metadata } from "next";
+import Link from "next/link";
+import { redirect } from "next/navigation";
+
+export const metadata: Metadata = {
+  title: "Flagged URLs | Admin | ShortLink",
+  description: "Review potentially unsafe URLs in the ShortLink application",
+};
+
+export default async function FlaggedURLsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{
+    page?: string;
+    search?: string;
+    sortBy?: string;
+    sortOrder?: string;
+  }>;
+}) {
+  const session = await auth();
+
+  if (!session?.user) {
+    redirect("/login");
+  }
+
+  if (session?.user.role !== "admin") {
+    redirect("/dashboard");
+  }
+
+  const params = await searchParams;
+  const page = params.page ? parseInt(params.page) : 1;
+  const search = params.search || "";
+  const sortBy = (params.sortBy || "createdAt") as
+    | "originalUrl"
+    | "shortCode"
+    | "createdAt"
+    | "clicks"
+    | "userName";
+  const sortOrder = (params.sortOrder || "desc") as "asc" | "desc";
+
+  const response = await getAllUrls({
+    page,
+    limit: 10,
+    search,
+    sortBy,
+    sortOrder,
+  });
+
+  const urls =
+    response.success && response.data
+      ? response.data.urls.filter((url) => url.flagged)
+      : [];
+
+  const total = urls.length;
+
+  const categorizedUrls = urls.reduce((acc, url) => {
+    const reason = url.flagReason || "unknown";
+    const category = reason.toLowerCase().includes("inappropriate")
+      ? "inappropriate"
+      : reason.toLowerCase().includes("security") ||
+        reason.toLowerCase().includes("malware") ||
+        reason.toLowerCase().includes("phishing") ||
+        reason.toLowerCase().includes("suspicious")
+      ? "security"
+      : "other";
+
+    if (!acc[category]) {
+      acc[category] = [];
+    }
+    acc[category].push(url);
+    return acc;
+  }, {} as Record<string, typeof urls>);
+
+  return (
+    <>
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-bold tracking-tight">Flagged URLs</h1>
+          <div className="bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300 px-3 py-1 rounded-full text-sm flex items-center gap-1.5">
+            <AlertTriangle className="size-4" />
+            <span className="font-medium">{total} URLs</span> Requires Review
+          </div>
+        </div>
+        <Link href={"/admin/urls"} passHref>
+          <Button variant={"outline"} size={"sm"} className="gap-2">
+            <ArrowLeft className="size-4" />
+            Back to All URLs
+          </Button>
+        </Link>
+      </div>
+
+      {total === 0 ? (
+        <div>
+          <Card className="shadow-sm border-green-200 dark:border-green-800">
+            <CardContent className="pt-6 pb-8 flex flex-col items-center justify-center">
+              <div className="size-16 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center mb-4">
+                <AlertTriangle className="size-8 text-green-500 dark:text-green-400" />
+              </div>
+              <h3 className="text-xl font-medium mb-2">No Flagged URLs</h3>
+              <p className="text-muted-foreground text-center max-w-md">
+                All flagged URLs have been reviewed and are safe to use.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
+        <div className="grid gap-8">
+          <Card className="shadow-sm border-yellow-200 dark:border-yellow-800">
+            <CardHeader className="border-b px-3 py-1 border-yellow-100 dark:border-yellow-900/50 bg-yellow-50/50 dark:bg-yellow-900/20">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="size-5 text-yellow-600 dark:text-yellow-400" />
+                <CardTitle className="text-yellow-800 dark:text-yellow-300">
+                  Flagged URLs
+                </CardTitle>
+              </div>
+              <CardDescription>
+                These URLs have been automatically flagged by our AI system as
+                potentially unsafe or inappropriate. Please review each URL
+                carefully before taking action.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="pt-6">
+              {categorizedUrls.security &&
+                categorizedUrls.security.length > 0 && (
+                  <div className="mb-8">
+                    <div className="flex items-center gap-2 mb-4">
+                      <ShieldAlert className="size-5 text-red-500 dark:text-red-400" />
+                      <h3 className="text-lg font-medium text-red-700 dark:text-red-400">
+                        Security Concerns
+                      </h3>
+                    </div>
+                    <Card className="border-red-200 dark:border-red-900/50 bg-red-50/30 dark:bg-red-900/10 shadow-sm mb-6">
+                      <CardContent className="pt-4">
+                        <p className="text-sm text-red-700 dark:text-red-400 mb-2">
+                          These URLs have been flagged due to security concerns.
+                          Please review each URL carefully before taking action.
+                        </p>
+                      </CardContent>
+                    </Card>
+                    <UrlsTable
+                      urls={categorizedUrls.security}
+                      total={categorizedUrls.security.length}
+                      currentPage={page}
+                      currentSearch={search}
+                      currentSortBy={sortBy}
+                      currentSortOrder={sortOrder}
+                      highlightStyle="security"
+                    />
+                  </div>
+                )}
+
+              {categorizedUrls.inappropriate &&
+                categorizedUrls.inappropriate.length > 0 && (
+                  <div className="mb-8">
+                    <div className="flex items-center gap-2 mb-4">
+                      <ShieldAlert className="size-5 text-red-500 dark:text-red-400" />
+                      <h3 className="text-lg font-medium text-red-700 dark:text-red-400">
+                        Security Concerns
+                      </h3>
+                    </div>
+                    <Card className="border-red-200 dark:border-red-900/50 bg-red-50/30 dark:bg-red-900/10 shadow-sm mb-6">
+                      <CardContent className="pt-4">
+                        <p className="text-sm text-red-700 dark:text-red-400 mb-2">
+                          These URLs have been flagged due to inappropriate
+                          content. Please review each URL carefully before
+                          taking action.
+                        </p>
+                      </CardContent>
+                    </Card>
+                    <UrlsTable
+                      urls={categorizedUrls.inappropriate}
+                      total={categorizedUrls.inappropriate.length}
+                      currentPage={page}
+                      currentSearch={search}
+                      currentSortBy={sortBy}
+                      currentSortOrder={sortOrder}
+                      highlightStyle="inappropriate"
+                    />
+                  </div>
+                )}
+
+              {categorizedUrls.other && categorizedUrls.other.length > 0 && (
+                <div className="mb-8">
+                  <div className="flex items-center gap-2 mb-4">
+                    <AlertTriangle className="size-5 text-yellow-500 dark:text-yellow-400" />
+                    <h3 className="text-lg font-medium text-yellow-700 dark:text-yellow-400">
+                      Other Concerns
+                    </h3>
+                  </div>
+                  <Card className="border-yellow-200 dark:border-yellow-900/50 bg-yellow-50/30 dark:bg-yellow-900/10 shadow-sm mb-6">
+                    <CardContent className="pt-4">
+                      <p className="text-sm text-yellow-700 dark:text-yellow-400 mb-2">
+                        These URLs have been flagged due to inappropriate
+                        content. Please review each URL carefully before taking
+                        action.
+                      </p>
+                    </CardContent>
+                  </Card>
+                  <UrlsTable
+                    urls={categorizedUrls.other}
+                    total={categorizedUrls.other.length}
+                    currentPage={page}
+                    currentSearch={search}
+                    currentSortBy={sortBy}
+                    currentSortOrder={sortOrder}
+                    highlightStyle="other"
+                  />
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+    </>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\urls\page.tsx
+==============================
+
+import { UrlFilter } from "@/components/admin/urls/url-filter";
+import { UrlSearch } from "@/components/admin/urls/url-search";
+import { UrlsTable } from "@/components/admin/urls/urls-table";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { getAllUrls } from "@/server/actions/admin/urls/get-all-urls";
+import { auth } from "@/server/auth";
+import { Metadata } from "next";
+import { redirect } from "next/navigation";
+
+export const metadata: Metadata = {
+  title: "URL Management | Admin | ShortLink",
+  description: "Manage URLs in the ShortLink application",
+};
+
+export default async function AdminUrlsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{
+    page?: string;
+    search?: string;
+    sortBy?: string;
+    sortOrder?: string;
+    filter?: string;
+  }>;
+}) {
+  const session = await auth();
+
+  if (!session?.user) {
+    redirect("/login");
+  }
+
+  if (session?.user.role !== "admin") {
+    redirect("/dashboard");
+  }
+
+  const params = await searchParams;
+  const page = params.page ? parseInt(params.page) : 1;
+  const search = params.search || "";
+  const sortBy = (params.sortBy || "createdAt") as
+    | "originalUrl"
+    | "shortCode"
+    | "createdAt"
+    | "clicks"
+    | "userName";
+  const sortOrder = (params.sortOrder || "desc") as "asc" | "desc";
+  const filter = (params.filter || "all") as
+    | "all"
+    | "flagged"
+    | "security"
+    | "inappropriate"
+    | "other";
+
+  const getHighlightStyle = () => {
+    switch (filter) {
+      case "security":
+        return "security";
+      case "inappropriate":
+        return "inappropriate";
+      case "other":
+        return "other";
+      default:
+        return "none";
+    }
+  };
+
+  const response = await getAllUrls({
+    page,
+    limit: 10,
+    search,
+    sortBy,
+    sortOrder,
+    filter,
+  });
+
+  const urls = response.success && response.data ? response.data.urls : [];
+  const total = response.success && response.data ? response.data.total : 0;
+
+  return (
+    <>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-3xl font-bold tracking-tight">URL Management</h1>
+      </div>
+
+      <div className="grid gap-6">
+        <Card className="shadow-sm">
+          <CardHeader className="pb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <CardTitle>URLs</CardTitle>
+                <CardDescription>
+                  View and manage all URLs in the system.
+                </CardDescription>
+              </div>
+              <UrlSearch initialSearch={search} />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <UrlFilter initialFilter={filter} />
+              <UrlsTable
+                urls={urls}
+                total={total}
+                currentPage={page}
+                currentSearch={search}
+                currentSortBy={sortBy}
+                currentSortOrder={sortOrder}
+                highlightStyle={getHighlightStyle()}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\users\page.tsx
+==============================
+
+import { UserSearch } from "@/components/admin/users/user-search";
+import { UsersTable } from "@/components/admin/users/users-table";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { getAllUsers } from "@/server/actions/admin/users/get-all-users";
+import { auth } from "@/server/auth";
+import { ArrowLeft } from "lucide-react";
+import { Metadata } from "next";
+import Link from "next/link";
+import { redirect } from "next/navigation";
+
+export const metadata: Metadata = {
+  title: "User Management | Admin | ShortLink",
+  description: "Manage users in the ShortLink application",
+};
+
+export default async function UserManagementPage({
+  searchParams,
+}: {
+  searchParams: Promise<{
+    page?: string;
+    search?: string;
+    sortBy?: string;
+    sortOrder?: string;
+  }>;
+}) {
+  const session = await auth();
+
+  // Redirect to login if not authenticated
+  if (!session?.user) {
+    redirect("/login");
+  }
+
+  // Redirect to dashboard if not an admin
+  if (session.user.role !== "admin") {
+    redirect("/dashboard");
+  }
+
+  // Parse search params
+  const params = await searchParams;
+  const page = params.page ? parseInt(params.page) : 1;
+  const search = params.search || "";
+  const sortBy = (params.sortBy || "createdAt") as
+    | "name"
+    | "email"
+    | "role"
+    | "createdAt";
+  const sortOrder = (params.sortOrder || "desc") as "asc" | "desc";
+
+  const response = await getAllUsers({
+    page,
+    search,
+    sortBy,
+    sortOrder,
+  });
+
+  const users = response.success && response.data ? response.data.users : [];
+  const total = response.success && response.data ? response.data.total : 0;
+
+  return (
+    <>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-3xl font-bold tracking-tight">User Management</h1>
+        <Link href="/admin" passHref>
+          <Button variant={"outline"} size={"sm"} className="gap-2">
+            <ArrowLeft className="size-4" />
+            Back to Admin
+          </Button>
+        </Link>
+      </div>
+
+      <div className="grid gap-6">
+        <Card className="shadow-sm">
+          <CardHeader>
+            <CardTitle>Users</CardTitle>
+            <CardDescription>
+              View and manage all users in the system
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <UserSearch initialSearch={search} />
+              <UsersTable
+                users={users}
+                total={total}
+                currentPage={page}
+                currentSearch={search}
+                currentSortBy={sortBy}
+                currentSortOrder={sortOrder}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(auth)\layout.tsx
+==============================
+
+import { ReactNode } from 'react';
+
+interface AuthLayoutProps {
+  children: ReactNode;
+}
+
+export default function AuthLayout({ children }: AuthLayoutProps) {
+  return (
+    <div className='flex h-screen w-screen items-center justify-center'>
+      {children}
+    </div>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(auth)\login\page.tsx
+==============================
+
+import { Suspense } from 'react';
+import { LoginForm } from '@/components/auth/login-form';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Loader2 } from 'lucide-react';
+
+export default function LoginPage() {
+  return (
+    <div className='container flex h-screen w-screen flex-col items-center justify-center'>
+      <div className='mx-auto flex w-full flex-col justify-center space-y-6 sm:w-[350px]'>
+        <div className='flex flex-col space-y-2 text-center'>
+          <h1 className='text-2xl font-semibold tracking-tight'>
+            Welcome back!
+          </h1>
+          <p className='text-sm text-muted-foreground'>
+            Enter your credentials below to log in to your account.
+          </p>
+        </div>
+
+        <Card>
+          <CardHeader className='space-y-1'>
+            <CardTitle>Sign in</CardTitle>
+            <CardDescription>
+              Choose a sign-in method below to continue.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {/* ✅ Wrap the client component in Suspense */}
+            <Suspense
+              fallback={
+                <div className='flex justify-center py-6'>
+                  <Loader2 className='size-5 animate-spin text-muted-foreground' />
+                </div>
+              }
+            >
+              <LoginForm />
+            </Suspense>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(auth)\register\page.tsx
+==============================
+
+import { RegisterForm } from '@/components/auth/register-form';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+
+export default function RegisterPage() {
+  return (
+    <div className='container flex h-screen w-screen flex-col items-center justify-center'>
+      <div className='mx-auto flex w-full flex-col justify-center space-y-6 sm:w-[350px]'>
+        <div className='flex flex-col space-y-2 text-center'>
+          <h1 className='text-2xl font-semibold tracking-tight'>
+            Create an account
+          </h1>
+          <p className='text-sm text-muted-foreground'>
+            Enter your details to create an account.
+          </p>
+        </div>
+
+        <Card>
+          <CardHeader className='space-y-1'>
+            <CardTitle>Sign up</CardTitle>
+            <CardDescription>
+              Fill your details below to create an account.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <RegisterForm />
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\layout.tsx
+==============================
+
+import { Header } from "@/components/layout/header";
+import { auth } from "@/server/auth";
+import { redirect } from "next/navigation";
+import { ReactNode } from "react";
+
+interface DashboardLayoutProps {
+  children: ReactNode;
+}
+
+export default async function DashboardLayout({
+  children,
+}: DashboardLayoutProps) {
+  const session = await auth();
+  if (!session?.user) {
+    redirect("/login");
+  }
+
+  return (
+    <div className="min-h-[calc(100vh-64px-56px)]">
+      <Header />
+      <div className="container max-w-6xl mx-auto py-10 px-4 md:px-8">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\page.tsx
+==============================
+
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { UrlShortenerForm } from '@/components/urls/url-shortener-form';
+import { UserUrlsTable } from '@/components/urls/user-urls-table';
+import { getUserUrls } from '@/server/actions/urls/get-user-urls';
+import { auth } from '@/server/auth';
+import { Metadata } from 'next';
+import Link from 'next/link';
+
+export const metadata: Metadata = {
+  title: 'Dashboard | ShortLink',
+  description: 'Dashboard page',
+};
+
+export default async function DashboardPage() {
+  const session = await auth();
+
+  // Get user's URLs
+  const response = await getUserUrls(session?.user.id as string);
+  const userUrls = response.success && response.data ? response.data : [];
+
+  // console.log('response', response);
+  // console.log('userUrls', userUrls);
+
+  return (
+    <>
+      <h1 className='text-3xl font-bold mb-8 text-center'>Dashboard</h1>
+
+      <div className='grid gap-8'>
+        <Card className='shadow-sm'>
+          <CardHeader>
+            <CardTitle>Create New Short URL</CardTitle>
+            <CardDescription>
+              Enter a long URL to create a shortened link. You can also
+              customize the short code.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <UrlShortenerForm />
+          </CardContent>
+        </Card>
+
+        <Card className='shadow-sm border border-dashed'>
+          <CardHeader>
+            <CardTitle>Your URLs</CardTitle>
+            <CardDescription>
+              Manage and track your shortened URLs.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <UserUrlsTable urls={userUrls} />
+          </CardContent>
+        </Card>
+
+        {process.env.NODE_ENV === 'development' &&
+          session?.user.role === 'admin' && (
+            <div className='text-center mt-4'>
+              <Link
+                href={'/admin'}
+                className='text-sm text-muted-foreground hover:text-primary underline'
+              >
+                Admin Tools
+              </Link>
+            </div>
+          )}
+      </div>
+    </>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\stats\page.tsx
+==============================
+
+"use client";
+
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  ChartConfig,
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+} from "@/components/ui/chart";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { getUserUrls } from "@/server/actions/urls/get-user-urls";
+import { Loader2, TrendingDown, TrendingUp } from "lucide-react";
+import { useSession } from "next-auth/react";
+import { redirect } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Label,
+  Pie,
+  PieChart,
+  XAxis,
+} from "recharts";
+
+interface Url {
+  id: number;
+  originalUrl: string;
+  shortCode: string;
+  createdAt: Date;
+  clicks: number;
+}
+
+export default function StatsPage() {
+  const { data: session, status } = useSession();
+  const [userUrls, setUserUrls] = useState<Url[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      redirect("/login");
+    }
+
+    if (status === "authenticated" && session?.user?.id) {
+      const fetchUserUrls = async () => {
+        try {
+          if (!session?.user?.id) return;
+          const response = await getUserUrls(session.user.id);
+          if (response.success && response.data) {
+            setUserUrls(response.data);
+          }
+        } catch (error) {
+          console.error("Error fetching user URLs", error);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      fetchUserUrls();
+    }
+  }, [session, status]);
+
+  // calculate total clicks
+  const totalClicks = userUrls.reduce((sum, url) => sum + url.clicks, 0);
+
+  // calculate average clicks per URL
+  const avgClicks =
+    userUrls.length > 0
+      ? Math.round((totalClicks / userUrls.length) * 10) / 10
+      : 0;
+
+  // get top performing URL
+  const topUrls = [...userUrls].sort((a, b) => b.clicks - a.clicks).slice(0, 5);
+
+  // prepare data for the bar chart with numeric values
+  const barChartData = useMemo(() => {
+    return topUrls.map((url, index) => ({
+      url: url.shortCode,
+      clicks: url.clicks,
+      originalUrl: url.originalUrl,
+    }));
+  }, [topUrls]);
+
+  // prepare data for the pie chart with numerc values
+  const pieChartData = useMemo(() => {
+    return topUrls.map((url, index) => ({
+      browser: url.shortCode,
+      vistors: url.clicks,
+      fill: `hsl(var(--chart-${index + 1}))`,
+    }));
+  }, [topUrls]);
+
+  // bar chart config
+  const barChartConfig = {
+    clicks: {
+      label: "Clicks",
+      color: "hsl(var(--chart-1))",
+    },
+    ...topUrls.reduce((acc, url, index) => {
+      acc[url.shortCode] = {
+        label: url.shortCode,
+        color: `hsl(var(--chart-${index + 1}))`,
+      };
+      return acc;
+    }, {} as ChartConfig),
+  };
+
+  // pie chart config
+  const pieChartConfig = {
+    visitors: {
+      label: "Clicks",
+    },
+    ...topUrls.reduce((acc, url, index) => {
+      acc[url.shortCode] = {
+        label: url.shortCode,
+        color: `hsl(var(--chart-${index + 1}))`,
+      };
+      return acc;
+    }, {} as ChartConfig),
+  };
+
+  if (status === "loading" || loading) {
+    return (
+      <div className="flex justify-center items-center min-h-[400px]">
+        <Loader2 className="size-8 animate-spin" />
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <h1 className="text-3xl font-bold mb-8 text-center">URL Statistics</h1>
+
+      <div className="grid gap-8 md:grid-cols-3 mb-8">
+        <Card className="shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle>Total URLs</CardTitle>
+            <CardDescription>Number of URLs you&apos;ve created</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold">{userUrls.length}</p>
+          </CardContent>
+        </Card>
+
+        <Card className="shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle>Total Clicks</CardTitle>
+            <CardDescription>Total clicks acroos all URLs</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold">{totalClicks}</p>
+          </CardContent>
+        </Card>
+
+        <Card className="shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle>Average Clicks</CardTitle>
+            <CardDescription>Average clicks per URL</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold">{avgClicks}</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className="shadow-sm">
+        <CardHeader>
+          <CardTitle>Top Performing URLs</CardTitle>
+          <CardDescription>Top 5 URLs with most clicks</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {barChartData.length > 0 ? (
+            <Tabs defaultValue="bar" className="w-full">
+              <TabsList className="mb-4">
+                <TabsTrigger value="bar">Bar Chart</TabsTrigger>
+                <TabsTrigger value="pie">Pie Chart</TabsTrigger>
+              </TabsList>
+              <TabsContent value="bar" className="min-h-[400px] mt-4">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>URL Perfomance</CardTitle>
+                    <CardDescription>
+                      Top 5 URLs with most clicks
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <ChartContainer config={barChartConfig}>
+                      <BarChart accessibilityLayer data={barChartData}>
+                        <CartesianGrid vertical={false} />
+                        <XAxis
+                          dataKey="url"
+                          tickLine={false}
+                          tickMargin={10}
+                          axisLine={false}
+                        />
+                        <ChartTooltip
+                          cursor={false}
+                          content={
+                            <ChartTooltipContent
+                              indicator="dashed"
+                              labelFormatter={(label) => `URL: ${label}`}
+                            />
+                          }
+                        />
+                        <Bar dataKey={"clicks"} radius={4}>
+                          {barChartData.map((entry, index) => (
+                            <Cell
+                              key={`cell-${index}`}
+                              fill={`hsl(var(--chart-${index + 1}))`}
+                            />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ChartContainer>
+                  </CardContent>
+                  <CardFooter className="flex-col items-start gap-2 text-sm">
+                    <div className="flex gap-2 font-medium leading-none">
+                      {avgClicks > 5 ? (
+                        <>
+                          Trending up by {((avgClicks / 5) * 100).toFixed(1)}%
+                          this month{" "}
+                          <TrendingUp className="size-4 text-green-500" />
+                        </>
+                      ) : (
+                        <>
+                          Coudl improve with only {5 - avgClicks} more clicks{" "}
+                          <TrendingDown className="size-4 text-amber-500" />
+                        </>
+                      )}
+                    </div>
+                    <div className="leading-none text-muted-foreground">
+                      Showing click count for your top {topUrls.length} URLs
+                    </div>
+                  </CardFooter>
+                </Card>
+              </TabsContent>
+              <TabsContent value="pie" className="min-h-[400px] mt-4">
+                <Card className="flex flex-col">
+                  <CardHeader className="items-center pb-0">
+                    <CardTitle>URL Clicks Distrubtion</CardTitle>
+                    <CardDescription>
+                      Top {topUrls.length} URLs with most clicks
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="flex-1 pb-0">
+                    <ChartContainer
+                      config={pieChartConfig}
+                      className="mx-auto aspect-square max-h-[350px]"
+                    >
+                      <PieChart>
+                        <ChartTooltip
+                          cursor={false}
+                          content={<ChartTooltipContent hideLabel />}
+                        />
+                        <Pie
+                          data={pieChartData}
+                          dataKey="vistors"
+                          nameKey="browser"
+                          innerRadius={60}
+                          strokeWidth={5}
+                        >
+                          <Label
+                            content={({ viewBox }) => {
+                              if (
+                                viewBox &&
+                                "cx" in viewBox &&
+                                "cy" in viewBox
+                              ) {
+                                return (
+                                  <text
+                                    x={viewBox.cx}
+                                    y={viewBox.cy}
+                                    textAnchor="middle"
+                                    dominantBaseline={"middle"}
+                                  >
+                                    <tspan
+                                      x={viewBox.cx}
+                                      y={viewBox.cy}
+                                      className="fill-foreground text-3xl font-bold"
+                                    >
+                                      {totalClicks.toLocaleString()}
+                                    </tspan>
+                                    <tspan
+                                      x={viewBox.cx}
+                                      y={(viewBox.cy || 20) + 20}
+                                      className="fill-muted-foreground text-xs mb-2"
+                                    >
+                                      Total Clicks
+                                    </tspan>
+                                  </text>
+                                );
+                              }
+                            }}
+                          ></Label>
+                        </Pie>
+                      </PieChart>
+                    </ChartContainer>
+                  </CardContent>
+                  <CardFooter className="flex-col gap-2 text-sm">
+                    <div className="flex items-center gap-2 font-medium leading-none">
+                      {userUrls.length > 0 && (
+                        <>
+                          {avgClicks > 5 ? (
+                            <>
+                              Trending up by{" "}
+                              {((avgClicks / 5) * 100).toFixed(1)}% this month{" "}
+                              <TrendingUp className="size-4 text-green-500" />
+                            </>
+                          ) : (
+                            <>
+                              Could improve with only {5 - avgClicks} more
+                              clicks{" "}
+                              <TrendingDown className="size-4 text-amber-500" />
+                            </>
+                          )}
+                        </>
+                      )}
+                    </div>
+                    <div className="leading-none text-muted-foreground">
+                      Showing click count for your top {topUrls.length} URLs
+                    </div>
+                  </CardFooter>
+                </Card>
+              </TabsContent>
+            </Tabs>
+          ) : (
+            <div className="text-center py-8 text-muted-foreground">
+              No URL data available yet. Create some short URLs to see the
+              stats.
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(user)\r\[shortCode]\page.tsx
+==============================
+
+import { Button } from "@/components/ui/button";
+import { getUrlByShortCode } from "@/server/actions/urls/get-url";
+import { AlertTriangle, ExternalLink } from "lucide-react";
+import { Metadata } from "next";
+import Link from "next/link";
+import { redirect } from "next/navigation";
+
+export const metadata: Metadata = {
+  title: "Redirecting...",
+  description: "You are being redirected to the original URL",
+};
+
+type Params = Promise<{ shortCode: string }>;
+
+export default async function RedirectPage(props: { params: Params }) {
+  const { shortCode } = await props.params;
+
+  const response = await getUrlByShortCode(shortCode);
+
+  if (response.success && response.data) {
+    if (response.data.flagged) {
+      return (
+        <div className="flex h-[calc(100vh-64px)] items-center justify-center px-4">
+          <div className="w-full max-w-md mx-auto text-center">
+            <div className="flex justify-center mb-6">
+              <div className="size-16 rounded-full bg-yellow-100 dark:bg-yellow-900/30 flex items-center justify-center">
+                <AlertTriangle className="size-8 text-yellow-600 dark:text-yellow-400" />
+              </div>
+            </div>
+            <h1 className="text-2xl font-bold text-yellow-600 dark:text-yellow-400 mb-4">
+              Caution: Flagged URL
+            </h1>
+            <p className="text-muted-foreground mb-2">
+              This link has been flagged by our safety system and is pending
+              review by an administrator.
+            </p>
+            {response.data.flagReason && (
+              <p className="text-sm text-yellow-600 dark:text-yellow-400 mb-6 bg-yellow-50 dark:bg-yellow-900/20 p-3 rounded-md">
+                Reason: {response.data.flagReason}
+              </p>
+            )}
+            <div className="flex flex-col sm:flex-row gap-3 justify-center mt-6">
+              <Button asChild variant={"outline"}>
+                <Link href={"/"}>Return to Homepage</Link>
+              </Button>
+              <Button asChild>
+                <a
+                  href={response.data.originalUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Proceed Anyway <ExternalLink className="size-4" />
+                </a>
+              </Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    redirect(response.data.originalUrl);
+  }
+
+  return (
+    <div className="flex h-[calc(100vh-64px)] items-center justify-center px-4">
+      <div className="w-full max-w-md mx-auto text-center">
+        <div className="flex justify-center mb-6">
+          <div className="size-16 rounded-full bg-destructive/10 flex items-center justify-center">
+            <AlertTriangle className="size-8 text-destructive" />
+          </div>
+        </div>
+        <h1 className="text-2xl font-bold text-destructive mb-4">
+          URL Not Found
+        </h1>
+        <p className="text-muted-foreground mb-6">
+          The short link you&apos;re trying to access doesn&apos;t exist or has
+          been removed.
+        </p>
+        <Button asChild>
+          <Link href={"/"}>Return to Homepage</Link>
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(user)\stats\page.tsx
+==============================
+
+import { Metadata } from "next";
+import { db } from "@/server/db";
+import { urls } from "@/server/db/schema";
+import { count, sql } from "drizzle-orm";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import Link from "next/link";
+
+export const metadata: Metadata = {
+  title: "Statistics | ShortLink",
+  description: "Statistics about our URL shortener service",
+};
+
+export default async function PublicStatsPage() {
+  // Get total number of URLs
+  const [urlCount] = await db.select({ value: count() }).from(urls);
+  const totalUrls = urlCount?.value || 0;
+
+  // Get total number of clicks
+  const [clicksResult] = await db
+    .select({ total: sql<number>`sum(${urls.clicks})` })
+    .from(urls);
+  const totalClicks = clicksResult?.total || 0;
+
+  return (
+    <div className="container max-w-4xl mx-auto py-10 px-4">
+      <h1 className="text-3xl font-bold mb-2 text-center">
+        Service Statistics
+      </h1>
+      <p className="text-center text-muted-foreground mb-8">
+        General statistics about our URL shortener service
+      </p>
+
+      <div className="grid gap-8 md:grid-cols-2 mb-8">
+        <Card className="shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-lg">Total URLs Shortened</CardTitle>
+            <CardDescription>
+              Number of URLs shortened with our service
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-4xl font-bold">{totalUrls.toLocaleString()}</p>
+          </CardContent>
+        </Card>
+
+        <Card className="shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-lg">Total Clicks</CardTitle>
+            <CardDescription>
+              Total number of redirects through our service
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-4xl font-bold">{totalClicks.toLocaleString()}</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="text-center">
+        <Card className="shadow-sm mb-8">
+          <CardHeader>
+            <CardTitle>Want to see your personal statistics?</CardTitle>
+            <CardDescription>
+              Sign up for an account to track your own shortened URLs and view
+              detailed statistics.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex justify-center gap-4">
+            <Button asChild>
+              <Link href="/register">Sign Up</Link>
+            </Button>
+            <Button variant="outline" asChild>
+              <Link href="/login">Login</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\api\auth\[...nextauth]\route.ts
+==============================
+
+import { GET, POST } from '@/server/auth';
+
+export { GET, POST };
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\globals.css
+==============================
+
+@import "tailwindcss";
+@import "tw-animate-css";
+
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+  --chart-1: 12 76% 61%;
+  --chart-2: 173 58% 39%;
+  --chart-3: 197 37% 24%;
+  --chart-4: 43 74% 66%;
+  --chart-5: 27 87% 67%;
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.145 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.145 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.985 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.396 0.141 25.723);
+  --destructive-foreground: oklch(0.637 0.237 25.331);
+  --border: oklch(0.269 0 0);
+  --input: oklch(0.269 0 0);
+  --ring: oklch(0.439 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(0.269 0 0);
+  --sidebar-ring: oklch(0.439 0 0);
+  --chart-1: 220 70% 50%;
+  --chart-2: 160 60% 45%;
+  --chart-3: 30 80% 55%;
+  --chart-4: 280 65% 60%;
+  --chart-5: 340 75% 55%;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\layout.tsx
+==============================
+
+import type { Metadata } from 'next';
+import { Geist, Geist_Mono } from 'next/font/google';
+import './globals.css';
+import { ToastProvider } from '@/components/providers/toast-provider';
+import { AuthProvider } from '@/components/providers/auth-provider';
+import { Header } from '@/components/layout/header';
+import { ThemeProvider } from '@/components/providers/theme-provider';
+
+const geistSans = Geist({
+  variable: '--font-geist-sans',
+  subsets: ['latin'],
+});
+
+const geistMono = Geist_Mono({
+  variable: '--font-geist-mono',
+  subsets: ['latin'],
+});
+
+export const metadata: Metadata = {
+  title: 'Create Next App',
+  description: 'Generated by create next app',
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang='en' suppressHydrationWarning>
+      <body
+        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+      >
+        <ThemeProvider>
+          <AuthProvider>
+            <ToastProvider />
+            {children}
+          </AuthProvider>
+        </ThemeProvider>
+      </body>
+    </html>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\app\page.tsx
+==============================
+
+import { UrlShortenerForm } from '@/components/urls/url-shortener-form';
+import {
+  Form,
+  FormControl,
+  FormDescription,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form';
+
+export default function Home() {
+  return (
+    <div className='flex flex-1 flex-col items-center justify-center p-6 md:p-24'>
+      <div className='w-full max-w-3xl mx-auto text-center'>
+        <h1 className='text-4xl md:text-5xl font-bold tracking-tight mb-4'>
+          Shorten Your Links
+        </h1>
+        <p className='text-lg text-muted-foreground mb-8 max-w-2xl mx-auto'>
+          Paste your long URL and get a shortened one. It&apos;s free and easy to
+          use.
+        </p>
+
+        <UrlShortenerForm />
+      </div>
+    </div>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\admin-sidebar.tsx
+==============================
+
+"use client";
+
+import { usePathname } from "next/navigation";
+import { getNavItems, NavItem } from "./nav-items";
+import Link from "next/link";
+import { cn } from "@/lib/utils";
+import { Button } from "../ui/button";
+import { ChevronRight } from "lucide-react";
+
+export function AdminSidebar() {
+  const pathname = usePathname();
+  const navItems = getNavItems();
+
+  const isActive = (item: NavItem) => {
+    if (item.exact) {
+      return pathname === item.href;
+    }
+
+    if (
+      item.href === "/admin/urls" &&
+      pathname.includes("/admin/urls/flagged")
+    ) {
+      return false;
+    }
+
+    return pathname === item.href || pathname.startsWith(`${item.href}/`);
+  };
+
+  return (
+    <div className="hidden md:flex md:w-64 md:flex-col md:fixed md:inset-y-0 md:pt-14 md:z-30 border-r bg-muted/40">
+      <div className="flex h-14 items-center border-b px-4">
+        <h2 className="text-lg font-semibold">Admin Dashbboard</h2>
+      </div>
+      <nav className="flex-1 overflow-auto py-4">
+        <ul className="space-y-1 px-2">
+          {navItems.map((item: NavItem) => (
+            <li key={item.href}>
+              <Link
+                href={item.href}
+                className={cn(
+                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                  isActive(item)
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-muted"
+                )}
+              >
+                {item.icon}
+                {item.name}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </nav>
+      <div className="border-t p-4">
+        <Link href={"/dashboard"}>
+          <Button
+            variant={"outline"}
+            size={"sm"}
+            className="w-full justify-start gap-2"
+          >
+            <ChevronRight className="size-4" />
+            Back to App
+          </Button>
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\nav-items.tsx
+==============================
+
+import {
+  AlertTriangleIcon,
+  DatabaseIcon,
+  LayoutDashboardIcon,
+  Link2Icon,
+  UsersIcon,
+} from "lucide-react";
+
+export type NavItem = {
+  name: string;
+  href: string;
+  icon: React.ReactNode;
+  exact: boolean;
+};
+
+export const getNavItems = (): NavItem[] => [
+  {
+    name: "Overview",
+    href: "/admin",
+    icon: <LayoutDashboardIcon className="size-4" />,
+    exact: true,
+  },
+  {
+    name: "URLs",
+    href: "/admin/urls",
+    icon: <Link2Icon className="size-4" />,
+    exact: true,
+  },
+  {
+    name: "Flagged URLs",
+    href: "/admin/urls/flagged",
+    icon: <AlertTriangleIcon className="size-4" />,
+    exact: true,
+  },
+  {
+    name: "Users",
+    href: "/admin/users",
+    icon: <UsersIcon className="size-4" />,
+    exact: true,
+  },
+  {
+    name: "Database",
+    href: "/admin/database",
+    icon: <DatabaseIcon className="size-4" />,
+    exact: true,
+  },
+];
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\seed-database-button.tsx
+==============================
+
+"use client";
+
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { seedDatabase } from "@/server/actions/admin/seed-database";
+import { toast } from "sonner";
+import { useRouter } from "next/navigation";
+
+export function SeedDatabaseButton() {
+  const [isLoading, setIsLoading] = useState(false);
+  const router = useRouter();
+
+  const handleSeed = async () => {
+    // Confirm before seeding
+    if (
+      !confirm(
+        "Are you sure you want to seed the database with test data? This will add test users and URLs."
+      )
+    ) {
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      const response = await seedDatabase();
+
+      if (response.success) {
+        toast.success("Database seeded", {
+          description: "Test data has been added to the database.",
+        });
+        // Refresh the page to show updated data
+        router.refresh();
+      } else {
+        toast.error("Error", {
+          description: response.error || "Failed to seed database",
+        });
+      }
+    } catch (error) {
+      console.error("Error seeding database:", error);
+      toast.error("Error", {
+        description: "An unexpected error occurred",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <Button onClick={handleSeed} disabled={isLoading}>
+      {isLoading ? (
+        <>
+          <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+          Seeding...
+        </>
+      ) : (
+        "Seed Database"
+      )}
+    </Button>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\urls\url-filter.tsx
+==============================
+
+"use client";
+
+import { Button } from "@/components/ui/button";
+import { AlertTriangle, Flag, FlagIcon, ShieldIcon } from "lucide-react";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
+import { useCallback } from "react";
+
+interface UrlFilterProps {
+  initialFilter: string;
+}
+
+export function UrlFilter({ initialFilter }: UrlFilterProps) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const pathname = usePathname();
+
+  const createQueryString = useCallback(
+    (name: string, value: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("page", "1");
+      params.set(name, value);
+      return params.toString();
+    },
+    [searchParams]
+  );
+
+  const handleFilterChange = (filter: string) => {
+    router.push(`${pathname}?${createQueryString("filter", filter)}`);
+  };
+
+  return (
+    <div className="flex flex-wrap gap-2 mb-4">
+      <Button
+        variant={initialFilter === "all" ? "default" : "outline"}
+        size={"sm"}
+        onClick={() => handleFilterChange("all")}
+        className="gap-2"
+      >
+        All URLs
+      </Button>
+
+      <Button
+        variant={initialFilter === "flagged" ? "secondary" : "outline"}
+        size={"sm"}
+        onClick={() => handleFilterChange("flagged")}
+        // className="gap-2 text-red-600 dark:text-red-400"
+      >
+        <FlagIcon className="size-4" />
+        All Flagged
+      </Button>
+
+      <Button
+        variant={initialFilter === "security" ? "secondary" : "outline"}
+        size={"sm"}
+        onClick={() => handleFilterChange("security")}
+        className="gap-2 text-red-600 dark:text-red-400"
+      >
+        <ShieldIcon className="size-4" />
+        Security Risks
+      </Button>
+
+      <Button
+        variant={initialFilter === "inappropriate" ? "secondary" : "outline"}
+        size={"sm"}
+        onClick={() => handleFilterChange("inappropriate")}
+        className="gap-2 text-orange-600 dark:text-orange-400"
+      >
+        <AlertTriangle className="size-4" />
+        Innappropriate Content
+      </Button>
+
+      <Button
+        variant={initialFilter === "other" ? "secondary" : "outline"}
+        size={"sm"}
+        onClick={() => handleFilterChange("other")}
+        className="gap-2 text-yellow-600 dark:text-yellow-400"
+      >
+        <Flag className="size-4" />
+        Other Flags
+      </Button>
+    </div>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\urls\url-search.tsx
+==============================
+
+"use client";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Search, X } from "lucide-react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useState } from "react";
+
+interface UrlSearchProps {
+  initialSearch: string;
+}
+
+export function UrlSearch({ initialSearch }: UrlSearchProps) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const pathname = usePathname();
+
+  const [search, setSearch] = useState(initialSearch);
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const params = new URLSearchParams(searchParams.toString());
+
+    // reset to first page when searching
+    params.set("page", "1");
+
+    if (search) {
+      params.set("search", search);
+    } else {
+      params.delete("search");
+    }
+
+    router.push(`${pathname}?${params.toString()}`);
+  };
+
+  const clearSearch = () => {
+    setSearch("");
+
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("search");
+    params.set("page", "1");
+
+    router.push(`${pathname}?${params.toString()}`);
+  };
+
+  return (
+    <form onSubmit={handleSearch} className="flex gap-2">
+      <div className="relative flex-1">
+        <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
+        <Input
+          type="text"
+          placeholder="Search URLs"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="pl-6"
+        />
+        {search && (
+          <Button
+            variant={"ghost"}
+            onClick={clearSearch}
+            className="absolute right-2.5 top-1/2 -translate-1/2 h-auto p-0"
+          >
+            <X className="size-4" />
+          </Button>
+        )}
+      </div>
+      <Button type="submit">Search</Button>
+    </form>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\urls\urls-table.tsx
+==============================
+
+"use client";
+
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { UrlWithUser } from "@/server/actions/admin/urls/get-all-urls";
+import { manageFlaggedUrl } from "@/server/actions/admin/urls/manage-flagged-url";
+import { formatDistanceToNow } from "date-fns";
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Ban,
+  CheckCircle,
+  Copy,
+  ExternalLink,
+  Loader2,
+  MoreHorizontal,
+  User,
+} from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { toast } from "sonner";
+
+interface UrlsTableProps {
+  urls: UrlWithUser[];
+  total: number;
+  currentPage: number;
+  currentSearch: string;
+  currentSortBy: string;
+  currentSortOrder: string;
+  highlightStyle?: "security" | "inappropriate" | "other" | "none";
+}
+
+export function UrlsTable({
+  urls,
+  total,
+  currentPage,
+  currentSearch,
+  currentSortBy,
+  currentSortOrder,
+  highlightStyle,
+}: UrlsTableProps) {
+  const router = useRouter();
+  const [copyingId, setCopyingId] = useState<number | null>(null);
+  const [actionLoading, setActionLoading] = useState<number | null>(null);
+
+  // Get the current path from window location or default to /admin/urls
+  const basePath =
+    typeof window !== "undefined" ? window.location.pathname : "/admin/urls";
+
+  // Extract any additional query parameters that should be preserved
+  const preserveParams = () => {
+    if (typeof window === "undefined") return "";
+
+    const url = new URL(window.location.href);
+    const params = new URLSearchParams(url.search);
+    let paramString = "";
+
+    // Preserve filter parameter if it exists
+    if (params.has("filter")) {
+      paramString += `&filter=${params.get("filter")}`;
+    }
+
+    return paramString;
+  };
+
+  const limit = 10;
+  const totalPage = Math.ceil(total / limit);
+
+  const handleSort = (column: string) => {
+    const params = new URLSearchParams();
+
+    if (currentSearch) {
+      params.set("search", currentSearch);
+    }
+
+    params.set("sortBy", column);
+
+    if (currentSortBy === column) {
+      params.set("sortOrder", currentSortOrder === "asc" ? "desc" : "asc");
+    } else {
+      params.set("sortOrder", "asc");
+    }
+
+    params.set("page", "1");
+
+    router.push(`${basePath}?${params.toString()}`);
+  };
+
+  const getPaginationItems = () => {
+    const items = [];
+    const additionalParams = preserveParams();
+
+    // always show first page
+    items.push(
+      <PaginationItem key={"first"}>
+        <PaginationLink
+          href={`${basePath}?page=1${
+            currentSearch ? `&search=${currentSearch}` : ""
+          }${
+            currentSortBy
+              ? `&sortBy=${currentSortBy}&sortOrder=${currentSortOrder}`
+              : ""
+          }${additionalParams}`}
+          isActive={currentPage === 1}
+        >
+          1
+        </PaginationLink>
+      </PaginationItem>
+    );
+
+    if (currentPage > 3) {
+      items.push(
+        <PaginationItem key={"ellipsis-1"}>
+          <PaginationEllipsis />
+        </PaginationItem>
+      );
+    }
+
+    for (
+      let i = Math.max(2, currentPage - 1);
+      i <= Math.min(totalPage - 1, currentPage + 1);
+      i++
+    ) {
+      if (i === 1 || i === totalPage) continue;
+
+      items.push(
+        <PaginationItem key={i}>
+          <PaginationLink
+            href={`${basePath}?page=${i}${
+              currentSearch ? `&search=${currentSearch}` : ""
+            }${
+              currentSortBy
+                ? `&sortBy=${currentSortBy}&sortOrder=${currentSortOrder}`
+                : ""
+            }${additionalParams}`}
+            isActive={currentPage === i}
+          >
+            {i}
+          </PaginationLink>
+        </PaginationItem>
+      );
+    }
+
+    if (currentPage < totalPage - 2) {
+      items.push(
+        <PaginationItem key={"ellipsis-2"}>
+          <PaginationEllipsis />
+        </PaginationItem>
+      );
+    }
+
+    if (totalPage > 1) {
+      items.push(
+        <PaginationItem key={"last"}>
+          <PaginationLink
+            href={`${basePath}?page=${totalPage}${
+              currentSearch ? `&search=${currentSearch}` : ""
+            }${
+              currentSortBy
+                ? `&sortBy=${currentSortBy}&sortOrder=${currentSortOrder}`
+                : ""
+            }${additionalParams}`}
+            isActive={currentPage === totalPage}
+          >
+            {totalPage}
+          </PaginationLink>
+        </PaginationItem>
+      );
+    }
+
+    return items;
+  };
+
+  const getSortIcon = (column: string) => {
+    if (currentSortBy !== column) {
+      return <ArrowUpDown className="ml-2 size-4" />;
+    }
+
+    return currentSortOrder === "asc" ? (
+      <ArrowUp className="ml-2 size-4" />
+    ) : (
+      <ArrowDown className="ml-2 size-4" />
+    );
+  };
+
+  const getHighlightStyles = (url: UrlWithUser) => {
+    if (!url.flagged) return "";
+
+    switch (highlightStyle) {
+      case "security":
+        return "bg-red-50/50 dark:bg-red-900/10 hover:bg-red-50/80 dark:hover:bg-red-900/20";
+      case "inappropriate":
+        return "bg-orange-50/50 dark:bg-orange-900/10 hover:bg-orange-50/80 dark:hover:bg-orange-900/20";
+      case "other":
+        return "bg-yellow-50/50 dark:bg-yellow-900/10 hover:bg-yellow-50/80 dark:hover:bg-yellow-900/20";
+      default:
+        return url.flagged ? "bg-yellow-50/50 dark:bg-yellow-900/10" : "";
+    }
+  };
+
+  // Get flag icon color based on the type
+  const getFlagIconColor = () => {
+    switch (highlightStyle) {
+      case "security":
+        return "text-red-500 dark:text-red-400";
+      case "inappropriate":
+        return "text-orange-500 dark:text-orange-400";
+      case "other":
+        return "text-yellow-500 dark:text-yellow-400";
+      default:
+        return "text-yellow-600 dark:text-yellow-400";
+    }
+  };
+
+  const truncateUrl = (url: string, maxLenght = 50) => {
+    if (url.length <= maxLenght) return url;
+    return url.substring(0, maxLenght) + "...";
+  };
+
+  const handleManageFlaggedUrl = async (
+    urlId: number,
+    action: "approve" | "delete"
+  ) => {
+    try {
+      setActionLoading(urlId);
+
+      const response = await manageFlaggedUrl(urlId, action);
+      if (response.success) {
+        toast.success(
+          action === "approve"
+            ? "URL approved successfully."
+            : "URL deleted successfully."
+        );
+
+        router.refresh();
+      } else {
+        toast.error("Failed to manage flagged URL.", {
+          description: response.error || "Unknown error",
+        });
+      }
+    } catch (error) {
+      console.error("Error managing flagged URL", error);
+      toast.error("Failed to manage flagged URL.", {
+        description: "Internal server error",
+      });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const copyToClipboard = async (id: number, shortCode: string) => {
+    try {
+      setCopyingId(id);
+      const shortUrl = `${window.location.origin}/r/${shortCode}`;
+      await navigator.clipboard.writeText(shortUrl);
+      toast.success("Short URL copied to clipboard.");
+    } catch (error) {
+      console.error("Error copying URL to clipboard", error);
+      toast.error("Failed to copy short URL to clipboard.");
+    } finally {
+      setTimeout(() => {
+        setCopyingId(null);
+      }, 1000);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-md border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-[300px]">
+                <button
+                  className="flex items-center font-medium"
+                  onClick={() => handleSort("originalUrl")}
+                >
+                  Original URL
+                  {getSortIcon("originalUrl")}
+                </button>
+              </TableHead>
+              <TableHead className="w-[150px]">
+                <button
+                  className="flex items-center font-medium"
+                  onClick={() => handleSort("shortCode")}
+                >
+                  Short Code
+                  {getSortIcon("shortCode")}
+                </button>
+              </TableHead>
+              <TableHead className="w-[100px]">
+                <button
+                  className="flex items-center font-medium"
+                  onClick={() => handleSort("clicks")}
+                >
+                  Clicks
+                  {getSortIcon("clicks")}
+                </button>
+              </TableHead>
+              <TableHead className="w-[150px]">
+                <button
+                  className="flex items-center font-medium"
+                  onClick={() => handleSort("userName")}
+                >
+                  Created By
+                  {getSortIcon("userName")}
+                </button>
+              </TableHead>
+              <TableHead className="w-[150px]">
+                <button
+                  className="flex items-center font-medium"
+                  onClick={() => handleSort("createdAt")}
+                >
+                  Created
+                  {getSortIcon("createdAt")}
+                </button>
+              </TableHead>
+              <TableHead className="w-[80px] text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {urls.length === 0 ? (
+              <TableRow>
+                <TableCell>
+                  {currentSearch
+                    ? "No URLs found with the search term."
+                    : "No URLs found."}
+                </TableCell>
+              </TableRow>
+            ) : (
+              urls.map((url) => (
+                <TableRow key={url.id} className={getHighlightStyles(url)}>
+                  <TableCell className="font-medium">
+                    <div className="flex items-center gap-2">
+                      {url.flagged && (
+                        <div
+                          className={getFlagIconColor()}
+                          title={url.flagReason || "Flagged By AI"}
+                        >
+                          <AlertTriangle className="size-4" />
+                        </div>
+                      )}
+                      <a
+                        href={url.originalUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline flex items-center gap-1 max-w-[250px] truncate"
+                      >
+                        {truncateUrl(url.originalUrl)}
+                        <ExternalLink className="size-3" />
+                      </a>
+                    </div>
+                    {url.flagged && url.flagReason && (
+                      <div className="mt-1 text-xs text-yellow-600 dark:text-yellow-400 max-w-[250px] truncate">
+                        Reason: {url.flagReason}
+                      </div>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <code className="bg-muted px-1 py-0.5 rounded text-sm">
+                        {url.shortCode}
+                      </code>
+                      <Button
+                        variant={"ghost"}
+                        size={"icon"}
+                        className="size-6"
+                        onClick={() => copyToClipboard(url.id, url.shortCode)}
+                        disabled={copyingId === url.id}
+                      >
+                        {copyingId === url.id ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : (
+                          <Copy className="size-3" />
+                        )}
+                      </Button>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={"secondary"}>{url.clicks}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    {url.userId ? (
+                      <div className="flex items-center gap-2">
+                        <Avatar className="size-6">
+                          <AvatarImage
+                            src={undefined}
+                            alt={url.userName || "User"}
+                          />
+                          <AvatarFallback className="text-xs">
+                            {url.userName?.substring(0, 2)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span>
+                          {url.userName || url.userEmail || "Unknown User"}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground text-sm">
+                        Anyonymous
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {formatDistanceToNow(new Date(url.createdAt), {
+                      addSuffix: true,
+                    })}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant={"ghost"} size={"icon"}>
+                          <MoreHorizontal className="size-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => copyToClipboard(url.id, url.shortCode)}
+                        >
+                          Copy Short URL
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <a
+                            href={url.originalUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            Visit Original URL
+                          </a>
+                        </DropdownMenuItem>
+                        {url.flagged && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              className="text-green-600 dark:text-green-400"
+                              onClick={() =>
+                                handleManageFlaggedUrl(url.id, "approve")
+                              }
+                            >
+                              {actionLoading === url.id && (
+                                <Loader2 className="size-4 mr-1" />
+                              )}
+                              <CheckCircle className="size-4 mr-1 text-green-700" />
+                              Approve URL
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="text-red-600 dark:text-red-400"
+                              onClick={() =>
+                                handleManageFlaggedUrl(url.id, "delete")
+                              }
+                            >
+                              {actionLoading === url.id && (
+                                <Loader2 className="size-4 mr-1" />
+                              )}
+                              <Ban className="size-4 mr-1 text-red-700" />
+                              Delete URL
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </div>
+
+      {totalPage > 1 && (
+        <Pagination>
+          <PaginationContent>
+            <PaginationItem>
+              <PaginationPrevious
+                href={`${basePath}?page=${Math.max(1, currentPage - 1)}${
+                  currentSearch ? `&search=${currentSearch}` : ""
+                }${
+                  currentSortBy
+                    ? `&sortBy=${currentSortBy}&sortOrder=${currentSortOrder}`
+                    : ""
+                }${preserveParams()}`}
+              />
+            </PaginationItem>
+
+            {getPaginationItems()}
+
+            <PaginationItem>
+              <PaginationNext
+                href={`${basePath}?page=${Math.min(
+                  totalPage,
+                  currentPage + 1
+                )}${currentSearch ? `&search=${currentSearch}` : ""}${
+                  currentSortBy
+                    ? `&sortBy=${currentSortBy}&sortOrder=${currentSortOrder}`
+                    : ""
+                }${preserveParams()}`}
+              />
+            </PaginationItem>
+          </PaginationContent>
+        </Pagination>
+      )}
+
+      <div className="text-xs text-muted-foreground">
+        Showing {urls.length} of {total} URLs.
+        {currentSearch && ` Search results for "${currentSearch}".`}
+      </div>
+    </div>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\users\user-search.tsx
+==============================
+
+"use client";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Search, X } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useState } from "react";
+
+interface UserSearchProps {
+  initialSearch?: string;
+}
+
+export function UserSearch({ initialSearch }: UserSearchProps) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [searchTerm, setSearchTerm] = useState(initialSearch || "");
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const params = new URLSearchParams(searchParams.toString());
+
+    if (searchParams) {
+      params.set("search", searchTerm);
+    } else {
+      params.delete("search");
+    }
+
+    params.set("page", "1");
+
+    router.push(`/admin/users?${params.toString()}`);
+  };
+
+  const clearSearch = () => {
+    setSearchTerm("");
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("search");
+    params.set("page", "1");
+    router.push(`/admin/users?${params.toString()}`);
+  };
+
+  return (
+    <form onSubmit={handleSearch} className="flex gap-2">
+      <div className="relative flex-1">
+        <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
+        <Input
+          type="text"
+          placeholder="Search users"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className="pl-9"
+        />
+        {searchTerm && (
+          <button
+            type="button"
+            onClick={clearSearch}
+            className="absolute right-2.5 top-2.5 size-4 text-muted-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        )}
+      </div>
+      <Button type="submit">Search</Button>
+    </form>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\users\users-table.tsx
+==============================
+
+"use client";
+
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { UserWithoutPassword } from "@/server/actions/admin/users/get-all-users";
+import { updateUserRole } from "@/server/actions/admin/users/update-user-role";
+import { formatDistanceToNow } from "date-fns";
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Loader2,
+  MoreHorizontalIcon,
+  ShieldIcon,
+  User,
+} from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { toast } from "sonner";
+
+interface UsersTableProps {
+  users: UserWithoutPassword[];
+  total: number;
+  currentPage: number;
+  currentSearch: string;
+  currentSortBy: string;
+  currentSortOrder: string;
+}
+
+export function UsersTable({
+  users,
+  total,
+  currentPage,
+  currentSearch,
+  currentSortBy,
+  currentSortOrder,
+}: UsersTableProps) {
+  const router = useRouter();
+  const [isLoading, setIsLoading] = useState<string | null>(null);
+
+  // Get the current path from window location or default to /admin/users
+  const basePath =
+    typeof window !== "undefined" ? window.location.pathname : "/admin/users";
+
+  // Extract any additional query parameters that should be preserved
+  const preserveParams = () => {
+    if (typeof window === "undefined") return "";
+
+    const url = new URL(window.location.href);
+    const params = new URLSearchParams(url.search);
+    const paramString = "";
+
+    // Preserve any additional parameters if needed
+    // For example, if you have a filter parameter:
+    // if (params.has("filter")) {
+    //   paramString += `&filter=${params.get("filter")}`;
+    // }
+
+    return paramString;
+  };
+
+  // Calculate pagination
+  const limit = 10;
+  const totalPages = Math.ceil(total / limit);
+
+  // Handle sort change
+  const handleSort = (column: string) => {
+    const params = new URLSearchParams();
+
+    // Keep current search if any
+    if (currentSearch) {
+      params.set("search", currentSearch);
+    }
+
+    // Set sort parameters
+    params.set("sortBy", column);
+
+    // Toggle sort order if clicking the same column
+    if (currentSortBy === column) {
+      params.set("sortOrder", currentSortOrder === "asc" ? "desc" : "asc");
+    } else {
+      params.set("sortOrder", "asc");
+    }
+
+    // Reset to page 1 when sorting
+    params.set("page", "1");
+
+    // Preserve any additional parameters
+    const additionalParams = preserveParams();
+    if (additionalParams) {
+      const additionalParamsObj = new URLSearchParams(
+        additionalParams.substring(1)
+      ); // Remove the leading &
+      additionalParamsObj.forEach((value, key) => {
+        params.set(key, value);
+      });
+    }
+
+    // Navigate with updated params
+    router.push(`${basePath}?${params.toString()}`);
+  };
+
+  // Generate pagination links
+  const getPaginationItems = () => {
+    const items = [];
+    const additionalParams = preserveParams();
+
+    // Always show first page
+    items.push(
+      <PaginationItem key="first">
+        <PaginationLink
+          href={`${basePath}?page=1${
+            currentSearch ? `&search=${currentSearch}` : ""
+          }${
+            currentSortBy
+              ? `&sortBy=${currentSortBy}&sortOrder=${currentSortOrder}`
+              : ""
+          }${additionalParams}`}
+          isActive={currentPage === 1}
+        >
+          1
+        </PaginationLink>
+      </PaginationItem>
+    );
+
+    // Show ellipsis if needed
+    if (currentPage > 3) {
+      items.push(
+        <PaginationItem key="ellipsis-1">
+          <PaginationEllipsis />
+        </PaginationItem>
+      );
+    }
+
+    // Show current page and surrounding pages
+    for (
+      let i = Math.max(2, currentPage - 1);
+      i <= Math.min(totalPages - 1, currentPage + 1);
+      i++
+    ) {
+      if (i === 1 || i === totalPages) continue; // Skip first and last page as they're always shown
+
+      items.push(
+        <PaginationItem key={i}>
+          <PaginationLink
+            href={`${basePath}?page=${i}${
+              currentSearch ? `&search=${currentSearch}` : ""
+            }${
+              currentSortBy
+                ? `&sortBy=${currentSortBy}&sortOrder=${currentSortOrder}`
+                : ""
+            }${additionalParams}`}
+            isActive={currentPage === i}
+          >
+            {i}
+          </PaginationLink>
+        </PaginationItem>
+      );
+    }
+
+    // Show ellipsis if needed
+    if (currentPage < totalPages - 2) {
+      items.push(
+        <PaginationItem key="ellipsis-2">
+          <PaginationEllipsis />
+        </PaginationItem>
+      );
+    }
+
+    // Always show last page if there's more than one page
+    if (totalPages > 1) {
+      items.push(
+        <PaginationItem key="last">
+          <PaginationLink
+            href={`${basePath}?page=${totalPages}${
+              currentSearch ? `&search=${currentSearch}` : ""
+            }${
+              currentSortBy
+                ? `&sortBy=${currentSortBy}&sortOrder=${currentSortOrder}`
+                : ""
+            }${additionalParams}`}
+            isActive={currentPage === totalPages}
+          >
+            {totalPages}
+          </PaginationLink>
+        </PaginationItem>
+      );
+    }
+
+    return items;
+  };
+
+  const getSortIcon = (column: string) => {
+    if (currentSortBy !== column) {
+      return <ArrowUpDown className="ml-2 size-4" />;
+    }
+
+    return currentSortOrder === "asc" ? (
+      <ArrowUp className="ml-2 size-4" />
+    ) : (
+      <ArrowDown className="ml-2 size-4" />
+    );
+  };
+
+  const getUserInitials = (name: string | null) => {
+    if (!name) return "U";
+
+    const parts = name.split(" ");
+    if (parts.length === 1) return parts[0].charAt(0).toUpperCase();
+
+    return (
+      parts[0].charAt(0).toUpperCase() +
+      parts[parts.length - 1].charAt(0).toUpperCase()
+    );
+  };
+
+  const handleRoleToggle = async (userId: string, currentRole: string) => {
+    try {
+      setIsLoading(userId);
+
+      const newRole = currentRole === "admin" ? "user" : "admin";
+      const response = await updateUserRole(userId, newRole);
+
+      if (response.success) {
+        toast.success("User role updated successfully", {
+          description: `User role has been updated to ${newRole}`,
+        });
+
+        router.refresh();
+      } else {
+        toast.error("Failed to update user role", {
+          description: response.error || "An error occurred",
+        });
+      }
+    } catch (error) {
+      console.error("Error updating user role:", error);
+      toast.error("Failed to update user role", {
+        description: "An error occurred",
+      });
+    } finally {
+      setIsLoading(null);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-md border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-[250px]">
+                <button
+                  onClick={() => handleSort("name")}
+                  className="flex items-center font-medium"
+                >
+                  User
+                  {getSortIcon("name")}
+                </button>
+              </TableHead>
+              <TableHead>
+                <button
+                  onClick={() => handleSort("email")}
+                  className="flex items-center font-medium"
+                >
+                  Email
+                  {getSortIcon("email")}
+                </button>
+              </TableHead>
+              <TableHead className="w-[120px]">
+                <button
+                  onClick={() => handleSort("role")}
+                  className="flex items-center font-medium"
+                >
+                  Role
+                  {getSortIcon("role")}
+                </button>
+              </TableHead>
+              <TableHead className="w-[150px]">
+                <button
+                  onClick={() => handleSort("createdAt")}
+                  className="flex items-center font-medium"
+                >
+                  Joined
+                  {getSortIcon("createdAt")}
+                </button>
+              </TableHead>
+              <TableHead className="w-[80px]">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {users.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={5} className="h-24 text-center">
+                  {currentSearch
+                    ? "No users found with the given search criteria"
+                    : "No users found"}
+                </TableCell>
+              </TableRow>
+            ) : (
+              users.map((user) => (
+                <TableRow key={user.id}>
+                  <TableCell className="font-medium">
+                    <div className="flex items-center gap-3">
+                      <Avatar>
+                        <AvatarImage
+                          src={user.image || undefined}
+                          alt={user.name || "User"}
+                        />
+                        <AvatarFallback>
+                          {getUserInitials(user.name)}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div>
+                        <div className="font-medium">
+                          {user.name || "Unknown User"}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          ID: {user.id.substring(0, 8)}...
+                        </div>
+                      </div>
+                    </div>
+                  </TableCell>
+                  <TableCell>{user.email}</TableCell>
+                  <TableCell>
+                    <Badge
+                      variant={
+                        user.role === "admin" ? "destructive" : "secondary"
+                      }
+                      className="flex w-fit items-center gap-1"
+                    >
+                      {user.role === "admin" ? <ShieldIcon /> : <User />}
+                      {user.role}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    {formatDistanceToNow(new Date(user.createdAt), {
+                      addSuffix: true,
+                    })}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant={"ghost"}
+                          size={"icon"}
+                          disabled={isLoading === user.id}
+                        >
+                          {isLoading === user.id ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : (
+                            <MoreHorizontalIcon />
+                          )}
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          className={
+                            user.role === "admin"
+                              ? "text-destructive"
+                              : "text-blue-600"
+                          }
+                          onClick={() => handleRoleToggle(user.id, user.role)}
+                          disabled={isLoading === user.id}
+                        >
+                          {user.role === "admin" ? "Demote" : "Promote"} to{" "}
+                          {user.role === "admin" ? "User" : "Admin"}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </div>
+
+      {totalPages > 1 && (
+        <Pagination>
+          <PaginationContent>
+            <PaginationItem>
+              <PaginationPrevious
+                href={`${basePath}?page=${Math.max(1, currentPage - 1)}${
+                  currentSearch ? `&search=${currentSearch}` : ""
+                }${
+                  currentSortBy
+                    ? `&sortBy=${currentSortBy}&sortOrder=${currentSortOrder}`
+                    : ""
+                }${preserveParams()}`}
+              />
+            </PaginationItem>
+
+            {getPaginationItems()}
+
+            <PaginationItem>
+              <PaginationNext
+                href={`${basePath}?page=${Math.min(
+                  totalPages,
+                  currentPage + 1
+                )}${currentSearch ? `&search=${currentSearch}` : ""}${
+                  currentSortBy
+                    ? `&sortBy=${currentSortBy}&sortOrder=${currentSortOrder}`
+                    : ""
+                }${preserveParams()}`}
+              />
+            </PaginationItem>
+          </PaginationContent>
+        </Pagination>
+      )}
+
+      <div className="text-xs text-muted-foreground">
+        Showing {users.length} of {total} users
+        {currentSearch && ` matching "${currentSearch}"`}
+      </div>
+    </div>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\auth\login-form.tsx
+==============================
+
+'use client';
+
+import { signIn } from 'next-auth/react';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useEffect, useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { z } from 'zod';
+import { Button } from '../ui/button';
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '../ui/form';
+import { Input } from '../ui/input';
+import { Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
+
+const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(6),
+});
+
+type LoginFormValues = z.infer<typeof loginSchema>;
+
+export function LoginForm() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // check if user just registered
+  useEffect(() => {
+    const registered = searchParams.get('registered');
+    if (registered === 'true') {
+      toast.success('Account created successfully', {
+        description: 'You have been registered successfully. Please sign in.',
+      });
+
+      // remove the query param
+      const newUrl = new URL(window.location.href);
+      newUrl.searchParams.delete('registered');
+      router.replace(newUrl.toString(), undefined);
+    }
+  }, [searchParams, router]);
+
+  const form = useForm<LoginFormValues>({
+    resolver: zodResolver(loginSchema),
+    defaultValues: {
+      email: '',
+      password: '',
+    },
+  });
+
+  async function onSubmit(data: LoginFormValues) {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const result = await signIn('credentials', {
+        email: data.email,
+        password: data.password,
+        redirect: false,
+      });
+
+      if (result?.error) {
+        setError('Invalid email or password');
+        toast.error('Invalid email or password', {
+          description: 'Please check your email and password and try again.',
+        });
+        return;
+      }
+
+      toast.success('Signed in successfully', {
+        description: 'You have been signed in successfully.',
+      });
+
+      router.push('/dashboard');
+      router.refresh();
+    } catch (error) {
+      setError('An error occurred. Please try again.');
+      console.error(error);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  const handleGithubSignIn = async () => {
+    setIsLoading(true);
+    try {
+      await signIn('github', { callbackUrl: '/dashboard' });
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    setIsLoading(true);
+    try {
+      await signIn('google', { callbackUrl: '/dashboard' });
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className='space-y-6'>
+      <div className='grid gap-2'>
+        <Button
+          variant={'outline'}
+          disabled={isLoading}
+          onClick={handleGithubSignIn}
+        >
+          Sign in with GitHub
+        </Button>
+        <Button
+          variant={'outline'}
+          disabled={isLoading}
+          onClick={handleGoogleSignIn}
+        >
+          Sign in with Google
+        </Button>
+      </div>
+
+      <div className='relative'>
+        <div className='absolute inset-0 flex items-center'>
+          <span className='w-full border-t' />
+        </div>
+        <div className='relative flex justify-center text-xs uppercase'>
+          <span className='bg-background px-2 text-muted-foreground'>
+            Or continue with
+          </span>
+        </div>
+      </div>
+
+      <Form {...form}>
+        <form onSubmit={form.handleSubmit(onSubmit)} className='space-y-4'>
+          <FormField
+            control={form.control}
+            name='email'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Email</FormLabel>
+                <FormControl>
+                  <Input
+                    placeholder='example@example.com'
+                    type='email'
+                    autoComplete='email'
+                    disabled={isLoading}
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='password'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Password</FormLabel>
+                <FormControl>
+                  <Input
+                    placeholder='********'
+                    type='password'
+                    autoComplete='current-password'
+                    disabled={isLoading}
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {error && (
+            <div className='text-sm text-destructive font-medium'>{error}</div>
+          )}
+
+          <Button type='submit' className='w-full' disabled={isLoading}>
+            {isLoading && <Loader2 className='mr-2 size-4 animate-spin' />}
+            Sign in
+          </Button>
+        </form>
+      </Form>
+    </div>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\auth\register-form.tsx
+==============================
+
+'use client';
+
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useRouter } from 'next/navigation';
+import { useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { z } from 'zod';
+import { Button } from '../ui/button';
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '../ui/form';
+import { Input } from '../ui/input';
+import { Loader2 } from 'lucide-react';
+import { registerUser } from '@/server/actions/auth/register';
+
+const registerSchema = z
+  .object({
+    name: z.string().min(2),
+    email: z.string().email(),
+    password: z.string().min(6),
+    confirmPassword: z.string().min(6),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: 'Passwords do not match',
+    path: ['confirmPassword'],
+  });
+
+type RegisterFormValues = z.infer<typeof registerSchema>;
+
+export function RegisterForm() {
+  const router = useRouter();
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const form = useForm<RegisterFormValues>({
+    resolver: zodResolver(registerSchema),
+    defaultValues: {
+      name: '',
+      email: '',
+      password: '',
+      confirmPassword: '',
+    },
+  });
+
+  async function onSubmit(data: RegisterFormValues) {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const formData = new FormData();
+      formData.append('name', data.name);
+      formData.append('email', data.email);
+      formData.append('password', data.password);
+
+      const response = await registerUser(formData);
+
+      if (!response.success) {
+        setError(response.error || 'An error occurred. Please try again.');
+        return;
+      }
+
+      router.push('/login?registered=true');
+    } catch (error) {
+      setError('An error occurred. Please try again.');
+      console.error(error);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  return (
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(onSubmit)} className='space-y-4'>
+        <FormField
+          control={form.control}
+          name='name'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Name</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder='John Doe'
+                  autoComplete='name'
+                  disabled={isLoading}
+                  {...field}
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name='email'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Email</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder='example@example.com'
+                  type='email'
+                  autoComplete='email'
+                  disabled={isLoading}
+                  {...field}
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name='password'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Password</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder='********'
+                  type='password'
+                  autoComplete='current-password'
+                  disabled={isLoading}
+                  {...field}
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name='confirmPassword'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Confirm Password</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder='********'
+                  type='password'
+                  autoComplete='new-password'
+                  disabled={isLoading}
+                  {...field}
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        {error && (
+          <div className='text-sm text-destructive font-medium'>{error}</div>
+        )}
+
+        <Button type='submit' className='w-full' disabled={isLoading}>
+          {isLoading && <Loader2 className='mr-2 size-4 animate-spin' />}
+          Create Account
+        </Button>
+      </form>
+    </Form>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\dialogs\signup-suggestion-dialog.tsx
+==============================
+
+import { useRouter } from "next/navigation";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../ui/dialog";
+import { Button } from "../ui/button";
+
+interface SignupSuggestionDialogProps {
+  isOpen: boolean;
+  onOpenChange: (isOpen: boolean) => void;
+  shortUrl: string;
+}
+
+export function SignupSuggestionDialog({
+  isOpen,
+  onOpenChange,
+  shortUrl,
+}: SignupSuggestionDialogProps) {
+  const router = useRouter();
+
+  const handleSignup = () => {
+    onOpenChange(false);
+    router.push("/register");
+  };
+
+  const handleSignin = () => {
+    onOpenChange(false);
+    router.push("/login");
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>URL Shortened Successfully</DialogTitle>
+          <DialogDescription>
+            Your link has been shortened and is ready to use. Want to save and
+            track this link?
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col space-y-4 py-4">
+          <div className="rounded-md bg-muted p-4">
+            <p className="text-sm font-medium">Your shortened URL</p>
+            <p className="mt-1 break-all font-mono text-sm">{shortUrl}</p>
+          </div>
+          <div className="space-y-2">
+            <h4 className="text-sm font-medium">Create an account to:</h4>
+            <ul className="ml-4 list-disc text-sm space-y-1">
+              <li>Save all your shortened links</li>
+              <li>Track link analytics</li>
+              <li>Customize your shortened links</li>
+            </ul>
+          </div>
+        </div>
+        <DialogFooter className="flex flex-col sm:flex-row gap-2">
+          <Button
+            variant={"outline"}
+            className="sm:w-auto w-full"
+            onClick={() => onOpenChange(false)}
+          >
+            Maybe Later
+          </Button>
+          <Button
+            variant={"outline"}
+            className="sm:w-auto w-full"
+            onClick={handleSignin}
+          >
+            Log In
+          </Button>
+          <Button className="sm:w-auto w-full" onClick={handleSignup}>
+            Sign Up
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\layout\header.tsx
+==============================
+
+"use client";
+
+import { signOut, useSession } from "next-auth/react";
+import Link from "next/link";
+import { Button } from "../ui/button";
+import {
+  BarChart3Icon,
+  LayoutDashboard,
+  LogIn,
+  LogOut,
+  Menu,
+  UserPlus,
+} from "lucide-react";
+import {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "../ui/sheet";
+import { ThemeToggle } from "../ui/theme-toggle";
+
+export function Header() {
+  const { data: session, status } = useSession();
+  const isAuthenticated = status === "authenticated";
+
+  return (
+    <header className="border-b">
+      <div className="container mx-auto flex items-center justify-between p-4">
+        <Link href={"/"} className="text-xl font-bold">
+          ShortLink
+        </Link>
+
+        {/* Desktop nav */}
+        <nav className="hidden md:flex items-center gap-2">
+          <ThemeToggle />
+          <Button variant={"ghost"} size={"sm"} asChild>
+            <Link href={"/stats"} className="flex items-center gap-1">
+              <BarChart3Icon className="size-4" />
+              Stats
+            </Link>
+          </Button>
+
+          {isAuthenticated ? (
+            <>
+              <Button variant={"ghost"} size={"sm"} asChild>
+                <Link href={"/dashboard"} className="flex items-center gap-1">
+                  <LayoutDashboard className="size-4" />
+                  Dashboard
+                </Link>
+              </Button>
+
+              <Button variant={"ghost"} size={"sm"} asChild>
+                <Link
+                  href={"/dashboard/stats"}
+                  className="flex items-center gap-1"
+                >
+                  <LayoutDashboard className="size-4" />
+                  My Stats
+                </Link>
+              </Button>
+
+              <Button variant={"ghost"} size={"sm"} onClick={() => signOut()}>
+                <LogOut className="size-4" />
+                Logout
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant={"ghost"} size={"sm"} asChild>
+                <Link href={"/login"} className="flex items-center gap-1">
+                  <LogIn className="size-4" />
+                  Login
+                </Link>
+              </Button>
+
+              <Button variant={"ghost"} size={"sm"} asChild>
+                <Link href={"/register"} className="flex items-center gap-1">
+                  <UserPlus className="size-4" />
+                  Register
+                </Link>
+              </Button>
+            </>
+          )}
+        </nav>
+
+        {/* Mobile nav */}
+        <div className="flex items-center gap-2 md:hidden">
+          {/* TODO: add theme toggle here */}
+          <Sheet>
+            <SheetTrigger asChild>
+              <Button variant={"ghost"} size={"icon"}>
+                <Menu className="size-5" />
+                <span className="sr-only">Toggle menu</span>
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="right" className="w-[250px] sm:w-[300px]">
+              <SheetHeader>
+                <SheetTitle>Navigation Menu</SheetTitle>
+              </SheetHeader>
+              <nav className="flex flex-col gap-4 mt-6">
+                <Button variant={"ghost"} size={"sm"} asChild>
+                  <Link
+                    href={"/stats"}
+                    className="flex items-center gap-2 justify-start w-full"
+                  >
+                    <BarChart3Icon className="size-4" />
+                    Stats
+                  </Link>
+                </Button>
+
+                {isAuthenticated ? (
+                  <>
+                    <Button variant={"ghost"} size={"sm"} asChild>
+                      <Link
+                        href={"/dashboard"}
+                        className="flex items-center gap-2 justify-start w-full"
+                      >
+                        <LayoutDashboard className="size-4" />
+                        Dashboard
+                      </Link>
+                    </Button>
+
+                    <Button variant={"ghost"} size={"sm"} asChild>
+                      <Link
+                        href={"/dashboard/stats"}
+                        className="flex items-center gap-2 justify-start w-full"
+                      >
+                        <LayoutDashboard className="size-4" />
+                        My Stats
+                      </Link>
+                    </Button>
+
+                    <Button
+                      variant={"ghost"}
+                      size={"sm"}
+                      onClick={() => signOut()}
+                    >
+                      <LogOut className="size-4" />
+                      Logout
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button variant={"ghost"} size={"sm"} asChild>
+                      <Link
+                        href={"/login"}
+                        className="flex items-center gap-2 justify-start w-full"
+                      >
+                        <LogIn className="size-4" />
+                        Login
+                      </Link>
+                    </Button>
+
+                    <Button variant={"ghost"} size={"sm"} asChild>
+                      <Link
+                        href={"/register"}
+                        className="flex items-center gap-2 justify-start w-full"
+                      >
+                        <UserPlus className="size-4" />
+                        Register
+                      </Link>
+                    </Button>
+                  </>
+                )}
+              </nav>
+            </SheetContent>
+          </Sheet>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\modals\edit-url-modal.tsx
+==============================
+
+import { updateUrl } from "@/server/actions/urls/update-url";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useEffect, useState } from "react";
+import { useForm } from "react-hook-form";
+import { toast } from "sonner";
+import { z } from "zod";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../ui/dialog";
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormMessage,
+} from "../ui/form";
+import { Input } from "../ui/input";
+import { Button } from "../ui/button";
+import { Loader2 } from "lucide-react";
+
+const editUrlSchema = z.object({
+  customCode: z
+    .string()
+    .min(3, "Custom code must be at least 3 characters")
+    .max(255, "Custom code must be less than 255 characters")
+    .regex(/^[a-zA-Z0-9_-]+$/, "Custom code must be alphanumeric or hyphen"),
+});
+
+type EditUrlFormData = z.infer<typeof editUrlSchema>;
+
+interface EditUrlModalProps {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  urlId: number;
+  currentShortCode: string;
+  onSuccess: (newShortCode: string) => void;
+}
+
+export function EditUrlModal({
+  isOpen,
+  onOpenChange,
+  urlId,
+  currentShortCode,
+  onSuccess,
+}: EditUrlModalProps) {
+  const [isLoading, setIsLoading] = useState(false);
+
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || window.location.origin;
+
+  const form = useForm<EditUrlFormData>({
+    resolver: zodResolver(editUrlSchema),
+    defaultValues: {
+      customCode: currentShortCode,
+    },
+  });
+
+  useEffect(() => {
+    form.reset({ customCode: currentShortCode });
+  }, [currentShortCode]);
+
+  const onSubmit = async (data: EditUrlFormData) => {
+    setIsLoading(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("id", urlId.toString());
+      formData.append("customCode", data.customCode);
+
+      const response = await updateUrl(formData);
+
+      if (response.success && response.data) {
+        toast.success("URL updated successfully", {
+          description: "The URL has been updated successfully",
+        });
+        onSuccess(data.customCode);
+        onOpenChange(false);
+      } else {
+        toast.error("Failed to update URL", {
+          description: response.error || "An error occurred",
+        });
+      }
+    } catch (error) {
+      console.error("Failed to update URL", error);
+      toast.error("Failed to update URL", {
+        description: "An error occurred",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Edit Short URL</DialogTitle>
+          <DialogDescription>
+            Customize the short code for this URL. The short code must be unique
+            and can only contain letters, numbers, hyphens, and underscores.
+          </DialogDescription>
+        </DialogHeader>
+
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <FormField
+              control={form.control}
+              name="customCode"
+              render={({ field }) => (
+                <FormItem>
+                  <FormControl>
+                    <div className="flex items-center">
+                      <span className="text-sm text-muted-foreground mr-2">
+                        {baseUrl}/r/
+                      </span>
+                      <Input
+                        placeholder="Custom code"
+                        {...field}
+                        disabled={isLoading}
+                        className="flex-1"
+                      />
+                    </div>
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <DialogFooter className="sm:justify-end">
+              <Button
+                type="button"
+                variant={"outline"}
+                onClick={() => onOpenChange(false)}
+                disabled={isLoading}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={isLoading}>
+                {isLoading ? (
+                  <>
+                    <Loader2 className="animate-spin size-4 mr-2" />
+                    Updating...
+                  </>
+                ) : (
+                  "Save Changes"
+                )}
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\modals\qr-code-modal.tsx
+==============================
+
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import QRCode from "qrcode";
+import { toast } from "sonner";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
+import Image from "next/image";
+import { Button } from "../ui/button";
+import { Download } from "lucide-react";
+
+interface QRCodeModalProps {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  url: string;
+  shortCode: string;
+}
+
+export function QRCodeModal({
+  isOpen,
+  onOpenChange,
+  url,
+  shortCode,
+}: QRCodeModalProps) {
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const generateQRCode = useCallback(async () => {
+    if (!url) return;
+    setIsGenerating(true);
+    try {
+      const dataUrl = await QRCode.toDataURL(url, {
+        width: 300,
+        margin: 2,
+        color: {
+          dark: "#000000",
+          light: "#ffffff",
+        },
+      });
+      setQrCodeDataUrl(dataUrl);
+    } catch (error) {
+      console.error("Failed to generate QR code", error);
+      toast.error("Failed to generate QR code", {
+        description: "An error occurred while generating the QR code",
+      });
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [url]);
+
+  useEffect(() => {
+    if (isOpen && url) {
+      generateQRCode();
+    }
+  }, [isOpen, url, generateQRCode]);
+
+  const downloadQRCode = () => {
+    if (!qrCodeDataUrl) return;
+    const link = document.createElement("a");
+    link.href = qrCodeDataUrl;
+    link.download = `shortlink-${shortCode}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    toast.success("QR code downloaded", {
+      description: "The QR code has been downloaded to your device",
+    });
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>QR Code for your Short URL</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col items-center justify-center p-4">
+          {isGenerating ? (
+            <div className="flex items-center justify-center w-[300px] h-[300px]">
+              <div className="size-8 animate-spin rounded-full border-4 border-primary border-t border-t-transparent" />
+            </div>
+          ) : qrCodeDataUrl ? (
+            <div className="flex flex-col items-center space-y-4">
+              <Image
+                src={qrCodeDataUrl}
+                alt="QR code"
+                width={300}
+                height={300}
+                className="border rounded-md"
+                unoptimized
+              />
+              <p className="text-sm text-center text-muted-foreground">
+                Scan the QR code to open the link in your device&apos;s browser.
+              </p>
+              <Button onClick={downloadQRCode} className="w-full">
+                <Download className="size-4 mr-2" />
+                Download QR Code
+              </Button>
+            </div>
+          ) : (
+            <div className="text-center text-muted-foreground">
+              Failed to generate QR code
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\providers\auth-provider.tsx
+==============================
+
+"use client";
+
+import { ReactNode } from "react";
+import { SessionProvider } from "next-auth/react";
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  return <SessionProvider>{children}</SessionProvider>;
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\providers\theme-provider.tsx
+==============================
+
+import { ThemeProvider as NextThemesProvider } from 'next-themes';
+
+interface ThemeProviderProps {
+  children: React.ReactNode;
+  [key: string]: unknown;
+}
+
+export function ThemeProvider({ children, ...props }: ThemeProviderProps) {
+  return (
+    <NextThemesProvider
+      attribute='class'
+      defaultTheme='system'
+      enableSystem
+      disableTransitionOnChange
+      {...props}
+    >
+      {children}
+    </NextThemesProvider>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\providers\toast-provider.tsx
+==============================
+
+"use client";
+
+import { Toaster } from "sonner";
+
+export function ToastProvider() {
+  return <Toaster position="top-right" />;
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\urls\url-shortener-form.tsx
+==============================
+
+'use client';
+
+import { useForm } from 'react-hook-form';
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormMessage,
+} from '../ui/form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { UrlFormData, urlFormSchema } from '@/lib/types';
+import { Input } from '../ui/input';
+import { Button } from '../ui/button';
+import { usePathname, useRouter } from 'next/navigation';
+import { useState } from 'react';
+import { shortenUrl } from '@/server/actions/urls/shorten-url';
+import { Card, CardContent } from '../ui/card';
+import { AlertTriangle, Copy, QrCode } from 'lucide-react';
+import { useSession } from 'next-auth/react';
+import { QRCodeModal } from '../modals/qr-code-modal';
+import { toast } from 'sonner';
+import { SignupSuggestionDialog } from '../dialogs/signup-suggestion-dialog';
+import { BASEURL } from '@/lib/const';
+
+export function UrlShortenerForm() {
+  const { data: session } = useSession();
+
+  const router = useRouter();
+  const pathname = usePathname();
+
+  const [shortUrl, setShortUrl] = useState<string | null>(null);
+  const [shortCode, setShortCode] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showSignupDialog, setShowSignupDialog] = useState(false);
+  const [isQrCodeModalOpen, setIsQrCodeModalOpen] = useState(false);
+  const [flaggedInfo, setFlaggedInfo] = useState<{
+    flagged: boolean;
+    reason: string | null;
+    message: string | undefined;
+  } | null>(null);
+
+  const form = useForm<UrlFormData>({
+    resolver: zodResolver(urlFormSchema),
+    defaultValues: {
+      url: '',
+      customCode: undefined,
+    },
+  });
+
+  const onSubmit = async (data: UrlFormData) => {
+    setIsLoading(true);
+    setError(null);
+    setShortUrl(null);
+    setShortCode(null);
+    setFlaggedInfo(null);
+
+    try {
+      const formData = new FormData();
+      formData.append('url', data.url);
+
+      // If a custom code is provided, append it to the form data
+      if (data.customCode) {
+        formData.append('customCode', data.customCode);
+      }
+
+      const response = await shortenUrl(formData);
+      if (response.success && response.data) {
+        setShortUrl(response.data.shortUrl);
+        // Extract the short code from the short URL
+        const shortCodeMatch = response.data.shortUrl.match(/\/r\/([^/]+)$/);
+        if (shortCodeMatch && shortCodeMatch[1]) {
+          setShortCode(shortCodeMatch[1]);
+        }
+
+        if (response.data.flagged) {
+          setFlaggedInfo({
+            flagged: response.data.flagged,
+            reason: response.data.flagReason || null,
+            message: response.data.message,
+          });
+
+          toast.warning(response.data.message || 'This URL is flagged', {
+            description: response.data.flagReason,
+          });
+        } else {
+          toast.success('URL shortened successfully');
+        }
+      }
+
+      if (session?.user && pathname.includes('/dashboard')) {
+        router.refresh();
+      }
+
+      if (!session?.user) {
+        setShowSignupDialog(true);
+      }
+    } catch (error) {
+      setError('An error occurred. Please try again.');
+      console.error(error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const copyToClipboard = async () => {
+    if (!shortUrl) return;
+
+    try {
+      await navigator.clipboard.writeText(shortUrl);
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const showQrCode = () => {
+    if (!shortUrl || !shortCode) return;
+    setIsQrCodeModalOpen(true);
+  };
+
+  return (
+    <>
+      <div className='w-full max-w-2xl mx-auto'>
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className='space-y-4'>
+            <div className='flex flex-col sm:flex-row gap-2'>
+              <FormField
+                control={form.control}
+                name='url'
+                render={({ field }) => (
+                  <FormItem className='flex-1'>
+                    <FormControl>
+                      <Input
+                        placeholder='Paste your long URL here'
+                        {...field}
+                        disabled={false}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <Button type='submit' disabled={isLoading}>
+                {isLoading ? (
+                  <>
+                    <span className='mr-2 size-4 animate-spin rounded-full border-2 border-current border-t-transparent' />
+                    Shortening...
+                  </>
+                ) : (
+                  'Shorten'
+                )}
+              </Button>
+            </div>
+
+            <FormField
+              control={form.control}
+              name='customCode'
+              render={({ field }) => (
+                <FormItem>
+                  <FormControl>
+                    <div className='flex items-center'>
+                      <span className='text-sm text-muted-foreground mr-2'>
+                        {/* {process.env.NEXT_PUBLIC_APP_URL ||
+                          window.location.origin} */}
+                          {BASEURL}
+                        /r/
+                      </span>
+                      <Input
+                        placeholder='Custom code (optional)'
+                        {...field}
+                        value={field.value || ''}
+                        onChange={(e) =>
+                          field.onChange(e.target.value || undefined)
+                        }
+                        disabled={isLoading}
+                        className='flex-1'
+                      />
+                    </div>
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            {error && (
+              <div className='p-3 bg-destructive/10 text-destructive rounded-md text-sm'>
+                {error}
+              </div>
+            )}
+
+            {shortUrl && (
+              <Card>
+                <CardContent className='p-4'>
+                  <p className='text-sm font-medium text-muted-foreground mb-2'>
+                    Your shortened URL:
+                  </p>
+                  <div className='flex items-center gap-2'>
+                    <Input
+                      type='text'
+                      value={shortUrl}
+                      readOnly
+                      className='font-medium'
+                    />
+                    <Button
+                      type='button'
+                      variant={'outline'}
+                      className='flex-shrink-0'
+                      onClick={copyToClipboard}
+                    >
+                      <Copy className='size-4 mr-1' />
+                      Copy
+                    </Button>
+                    <Button
+                      type='button'
+                      variant={'outline'}
+                      className='flex-shrink-0'
+                      onClick={showQrCode}
+                    >
+                      <QrCode className='size-4' />
+                    </Button>
+                  </div>
+
+                  {flaggedInfo && flaggedInfo.flagged && (
+                    <div className='mt-3 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-md'>
+                      <div className='flex items-start gap-2'>
+                        <AlertTriangle className='size-5 text-yellow-600 dark:text-yellow-400 mt-0.5 flex-shrink-0' />
+                        <div>
+                          <p className='text-sm font-medium text-yellow-800 dark:text-yellow-300'>
+                            This URL has been flagged for review
+                          </p>
+                          <p className='text-xs text-yellow-700 dark:text-yellow-400 mt-1'>
+                            {flaggedInfo.message ||
+                              'This URL will be reviewed by an administrator before it becomes fully active.'}
+                          </p>
+                          {flaggedInfo.reason && (
+                            <p className='text-sm mt-2 text-yellow-600 dark:text-yellow-400'>
+                              <span className='font-medium'>Reason:</span>{' '}
+                              {flaggedInfo.reason || 'Unknown reason'}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+          </form>
+        </Form>
+      </div>
+
+      <SignupSuggestionDialog
+        isOpen={showSignupDialog}
+        onOpenChange={setShowSignupDialog}
+        shortUrl={shortUrl || ''}
+      />
+
+      {shortUrl && shortCode && (
+        <QRCodeModal
+          isOpen={isQrCodeModalOpen}
+          onOpenChange={setIsQrCodeModalOpen}
+          url={shortUrl}
+          shortCode={shortCode}
+        />
+      )}
+    </>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\components\urls\user-urls-table.tsx
+==============================
+
+"use client";
+
+import { Copy, Edit, ExternalLink, QrCode, Trash2Icon } from "lucide-react";
+import { useState } from "react";
+import { Button } from "../ui/button";
+import { formatDistanceToNow } from "date-fns";
+import { toast } from "sonner";
+import { deleteUrl } from "@/server/actions/urls/delete-url";
+import { QRCodeModal } from "../modals/qr-code-modal";
+import { EditUrlModal } from "../modals/edit-url-modal";
+import { BASEURL } from "@/lib/const";
+
+interface Url {
+  id: number;
+  originalUrl: string;
+  shortCode: string;
+  createdAt: Date;
+  clicks: number;
+}
+
+interface UserUrlsTableProps {
+  urls: Url[];
+}
+
+export function UserUrlsTable({ urls }: UserUrlsTableProps) {
+  const [isDeleting, setIsDeleting] = useState<number | null>(null);
+  const [localUrls, setLocalUrls] = useState<Url[]>(urls);
+  const [qrCodeUrl, setQrCodeUrl] = useState<string>("");
+  const [qrCodeShortCode, setQrCodeShortCode] = useState<string>("");
+  const [isQrCodeModalOpen, setIsQrCodeModalOpen] = useState(false);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [urlToEdit, setUrlToEdit] = useState<{
+    id: number;
+    shortCode: string;
+  } | null>(null);
+
+  const copyToClipboard = async (shortCode: string) => {
+    // const baseUrl = process.env.NEXT_PUBLIC_APP_URL || window.location.origin;
+    const baseUrl = BASEURL;
+    const shortUrl = `${baseUrl}/r/${shortCode}`;
+
+    try {
+      await navigator.clipboard.writeText(shortUrl);
+      toast.success("Short URL copied to clipboard", {
+        description: "The short URL has been copied to your clipboard",
+      });
+    } catch (error) {
+      console.error("Failed to copy short URL to clipboard", error);
+    }
+  };
+
+  const handleDelete = async (id: number) => {
+    setIsDeleting(id);
+
+    try {
+      const response = await deleteUrl(id);
+      if (response.success) {
+        setLocalUrls((prev) => prev.filter((url) => url.id !== id));
+        toast.success("URL deleted successfully", {
+          description: "The URL has been deleted successfully",
+        });
+      } else {
+        toast.error("Failed to delete URL", {
+          description: response.error || "An error occurred",
+        });
+      }
+    } catch (error) {
+      console.error("Failed to delete URL", error);
+      toast.error("Failed to delete URL", {
+        description: "An error occurred",
+      });
+    } finally {
+      setIsDeleting(null);
+    }
+  };
+
+  const showQrCode = (shortCode: string) => {
+    // const baseUrl = process.env.NEXT_PUBLIC_APP_URL || window.location.origin;
+    const baseUrl = BASEURL;
+    const shortUrl = `${baseUrl}/r/${shortCode}`;
+    setQrCodeUrl(shortUrl);
+    setQrCodeShortCode(shortCode);
+    setIsQrCodeModalOpen(true);
+  };
+
+  const handleEdit = (id: number, shortCode: string) => {
+    setUrlToEdit({ id, shortCode });
+    setIsEditModalOpen(true);
+  };
+
+  const handleEditSuccess = (newShortCode: string) => {
+    if (!urlToEdit) return;
+
+    // update the short code in the local state
+    setLocalUrls((prev) =>
+      prev.map((url) =>
+        url.id === urlToEdit.id ? { ...url, shortCode: newShortCode } : url
+      )
+    );
+  };
+
+  // console.log('localUrls', localUrls);
+
+  // console.log('urls', urls);
+
+  if (localUrls.length === 0) {
+    return (
+      <div className="text-center py-8">
+        <p className="text-muted-foreground">
+          You haven&apos;t created any short URLs yet. Click the button below to
+          create your first short URL.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead>
+            <tr className="border-b">
+              <th className="text-left py-3 px-4 font-medium">Original URL</th>
+              <th className="text-left py-3 px-4 font-medium">Short URL</th>
+              <th className="text-left py-3 px-4 font-medium">Clicks</th>
+              <th className="text-left py-3 px-4 font-medium">Created At</th>
+              <th className="text-left py-3 px-4 font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {localUrls.map((url) => {
+              // const baseUrl =
+              //   process.env.NEXT_PUBLIC_APP_URL || window.location.origin;
+              const baseUrl = BASEURL;
+              const shortUrl = `${baseUrl}/r/${url.shortCode}`;
+
+              return (
+                <tr key={url.id} className="border-b hover:bg-muted/50">
+                  <td className="py-3 px-4">
+                    <div className="flex items-center">
+                      <div
+                        className="max-w-xs truncate"
+                        title={url.originalUrl}
+                      >
+                        {url.originalUrl}
+                      </div>
+                      <a
+                        href={url.originalUrl}
+                        target="_blank"
+                        className="ml-2 text-muted-foreground hover:text-foreground"
+                      >
+                        <ExternalLink className="size-4" />
+                      </a>
+                    </div>
+                  </td>
+                  <td className="py-3 px-4">
+                    <div className="flex items-center">
+                      <div className="truncate" title={shortUrl}>
+                        {shortUrl}
+                      </div>
+                      <Button
+                        variant={"ghost"}
+                        size={"icon"}
+                        onClick={() => copyToClipboard(url.shortCode)}
+                        className="ml-2 size-8"
+                      >
+                        <Copy className="size-4" />
+                      </Button>
+                    </div>
+                  </td>
+                  <td className="py-3 px-4 text-muted-foreground">
+                    {url.clicks}
+                  </td>
+                  <td className="py-3 px-4 text-muted-foreground">
+                    {formatDistanceToNow(new Date(url.createdAt), {
+                      addSuffix: true,
+                    })}
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    <div className="flex justify-end">
+                      <Button
+                        variant={"ghost"}
+                        size={"icon"}
+                        onClick={() => showQrCode(url.shortCode)}
+                        className="size-8 text-primary hover:text-primary"
+                      >
+                        <QrCode className="size-4" />
+                      </Button>
+                      <Button
+                        variant={"ghost"}
+                        size={"icon"}
+                        onClick={() => handleEdit(url.id, url.shortCode)}
+                        className="size-8 text-primary hover:text-primary"
+                      >
+                        <Edit className="size-4" />
+                      </Button>
+                      <Button
+                        variant={"ghost"}
+                        size={"icon"}
+                        onClick={() => handleDelete(url.id)}
+                        disabled={isDeleting === url.id}
+                        className="size-8 text-destructive hover:text-destructive"
+                      >
+                        {isDeleting === url.id ? (
+                          <div className="size-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                        ) : (
+                          <Trash2Icon className="size-4" />
+                        )}
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <QRCodeModal
+        isOpen={isQrCodeModalOpen}
+        onOpenChange={setIsQrCodeModalOpen}
+        url={qrCodeUrl}
+        shortCode={qrCodeShortCode}
+      />
+
+      {urlToEdit && (
+        <EditUrlModal
+          isOpen={isEditModalOpen}
+          onOpenChange={setIsEditModalOpen}
+          urlId={urlToEdit.id}
+          currentShortCode={urlToEdit.shortCode}
+          onSuccess={handleEditSuccess}
+        />
+      )}
+    </>
+  );
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\hooks\use-mobile.ts
+==============================
+
+import * as React from "react"
+
+const MOBILE_BREAKPOINT = 768
+
+export function useIsMobile() {
+  const [isMobile, setIsMobile] = React.useState<boolean | undefined>(undefined)
+
+  React.useEffect(() => {
+    const mql = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`)
+    const onChange = () => {
+      setIsMobile(window.innerWidth < MOBILE_BREAKPOINT)
+    }
+    mql.addEventListener("change", onChange)
+    setIsMobile(window.innerWidth < MOBILE_BREAKPOINT)
+    return () => mql.removeEventListener("change", onChange)
+  }, [])
+
+  return !!isMobile
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\lib\const.ts
+==============================
+
+export const BASEURL =
+typeof window !== 'undefined'
+  ? window.location.origin
+  : process.env.NEXT_PUBLIC_APP_URL;
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\lib\types.ts
+==============================
+
+import { z } from 'zod';
+
+// Schema for form validation (what the form actually uses)
+export const urlFormSchema = z.object({
+  url: z
+    .string()
+    .min(1, 'URL is required')
+    .transform((val) => {
+      // Automatically add https:// if missing
+      if (!/^https?:\/\//i.test(val)) {
+        return `https://${val}`;
+      }
+      return val;
+    })
+    .refine((val) => {
+      try {
+        new URL(val);
+        return true;
+      } catch {
+        return false;
+      }
+    }, 'Please enter a valid URL'),
+  customCode: z
+    .string()
+    .max(20, 'Custom code must be less than 255 characters')
+    .regex(/^[a-zA-Z0-9_-]+$/, 'Custom code must be alphanumeric or hyphen')
+    .optional(),
+});
+
+export type UrlFormData = z.infer<typeof urlFormSchema>;
+
+export type ApiResponse<T> = {
+  success: boolean;
+  data?: T;
+  error?: string;
+};
+
+export type Url = {
+  id: number;
+  originalUrl: string;
+  shortCode: string;
+  createdAt: string;
+  updatedAt: string;
+  clicks: number;
+};
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\lib\utils.ts
+==============================
+
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+export function isValidUrl(url: string): boolean {
+  try {
+    const urlObj = new URL(url);
+    return urlObj.protocol === 'http:' || urlObj.protocol === 'https:';
+  } catch (error) {
+    return false;
+  }
+}
+
+export function ensureHttps(url: string): string {
+  if (!url.startsWith('https://') && !url.startsWith('https://')) {
+    return `https://${url}`;
+  }
+
+  if (url.startsWith('http://')) {
+    return url.replace('http://', 'https://');
+  }
+
+  return url;
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\seed-database.ts
+==============================
+
+'use server';
+
+import { seed } from '@/server/db/seed';
+import { ApiResponse } from '@/lib/types';
+import { auth } from '@/server/auth';
+import { revalidatePath } from 'next/cache';
+
+/**
+ * Server action to seed the database with test data
+ * This should only be used in development
+ */
+export async function seedDatabase(): Promise<ApiResponse<null>> {
+  try {
+    // Only allow in development environment
+    if (process.env.NODE_ENV !== 'development') {
+      return {
+        success: false,
+        error: 'This action is only available in development mode',
+      };
+    }
+
+    // Check if user is authenticated and has admin privileges
+    const session = await auth();
+    if (!session?.user) {
+      return {
+        success: false,
+        error: 'You must be logged in to perform this action',
+      };
+    }
+
+    // Check if user has admin role
+    if (session.user.role !== 'admin') {
+      return {
+        success: false,
+        error: 'You must have admin privileges to perform this action',
+      };
+    }
+
+    // Run the seed function
+    const result = await seed();
+
+    if (!result.success) {
+      return {
+        success: false,
+        error: 'Failed to seed database',
+      };
+    }
+
+    // Revalidate all pages that might display the seeded data
+    revalidatePath('/');
+    revalidatePath('/dashboard');
+
+    return {
+      success: true,
+      data: null,
+    };
+  } catch (error) {
+    console.error('Error seeding database:', error);
+    return {
+      success: false,
+      error: 'An unexpected error occurred',
+    };
+  }
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\urls\get-all-urls.ts
+==============================
+
+"use server";
+
+import { ApiResponse } from "@/lib/types";
+import { auth } from "@/server/auth";
+import { db } from "@/server/db";
+
+export type UrlWithUser = {
+  id: number;
+  originalUrl: string;
+  shortCode: string;
+  createdAt: Date;
+  clicks: number;
+  userId: string | null;
+  userName: string | null;
+  userEmail: string | null;
+  flagged: boolean;
+  flagReason: string | null;
+};
+
+type GetAllUrlsOptions = {
+  page?: number;
+  limit?: number;
+  sortBy?: "originalUrl" | "shortCode" | "createdAt" | "clicks" | "userName";
+  sortOrder?: "asc" | "desc";
+  search?: string;
+  filter?: "all" | "flagged" | "security" | "inappropriate" | "other";
+};
+
+export async function getAllUrls(
+  options: GetAllUrlsOptions = {}
+): Promise<ApiResponse<{ urls: UrlWithUser[]; total: number }>> {
+  try {
+    const session = await auth();
+    if (!session?.user) {
+      return { success: false, error: "Unauthorized" };
+    }
+
+    if (session.user.role !== "admin") {
+      return { success: false, error: "Unauthorized" };
+    }
+
+    const {
+      page = 1,
+      limit = 10,
+      sortBy = "createdAt",
+      sortOrder = "desc",
+      search = "",
+      filter = "all",
+    } = options;
+
+    const offset = (page - 1) * limit;
+
+    const allUrls = await db.query.urls.findMany({
+      with: { user: true },
+    });
+
+    // transoform data to include user info
+    let transformedUrls: UrlWithUser[] = allUrls.map((url) => ({
+      id: url.id,
+      originalUrl: url.originalUrl,
+      shortCode: url.shortCode,
+      createdAt: url.createdAt,
+      clicks: url.clicks,
+      userId: url.userId,
+      userName: url.user?.name || null,
+      userEmail: url.user?.email || null,
+      flagged: url.flagged,
+      flagReason: url.flagReason,
+    }));
+
+    // apply search filter
+    if (search) {
+      transformedUrls = transformedUrls.filter(
+        (url) =>
+          url.originalUrl.toLowerCase().includes(search.toLowerCase()) ||
+          url.shortCode.toLowerCase().includes(search.toLowerCase()) ||
+          url.userName?.toLowerCase().includes(search.toLowerCase()) ||
+          url.userEmail?.toLowerCase().includes(search.toLowerCase()) ||
+          (url.flagReason?.toLowerCase().includes(search.toLowerCase()) || false)
+      );
+    }
+
+    // apply filter
+    if (filter !== "all") {
+      transformedUrls = transformedUrls.filter((url) => {
+        if (filter === "flagged") {
+          return url.flagged;
+        }
+
+        if (filter === "security" && url.flagReason) {
+          return (
+            url.flagReason.toLowerCase().includes("security") ||
+            url.flagReason.toLowerCase().includes("phishing") ||
+            url.flagReason.toLowerCase().includes("malware")
+          );
+        }
+
+        if (filter === "inappropriate" && url.flagReason) {
+          return (
+            url.flagReason.toLowerCase().includes("inappropriate") ||
+            url.flagReason.toLowerCase().includes("adult") ||
+            url.flagReason.toLowerCase().includes("offensive")
+          );
+        }
+
+        if (filter === "other" && url.flagReason) {
+          return (
+            !url.flagReason.toLowerCase().includes("security") &&
+            !url.flagReason.toLowerCase().includes("phishing") &&
+            !url.flagReason.toLowerCase().includes("malware") &&
+            !url.flagReason.toLowerCase().includes("inappropriate") &&
+            !url.flagReason.toLowerCase().includes("adult") &&
+            !url.flagReason.toLowerCase().includes("offensive")
+          );
+        }
+
+        return false;
+      });
+    }
+
+    const total = transformedUrls.length;
+
+    // apply sorting
+    if (sortBy && sortOrder) {
+      transformedUrls.sort((a, b) => {
+        let valueA: string | number | Date;
+        let valueB: string | number | Date;
+
+        // handle sorting by user name
+        if (sortBy === "userName") {
+          valueA = a.userName || a.userEmail || "";
+          valueB = b.userName || b.userEmail || "";
+        } else {
+          // For other properties, we need to handle the type correctly
+          switch (sortBy) {
+            case "originalUrl":
+            case "shortCode":
+              valueA = a[sortBy] || "";
+              valueB = b[sortBy] || "";
+              break;
+            case "clicks":
+              valueA = a[sortBy] || 0;
+              valueB = b[sortBy] || 0;
+              break;
+            case "createdAt":
+              valueA = a[sortBy];
+              valueB = b[sortBy];
+              break;
+            default:
+              valueA = "";
+              valueB = "";
+          }
+        }
+
+        // Handle comparison for different types
+        if (typeof valueA === 'string' && typeof valueB === 'string') {
+          return sortOrder === "asc" 
+            ? valueA.localeCompare(valueB) 
+            : valueB.localeCompare(valueA);
+        }
+        
+        if (valueA < valueB) {
+          return sortOrder === "asc" ? -1 : 1;
+        }
+        if (valueA > valueB) {
+          return sortOrder === "asc" ? 1 : -1;
+        }
+        return 0;
+      });
+    }
+
+    // apply pagination
+    const paginatedUrls = transformedUrls.slice(offset, offset + limit);
+
+    return {
+      success: true,
+      data: {
+        urls: paginatedUrls,
+        total,
+      },
+    };
+  } catch (error) {
+    console.error("Error getting all URLs:", error);
+    return { success: false, error: "Internal Server Error" };
+  }
+}
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\urls\manage-flagged-url.ts
+==============================
+
+"use server";
+
+import { ApiResponse } from "@/lib/types";
+import { auth } from "@/server/auth";
+import { db, eq } from "@/server/db";
+import { urls } from "@/server/db/schema";
+import { revalidatePath } from "next/cache";
+
+type Action = "approve" | "delete";
+
+export async function manageFlaggedUrl(
+  urlId: number,
+  action: Action
+): Promise<ApiResponse<null>> {
+  try {
+    const session = await auth();
+    if (!session?.user) {
+      return { success: false, error: "Unauthorized" };
+    }
+
+    if (session?.user?.role !== "admin") {
+      return { success: false, error: "Unauthorized" };
+    }
+
+    const urlToManage = await db.query.urls.findFirst({
+      where: (urls, { eq }) => eq(urls.id, urlId),
+    });
+
+    if (!urlToManage) {
+      return { success: false, error: "URL not found" };
+    }
+
+    if (action === "approve") {
+      await db
+        .update(urls)
+        .set({
+          flagged: false,
+          flagReason: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(urls.id, urlId));
+    } else if (action === "delete") {
+      await db.delete(urls).where(eq(urls.id, urlId));
+    } else {
+      return { success: false, error: "Invalid action" };
+    }
+
+    revalidatePath("/admin/urls");
+    revalidatePath("/admin/urls/flagged");
+
+    return { success: true, data: null };
+  } catch (error) {
+    console.error("Error managing flagged URL", error);
+    return { success: false, error: "Internal server error" };
+  }
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\users\get-all-users.ts
+==============================
+
+"use server";
+
+import { ApiResponse } from "@/lib/types";
+import { auth } from "@/server/auth";
+import { db } from "@/server/db";
+
+export type UserWithoutPassword = {
+  id: string;
+  name: string | null;
+  email: string;
+  role: string;
+  createdAt: Date;
+  image: string | null;
+};
+
+type GetAllUsersOptions = {
+  page?: number;
+  limit?: number;
+  sortBy?: "name" | "email" | "role" | "createdAt";
+  sortOrder?: "asc" | "desc";
+  search?: string;
+};
+
+export async function getAllUsers(
+  options: GetAllUsersOptions = {}
+): Promise<ApiResponse<{ users: UserWithoutPassword[]; total: number }>> {
+  try {
+    const session = await auth();
+    if (!session?.user) {
+      return { success: false, error: "Not authenticated" };
+    }
+
+    if (session.user.role !== "admin") {
+      return { success: false, error: "Not authorized" };
+    }
+
+    const {
+      page = 1,
+      limit = 10,
+      sortBy = "createdAt",
+      sortOrder = "desc",
+      search = "",
+    } = options;
+
+    const offset = (page - 1) * limit;
+
+    let allUsers = await db.query.users.findMany({
+      columns: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        createdAt: true,
+        image: true,
+        // exculde password and other sensitive data
+        password: false,
+        emailVerified: false,
+        updatedAt: false,
+      },
+    });
+
+    if (search) {
+      const searchLower = search.toLowerCase();
+      allUsers = allUsers.filter(
+        (user) =>
+          user.email?.toLowerCase().includes(searchLower) ||
+          (user.name?.toLowerCase().includes(searchLower) || false)
+      );
+    }
+
+    const total = allUsers.length;
+
+    if (sortBy && sortOrder) {
+      allUsers.sort((a, b) => {
+        // Use proper typing instead of any
+        let valueA: string | Date;
+        let valueB: string | Date;
+
+        switch (sortBy) {
+          case "name":
+          case "email":
+          case "role":
+            valueA = a[sortBy] || "";
+            valueB = b[sortBy] || "";
+            break;
+          case "createdAt":
+            valueA = a[sortBy];
+            valueB = b[sortBy];
+            break;
+          default:
+            valueA = "";
+            valueB = "";
+        }
+
+        // Handle comparison for different types
+        if (typeof valueA === 'string' && typeof valueB === 'string') {
+          return sortOrder === "asc" 
+            ? valueA.localeCompare(valueB) 
+            : valueB.localeCompare(valueA);
+        }
+        
+        if (valueA < valueB) {
+          return sortOrder === "asc" ? -1 : 1;
+        }
+        if (valueA > valueB) {
+          return sortOrder === "asc" ? 1 : -1;
+        }
+        return 0;
+      });
+    }
+
+    const paginatedUsers = allUsers.slice(offset, offset + limit);
+
+    return {
+      success: true,
+      data: {
+        users: paginatedUsers,
+        total,
+      },
+    };
+  } catch (error) {
+    console.error("Error getting all users", error);
+    return { success: false, error: "Error getting all users" };
+  }
+}
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\users\update-user-role.ts
+==============================
+
+"use server";
+
+import { ApiResponse } from "@/lib/types";
+import { auth } from "@/server/auth";
+import { db, eq } from "@/server/db";
+import { userRoleEnum, users } from "@/server/db/schema";
+import { revalidatePath } from "next/cache";
+
+export async function updateUserRole(
+  userId: string,
+  role: "user" | "admin"
+): Promise<ApiResponse<null>> {
+  try {
+    // Verify authentication and admin role
+    const session = await auth();
+    if (!session?.user) {
+      return {
+        success: false,
+        error: "Unauthorized",
+      };
+    }
+
+    if (session.user.role !== "admin") {
+      return {
+        success: false,
+        error: "Insufficient permissions",
+      };
+    }
+
+    // Prevent changing own role
+    if (session.user.id === userId) {
+      return {
+        success: false,
+        error: "You cannot change your own role",
+      };
+    }
+
+    if (!userRoleEnum.enumValues.includes(role)) {
+      return {
+        success: false,
+        error: "Invalid role",
+      };
+    }
+
+    const userToUpdate = await db.query.users.findFirst({
+      where: (users, { eq }) => eq(users.id, userId),
+    });
+
+    if (!userToUpdate) {
+      return {
+        success: false,
+        error: "User not found",
+      };
+    }
+
+    await db
+      .update(users)
+      .set({
+        role,
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, userId));
+
+    revalidatePath("/admin/users");
+
+    return {
+      success: true,
+      data: null,
+    };
+  } catch (error) {
+    console.error("Error updating user role:", error);
+    return {
+      success: false,
+      error: "An error occurred while updating user",
+    };
+  }
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\auth\register.ts
+==============================
+
+"use server";
+
+import { ApiResponse } from "@/lib/types";
+import { db } from "@/server/db";
+import { users } from "@/server/db/schema";
+import { z } from "zod";
+import { nanoid } from "nanoid";
+import bcrypt from "bcryptjs";
+
+const registerSchema = z.object({
+  name: z.string().min(2),
+  email: z.string().email(),
+  password: z.string().min(6),
+});
+
+export async function registerUser(
+  formData: FormData
+): Promise<ApiResponse<{ userId: string }>> {
+  try {
+    const validatedFields = registerSchema.safeParse({
+      name: formData.get("name") as string,
+      email: formData.get("email") as string,
+      password: formData.get("password") as string,
+    });
+
+    if (!validatedFields.success) {
+      return {
+        success: false,
+        error:
+          validatedFields.error.flatten().fieldErrors.email?.[0] ||
+          validatedFields.error.flatten().fieldErrors.password?.[0] ||
+          validatedFields.error.flatten().fieldErrors.name?.[0] ||
+          "Invalid data",
+      };
+    }
+
+    const { name, email, password } = validatedFields.data;
+
+    const existingUser = await db.query.users.findFirst({
+      where: (users, { eq }) => eq(users.email, email.toLowerCase()),
+    });
+
+    if (existingUser) {
+      return {
+        success: false,
+        error: "A user with this email already exists",
+      };
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const userId = nanoid();
+
+    await db.insert(users).values({
+      id: userId,
+      name,
+      email: email.toLowerCase(),
+      password: hashedPassword,
+      role: "user",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    return {
+      success: true,
+      data: { userId },
+    };
+  } catch (error) {
+    console.error(error);
+    return {
+      success: false,
+      error: "An error occurred. Please try again.",
+    };
+  }
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\check-url-safety.ts
+==============================
+
+"use server";
+
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { ApiResponse } from "@/lib/types";
+
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY!);
+
+export type UrlSafetyCheck = {
+  isSafe: boolean;
+  flagged: boolean;
+  reason: string | null;
+  category: "safe" | "suspicious" | "malicious" | "inappropriate" | "unknown";
+  confidence: number;
+};
+
+export async function checkUrlSafety(
+  url: string
+): Promise<ApiResponse<UrlSafetyCheck>> {
+  try {
+    // validate URL Format
+    try {
+      new URL(url);
+    } catch (error) {
+      return {
+        success: false,
+        error: "Invalid URL format",
+      };
+    }
+
+    if (!process.env.GOOGLE_GEMINI_API_KEY) {
+      console.log("Missing Google Gemini API Key");
+      return {
+        success: true,
+        data: {
+          isSafe: true,
+          flagged: false,
+          reason: null,
+          category: "unknown",
+          confidence: 0,
+        },
+      };
+    }
+
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+    const prompt = `
+    Analyze this URL for safety concerns: "${url}"
+    
+    Consider the following aspects:
+    1. Is it a known phishing site?
+    2. Does it contain malware or suspicious redirects?
+    3. Is it associated with scams or fraud?
+    4. Does it contain inappropriate content (adult, violence, etc.)?
+    5. Is the domain suspicious or newly registered?
+    
+    Respond in JSON format with the following structure:
+    {
+      "isSafe": boolean,
+      "flagged": boolean,
+      "reason": string or null,
+      "category": "safe" | "suspicious" | "malicious" | "inappropriate" | "unknown",
+      "confidence": number between 0 and 1
+    }
+    
+    Only respond with the JSON object, no additional text.
+  `;
+
+    const result = await model.generateContent(prompt);
+    const response = result.response;
+    const text = response.text();
+
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error("Failed to parse JSON response");
+    }
+
+    const jsonResponse = JSON.parse(jsonMatch[0]) as UrlSafetyCheck;
+
+    return {
+      success: true,
+      data: jsonResponse,
+    };
+  } catch (error) {
+    console.error(error);
+    return {
+      success: false,
+      error: "Failed to check URL safety"
+    };
+  }
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\delete-url.ts
+==============================
+
+"use server";
+
+import { ApiResponse } from "@/lib/types";
+import { auth } from "@/server/auth";
+import { db, eq } from "@/server/db";
+import { urls } from "@/server/db/schema";
+
+export async function deleteUrl(urlId: number): Promise<ApiResponse<null>> {
+  try {
+    const session = await auth();
+    if (!session?.user) {
+      return {
+        success: false,
+        error: "Unauthorized",
+      };
+    }
+
+    const [url] = await db.select().from(urls).where(eq(urls.id, urlId));
+
+    if (!url) {
+      return {
+        success: false,
+        error: "URL not found",
+      };
+    }
+
+    if (url.userId && url.userId !== session.user.id) {
+      return {
+        success: false,
+        error: "Unauthorized",
+      };
+    }
+
+    await db.delete(urls).where(eq(urls.id, urlId));
+
+    return {
+      success: true,
+      data: null,
+    };
+  } catch (error) {
+    console.error("Error deleting URL", error);
+    return {
+      success: false,
+      error: "An error occurred",
+    };
+  }
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\get-url.ts
+==============================
+
+"use server";
+
+import { ApiResponse } from "@/lib/types";
+import { db, eq } from "@/server/db";
+import { urls } from "@/server/db/schema";
+
+export async function getUrlByShortCode(shortCode: string): Promise<
+  ApiResponse<{
+    originalUrl: string;
+    flagged?: boolean;
+    flagReason?: string | null;
+  }>
+> {
+  try {
+    const url = await db.query.urls.findFirst({
+      where: (urls, { eq }) => eq(urls.shortCode, shortCode),
+    });
+
+    if (!url) {
+      return {
+        success: false,
+        error: "URL not found",
+      };
+    }
+
+    await db
+      .update(urls)
+      .set({
+        clicks: url.clicks + 1,
+        updatedAt: new Date(),
+      })
+      .where(eq(urls.shortCode, shortCode));
+
+    return {
+      success: true,
+      data: {
+        originalUrl: url.originalUrl,
+        flagged: url.flagged || false,
+        flagReason: url.flagReason || null,
+      },
+    };
+  } catch (error) {
+    console.error(error);
+    return {
+      success: false,
+      error: "An error occurred while fetching the URL",
+    };
+  }
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\get-user-urls.ts
+==============================
+
+"use server";
+
+import { ApiResponse } from "@/lib/types";
+import { auth } from "@/server/auth";
+import { db } from "@/server/db";
+import { urls } from "@/server/db/schema";
+
+export async function getUserUrls(userId: string): Promise<
+  ApiResponse<
+    Array<{
+      id: number;
+      originalUrl: string;
+      shortCode: string;
+      createdAt: Date;
+      clicks: number;
+    }>
+  >
+> {
+  try {
+    const session = await auth();
+    if (!session?.user || session.user.id !== userId) {
+      return {
+        success: false,
+        error: "Unauthorized",
+      };
+    }
+
+    // Get all URLs for the user
+    const userUrls = await db.query.urls.findMany({
+      where: (urls, { eq }) => eq(urls.userId, userId),
+      orderBy: (urls, { desc }) => [desc(urls.createdAt)],
+    });
+
+    return {
+      success: true,
+      data: userUrls.map((url) => ({
+        id: url.id,
+        originalUrl: url.originalUrl,
+        shortCode: url.shortCode,
+        createdAt: url.createdAt,
+        clicks: url.clicks,
+      })),
+    };
+  } catch (error) {
+    console.error("Error getting user URLs", error);
+    return {
+      success: false,
+      error: "An error occurred",
+    };
+  }
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\shorten-url.ts
+==============================
+
+"use server";
+
+import { ApiResponse } from "@/lib/types";
+import { ensureHttps, isValidUrl } from "@/lib/utils";
+import { custom, z } from "zod";
+import { nanoid } from "nanoid";
+import { db } from "@/server/db";
+import { urls } from "@/server/db/schema";
+import { revalidatePath } from "next/cache";
+import { auth } from "@/server/auth";
+import { checkUrlSafety } from "./check-url-safety";
+import { BASEURL } from "@/lib/const";
+
+const shortenUrlSchema = z.object({
+  url: z.string().refine(isValidUrl, {
+    message: "Please enter a valid URL",
+  }),
+  customCode: z
+    .string()
+    .max(20, "Custom code must be less than 255 characters")
+    .regex(/^[a-zA-Z0-9_-]+$/, "Custom code must be alphanumeric or hyphen")
+    .optional()
+    .nullable()
+    .transform((val) => (val === null || val === "" ? undefined : val)),
+});
+
+export async function shortenUrl(formData: FormData): Promise<
+  ApiResponse<{
+    shortUrl: string;
+    flagged: boolean;
+    flagReason?: string | null;
+    message?: string;
+  }>
+> {
+  try {
+    const session = await auth();
+    const userId = session?.user?.id;
+
+    const url = formData.get("url") as string;
+    const customCode = formData.get("customCode") as string;
+
+    const validatedFields = shortenUrlSchema.safeParse({
+      url,
+      customCode: customCode ? customCode : undefined,
+    });
+
+    if (!validatedFields.success) {
+      return {
+        success: false,
+        error:
+          validatedFields.error.flatten().fieldErrors.url?.[0] ||
+          validatedFields.error.flatten().fieldErrors.customCode?.[0] ||
+          "Invalid URL",
+      };
+    }
+
+    const originalUrl = ensureHttps(validatedFields.data.url);
+
+    const safetyCheck = await checkUrlSafety(originalUrl);
+    let flagged = false;
+    let flagReason = null;
+
+    if (safetyCheck.success && safetyCheck.data) {
+      flagged = safetyCheck.data.flagged;
+      flagReason = safetyCheck.data.reason;
+
+      if (
+        safetyCheck.data.category === "malicious" &&
+        safetyCheck.data.confidence > 0.7 &&
+        session?.user?.role !== "admin"
+      ) {
+        return {
+          success: false,
+          error: "This URL is flagged as malicious",
+        };
+      }
+    }
+
+    const shortCode = validatedFields.data.customCode || nanoid(6);
+
+    // check if the short code already exists
+    const existingUrl = await db.query.urls.findFirst({
+      where: (urls, { eq }) => eq(urls.shortCode, shortCode),
+    });
+
+    if (existingUrl) {
+      if (validatedFields.data.customCode) {
+        return {
+          success: false,
+          error: "Custom code already exists",
+        };
+      }
+      return shortenUrl(formData);
+    }
+
+    await db.insert(urls).values({
+      originalUrl,
+      shortCode,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      userId: userId || null,
+      flagged,
+      flagReason,
+    });
+
+    // const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    const baseUrl = BASEURL;
+    const shortUrl = `${baseUrl}/r/${shortCode}`;
+
+    revalidatePath("/");
+
+    return {
+      success: true,
+      data: {
+        shortUrl,
+        flagged,
+        flagReason,
+        message: flagged
+          ? "This URL has been flagged for review by our safety system. It may be temporarily limited until approved by an administrator."
+          : undefined,
+      },
+    };
+  } catch (error) {
+    console.error("Failed to shorten URL", error);
+    return {
+      success: false,
+      error: "Failed to shorten URL",
+    };
+  }
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\update-url.ts
+==============================
+
+"use server";
+
+import { BASEURL } from "@/lib/const";
+import { ApiResponse } from "@/lib/types";
+import { auth } from "@/server/auth";
+import { db, eq } from "@/server/db";
+import { urls } from "@/server/db/schema";
+import { revalidatePath } from "next/cache";
+import { z } from "zod";
+
+const updateUrlSchema = z.object({
+  id: z.coerce.number(),
+  customCode: z
+    .string()
+    .max(255, "Custom code must be less than 255 characters")
+    .regex(/^[a-zA-Z0-9_-]+$/, "Custom code must be alphanumeric or hyphen"),
+});
+
+export async function updateUrl(
+  formData: FormData
+): Promise<ApiResponse<{ shortUrl: string }>> {
+  try {
+    const session = await auth();
+    const userId = session?.user?.id;
+
+    if (!userId) {
+      return {
+        success: false,
+        error: "You must be logged in to update a URL",
+      };
+    }
+
+    const validatedFields = updateUrlSchema.safeParse({
+      id: formData.get("id"),
+      customCode: formData.get("customCode"),
+    });
+
+    if (!validatedFields.success) {
+      return {
+        success: false,
+        error:
+          validatedFields.error.flatten().fieldErrors.id?.[0] ||
+          validatedFields.error.flatten().fieldErrors.customCode?.[0] ||
+          "Invalid URL ID",
+      };
+    }
+
+    const { id, customCode } = validatedFields.data;
+
+    const existingUrl = await db.query.urls.findFirst({
+      where: (urls, { eq, and }) =>
+        and(eq(urls.id, id), eq(urls.userId, userId)),
+    });
+
+    if (!existingUrl) {
+      return {
+        success: false,
+        error: "URL not found or you don't have permission to update it",
+      };
+    }
+
+    const codeExists = await db.query.urls.findFirst({
+      where: (urls, { eq, and, ne }) =>
+        and(eq(urls.shortCode, customCode), ne(urls.id, id)),
+    });
+
+    if (codeExists) {
+      return {
+        success: false,
+        error: "Custom code already exists",
+      };
+    }
+
+    await db
+      .update(urls)
+      .set({
+        shortCode: customCode,
+        updatedAt: new Date(),
+      })
+      .where(eq(urls.id, id));
+
+    // const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    const baseUrl = BASEURL;
+    const shortUrl = `${baseUrl}/r/${customCode}`;
+
+    revalidatePath("/dashboard");
+
+    return {
+      success: true,
+      data: { shortUrl },
+    };
+  } catch (error) {
+    console.error("Failed to update URL", error);
+    return {
+      success: false,
+      error: "An error occurred",
+    };
+  }
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\auth.config.ts
+==============================
+
+import { DefaultSession, NextAuthConfig } from 'next-auth';
+import GitHub from 'next-auth/providers/github';
+import Google from 'next-auth/providers/google';
+import CredentialsProvider from 'next-auth/providers/credentials';
+import { z } from 'zod';
+import { eq } from 'drizzle-orm';
+import { users } from './db/schema';
+import bcrypt from 'bcryptjs';
+import { JWT } from 'next-auth/jwt';
+import { db } from './db';
+import { CustomDrizzleAdapter } from './db/custom-drizzle-adapter';
+
+// extend the types to include role
+declare module 'next-auth' {
+  interface User {
+    role?: 'user' | 'admin';
+  }
+
+  interface Session {
+    user: {
+      id: string;
+      role?: 'user' | 'admin';
+    } & DefaultSession['user'];
+  }
+}
+
+declare module 'next-auth/jwt' {
+  interface JWT {
+    role?: 'user' | 'admin';
+  }
+}
+
+export const authConfig: NextAuthConfig = {
+  adapter: CustomDrizzleAdapter(), 
+  secret: process.env.AUTH_SECRET,
+  pages: {
+    signIn: '/login',
+    signOut: '/logout',
+    error: '/login',
+    verifyRequest: '/verify-request',
+    newUser: '/register',
+  },
+  callbacks: {
+    authorized({ auth, request: { nextUrl } }) {
+      const isLoggedIn = !!auth?.user;
+      const isOnDashboard = nextUrl.pathname.startsWith('/dashboard');
+      const isOnAdmin = nextUrl.pathname.startsWith('/admin');
+
+      if (isOnAdmin) {
+        return isLoggedIn && auth?.user?.role === 'admin';
+      } else if (isOnDashboard) {
+        if (isLoggedIn) return true;
+        return false;
+      } else if (isLoggedIn) {
+        return true;
+      }
+      return true;
+    },
+    jwt: async ({ token, user }) => {
+      if (user) {
+        token.id = user.id;
+        token.email = user.email;
+        token.name = user.name;
+        token.picture = user.image;
+        token.role = user.role;
+      }
+      return token;
+    },
+    session: async ({ session, token }) => {
+      if (token) {
+        session.user.id = token.id as string;
+        session.user.role = token.role;
+      }
+      return session;
+    },
+  },
+
+  providers: [
+    GitHub({
+      clientId: process.env.GITHUB_CLIENT_ID,
+      clientSecret: process.env.GITHUB_CLIENT_SECRET,
+    }),
+    Google({
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    }),
+    CredentialsProvider({
+      name: 'Credentials',
+      credentials: {
+        email: {
+          label: 'Email',
+          type: 'email',
+          placeholder: 'example@exmple.com',
+        },
+        password: { label: 'Password', type: 'password' },
+      },
+      async authorize(credentials) {
+        const parsedCredentials = z
+          .object({
+            email: z.string().email(),
+            password: z.string().min(6),
+          })
+          .safeParse(credentials);
+
+        if (!parsedCredentials.success) return null;
+
+        const { email, password } = parsedCredentials.data;
+
+        const [user] = await db
+          .select()
+          .from(users)
+          .where(eq(users.email, email.toLowerCase()));
+
+        if (!user) return null;
+
+        //check if password is correct
+        const passwordsMatch = await bcrypt.compare(
+          password,
+          user.password || ''
+        );
+
+        if (!passwordsMatch) return null;
+
+        return {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          image: user.image,
+          role: user.role,
+        };
+      },
+    }),
+  ],
+};
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\auth.ts
+==============================
+
+import NextAuth from "next-auth";
+import { DrizzleAdapter } from "@auth/drizzle-adapter";
+import { db } from "./db";
+import { authConfig } from "./auth.config";
+
+export const {
+  handlers: { GET, POST },
+  auth,
+  signIn,
+  signOut,
+} = NextAuth({
+  adapter: DrizzleAdapter(db),
+  session: { strategy: "jwt" },
+  ...authConfig,
+});
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\db\custom-drizzle-adapter.ts
+==============================
+
+import { DrizzleAdapter } from '@auth/drizzle-adapter';
+import type { Adapter, AdapterSession, AdapterUser } from 'next-auth/adapters';
+import { db } from './index';
+import { users, accounts, sessions, verificationTokens } from './schema';
+import { eq, and, SQLWrapper } from 'drizzle-orm';
+import type { InferSelectModel, InferInsertModel } from 'drizzle-orm';
+
+/**
+ * Infer types directly from your Drizzle schema
+ */
+export type User = InferSelectModel<typeof users>;
+export type NewUser = InferInsertModel<typeof users>;
+
+export type Account = InferSelectModel<typeof accounts>;
+export type NewAccount = InferInsertModel<typeof accounts>;
+
+export type Session = InferSelectModel<typeof sessions>;
+export type NewSession = InferInsertModel<typeof sessions>;
+
+export type VerificationToken = InferSelectModel<typeof verificationTokens>;
+export type NewVerificationToken = InferInsertModel<typeof verificationTokens>;
+
+/**
+ * Custom Drizzle Adapter that maps NextAuth's default table names
+ * to your existing schema (`users`, `accounts`, `sessions`, `verification_token`)
+ */
+export function CustomDrizzleAdapter(): Adapter {
+  const base = DrizzleAdapter(db);
+
+  return {
+    ...base,
+
+    async getUser(id: string | SQLWrapper): Promise<AdapterUser | null> {
+      const [user] = await db.select().from(users).where(eq(users.id, id));
+      return user ?? null;
+    },
+
+    async getUserByEmail(email: string): Promise<AdapterUser | null> {
+      const [user] = await db
+        .select()
+        .from(users)
+        .where(eq(users.email, email.toLowerCase()));
+      return user ?? null;
+    },
+
+    async getUserByAccount({
+      provider,
+      providerAccountId,
+    }): Promise<AdapterUser | null> {
+      const result = await db
+        .select()
+        .from(accounts)
+        .innerJoin(users, eq(accounts.userId, users.id))
+        .where(
+          and(
+            eq(accounts.provider, provider),
+            eq(accounts.providerAccountId, providerAccountId)
+          )
+        );
+
+      return result?.[0]?.users ?? null;
+    },
+
+    async linkAccount(account: NewAccount): Promise<void> {
+      await db.insert(accounts).values(account);
+    },
+
+    async createUser(user: NewUser): Promise<AdapterUser> {
+      const [newUser] = await db.insert(users).values(user).returning();
+      return newUser;
+    },
+
+    async updateUser(user: Partial<User>): Promise<AdapterUser> {
+      const [updatedUser] = await db
+        .update(users)
+        .set(user)
+        .where(eq(users.id, user.id!))
+        .returning();
+      return updatedUser;
+    },
+
+    async createSession(session: NewSession): Promise<AdapterSession> {
+      const [newSession] = await db.insert(sessions).values(session).returning();
+      return newSession;
+    },
+
+    async getSessionAndUser(
+      sessionToken: string
+    ): Promise<{ session: AdapterSession; user: AdapterUser } | null> {
+      const result = await db
+        .select()
+        .from(sessions)
+        .innerJoin(users, eq(sessions.userId, users.id))
+        .where(eq(sessions.sessionToken, sessionToken));
+
+      const record = result?.[0];
+      if (!record) return null;
+
+      return {
+        session: record.sessions,
+        user: record.users,
+      };
+    },
+
+    async deleteSession(sessionToken: string): Promise<void> {
+      await db.delete(sessions).where(eq(sessions.sessionToken, sessionToken));
+    },
+
+    async useVerificationToken(params: {
+      identifier: string;
+      token: string;
+    }): Promise<VerificationToken | null> {
+      const [deleted] = await db
+        .delete(verificationTokens)
+        .where(
+          and(
+            eq(verificationTokens.identifier, params.identifier),
+            eq(verificationTokens.token, params.token)
+          )
+        )
+        .returning();
+      return deleted ?? null;
+    },
+  };
+}
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\db\index.ts
+==============================
+
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+import * as schema from './schema';
+
+const connectionString =
+  process.env.DATABASE_URL || 'postgres://localhost:5432/your-db-name';
+
+const client = postgres(connectionString, {
+  prepare: false,
+});
+
+export const db = drizzle(client, { schema });
+
+export { eq, and, or, like, desc, asc } from 'drizzle-orm';
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\db\schema.ts
+==============================
+
+import { relations } from 'drizzle-orm';
+import {
+  integer,
+  pgEnum,
+  pgTable,
+  serial,
+  timestamp,
+  varchar,
+  text,
+  primaryKey,
+  boolean,
+} from 'drizzle-orm/pg-core';
+import type { AdapterAccount } from 'next-auth/adapters';
+
+// Define user roles enum
+export const userRoleEnum = pgEnum('user_role', ['user', 'admin']);
+
+// Define user table
+export const users = pgTable('users', {
+  id: varchar('id', { length: 255 }).notNull().primaryKey(),
+  name: varchar('name', { length: 255 }),
+  email: varchar('email', { length: 255 }).notNull().unique(),
+  emailVerified: timestamp('emailVerified', { mode: 'date' }),
+  image: text('image'),
+  password: text('password'),
+  role: userRoleEnum('role').default('user').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+});
+
+export const accounts = pgTable(
+  'accounts',
+  {
+    userId: varchar('user_id', { length: 255 })
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    type: varchar('type', { length: 255 })
+      .$type<AdapterAccount['type']>()
+      .notNull(),
+    provider: varchar('provider', { length: 255 }).notNull(),
+    providerAccountId: varchar('provider_account_id', {
+      length: 255,
+    }).notNull(),
+    refresh_token: text('refresh_token'),
+    access_token: text('access_token'),
+    expires_at: integer('expires_at'),
+    token_type: varchar('token_type', { length: 255 }),
+    scope: varchar('scope', { length: 255 }),
+    id_token: text('id_token'),
+    session_state: varchar('session_state', { length: 255 }),
+  },
+  (account) => [
+    {
+      compoundKey: primaryKey({
+        columns: [account.provider, account.providerAccountId],
+      }),
+    },
+  ]
+);
+
+export const sessions = pgTable('sessions', {
+  sessionToken: varchar('session_token', { length: 255 })
+    .notNull()
+    .primaryKey(),
+  userId: varchar('user_id', { length: 255 })
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  expires: timestamp('expires', { mode: 'date' }).notNull(),
+});
+
+export const verificationTokens = pgTable(
+  'verification_token',
+  {
+    identifier: varchar('identifier', { length: 255 }).notNull(),
+    token: varchar('token', { length: 255 }).notNull(),
+    expires: timestamp('expires', { mode: 'date' }).notNull(),
+  },
+  (verificationToken) => [
+    {
+      compositePk: primaryKey({
+        columns: [verificationToken.identifier, verificationToken.token],
+      }),
+    },
+  ]
+);
+
+export const urls = pgTable('urls', {
+  id: serial('id').primaryKey(),
+  originalUrl: varchar('original_url', { length: 2000 }).notNull(),
+  shortCode: varchar('short_code', { length: 10 }).notNull().unique(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  clicks: integer('clicks').default(0).notNull(),
+  userId: varchar('user_id', { length: 255 }).references(() => users.id, {
+    onDelete: 'set null',
+  }),
+  flagged: boolean('flagged').default(false).notNull(),
+  flagReason: text('flag_reason'),
+});
+
+export const usersRelations = relations(users, ({ many }) => ({
+  urls: many(urls),
+  accounts: many(accounts),
+  sessions: many(sessions),
+}));
+
+export const urlsRelations = relations(urls, ({ one }) => ({
+  user: one(users, {
+    fields: [urls.userId],
+    references: [users.id],
+  }),
+}));
+
+
+==============================
+FILE: e:\My Projects\URL-Shortner-NextJS\src\server\db\seed.ts
+==============================
+
+import { db } from "./index";
+import { users, urls, userRoleEnum } from "./schema";
+import { nanoid } from "nanoid";
+import { randomUUID } from "crypto";
+import { hash } from "bcryptjs";
+
+/**
+ * Seed the database with test data
+ */
+export async function seed() {
+  console.log("🌱 Seeding database...");
+
+  try {
+    // Create test users
+    const testUsers = [
+      {
+        id: randomUUID(),
+        name: "Test User",
+        email: "test@example.com",
+        password: await hash("password123", 10),
+        role: userRoleEnum.enumValues[0], // "user"
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: randomUUID(),
+        name: "Demo User",
+        email: "demo@example.com",
+        password: await hash("demo123", 10),
+        role: userRoleEnum.enumValues[0], // "user"
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: randomUUID(),
+        name: "Admin User",
+        email: "admin@example.com",
+        password: await hash("admin123", 10),
+        role: userRoleEnum.enumValues[1], // "admin"
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    console.log("👤 Creating test users...");
+
+    // Insert users one by one to handle potential duplicates
+    for (const user of testUsers) {
+      try {
+        await db.insert(users).values(user).onConflictDoNothing();
+        console.log(`✅ Created user: ${user.email} (${user.role})`);
+      } catch (error) {
+        console.error(`❌ Error creating user ${user.email}:`, error);
+      }
+    }
+
+    // Get the inserted users to use their IDs
+    const insertedUsers = await db.query.users.findMany({
+      where: (users, { eq, or }) =>
+        or(
+          eq(users.email, "test@example.com"),
+          eq(users.email, "demo@example.com"),
+          eq(users.email, "admin@example.com")
+        ),
+    });
+
+    if (insertedUsers.length === 0) {
+      throw new Error("Failed to retrieve inserted users");
+    }
+
+    // Create test URLs
+    const testUrls = [
+      // URLs for the first user
+      {
+        originalUrl: "https://github.com",
+        shortCode: "github",
+        createdAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // 7 days ago
+        updatedAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+        clicks: 42,
+        userId: insertedUsers[0].id,
+      },
+      {
+        originalUrl: "https://nextjs.org",
+        shortCode: "nextjs",
+        createdAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000), // 5 days ago
+        updatedAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000),
+        clicks: 27,
+        userId: insertedUsers[0].id,
+      },
+      {
+        originalUrl: "https://tailwindcss.com",
+        shortCode: "tailwind",
+        createdAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000), // 3 days ago
+        updatedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000),
+        clicks: 15,
+        userId: insertedUsers[0].id,
+      },
+
+      // URLs for the second user
+      {
+        originalUrl: "https://react.dev",
+        shortCode: "react",
+        createdAt: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000), // 6 days ago
+        updatedAt: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000),
+        clicks: 31,
+        userId: insertedUsers[1].id,
+      },
+      {
+        originalUrl: "https://typescriptlang.org",
+        shortCode: "typescript",
+        createdAt: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000), // 4 days ago
+        updatedAt: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000),
+        clicks: 19,
+        userId: insertedUsers[1].id,
+      },
+
+      // URLs without a user (anonymous)
+      {
+        originalUrl: "https://example.com",
+        shortCode: "example",
+        createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), // 2 days ago
+        updatedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+        clicks: 8,
+        userId: null,
+      },
+      {
+        originalUrl: "https://google.com",
+        shortCode: "google",
+        createdAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000), // 1 day ago
+        updatedAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000),
+        clicks: 53,
+        userId: null,
+      },
+    ];
+
+    console.log("🔗 Creating test URLs...");
+
+    // Insert URLs one by one to handle potential duplicates
+    for (const url of testUrls) {
+      try {
+        await db.insert(urls).values(url).onConflictDoNothing();
+        console.log(`✅ Created URL: ${url.shortCode} -> ${url.originalUrl}`);
+      } catch (error) {
+        console.error(`❌ Error creating URL ${url.shortCode}:`, error);
+      }
+    }
+
+    // Generate some random URLs with random short codes
+    console.log("🎲 Creating random URLs...");
+
+    for (let i = 0; i < 10; i++) {
+      const randomUrl = {
+        originalUrl: `https://random-site-${i + 1}.com`,
+        shortCode: nanoid(6),
+        createdAt: new Date(
+          Date.now() - Math.floor(Math.random() * 10) * 24 * 60 * 60 * 1000
+        ),
+        updatedAt: new Date(
+          Date.now() - Math.floor(Math.random() * 10) * 24 * 60 * 60 * 1000
+        ),
+        clicks: Math.floor(Math.random() * 100),
+        userId:
+          Math.random() > 0.5
+            ? insertedUsers[Math.floor(Math.random() * insertedUsers.length)].id
+            : null,
+      };
+
+      try {
+        await db.insert(urls).values(randomUrl);
+        console.log(
+          `✅ Created random URL: ${randomUrl.shortCode} -> ${randomUrl.originalUrl}`
+        );
+      } catch (error) {
+        console.error(`❌ Error creating random URL:`, error);
+      }
+    }
+
+    console.log("✅ Seeding completed successfully!");
+    return { success: true };
+  } catch (error) {
+    console.error("❌ Seeding failed:", error);
+    return { success: false, error };
+  }
+}

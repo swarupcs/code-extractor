@@ -14,7 +14,19 @@ const path = require("path");
 // 👇 Source folder (absolute or relative)
 // const TARGET_FOLDER = 'E:/My Projects/chrona-ai/chrona-ai-backend/src';
 // const TARGET_FOLDER = String.raw`E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src`;
-const TARGET_FOLDER = String.raw`E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src`;
+// const TARGET_FOLDER = String.raw`E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src`;
+// const TARGET_FOLDER = String.raw`E:\My Projects\Slack Clone\Slack-Backend\src`;
+// const TARGET_FOLDER = String.raw`E:\My Projects\Slack Clone\Slack-Frontend-New\src`;
+// const TARGET_FOLDER = String.raw`E:\My Projects\AI-Resume-Builder\aI-resume-builder-frontend\src`;
+// const TARGET_FOLDER = String.raw`E:\My Projects\devflow\src`;
+// const TARGET_FOLDER = String.raw`E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src`;
+// const TARGET_FOLDER = String.raw`E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src`;
+// const TARGET_FOLDER = String.raw`e:\My Projects\URL-Shortner-NextJS\src`;
+const TARGET_FOLDER = String.raw`E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src`;
+
+
+
+// const TARGET_FOLDER = 'E:/My Projects/LeetLab/Algodrill/frontend/src';
 // const TARGET_FOLDER = 'E:/My Projects/LeetLab/Algodrill/frontend/src';
 // const TARGET_FOLDER =
 //   'E:/My Projects/Dev-Collab/Dev-Collab-Frontend/src';
@@ -43,7 +55,9 @@ const EXCLUDED_DIRS = new Set([
   "coverage",
   ".idea",
   ".vscode",
-  
+  "fonts",
+  "generated",
+  "prisma",
 ]);
 
 const EXCLUDED_FILES = new Set([
@@ -53,6 +67,7 @@ const EXCLUDED_FILES = new Set([
   "all_code.txt",
   ".DS_Store",
   "Thumbs.db",
+  "favicon.ico",
 ]);
 
 const EXCLUDED_EXTENSIONS = new Set([

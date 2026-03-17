@@ -543,6 +543,16 @@ const envSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(15 * 60 * 1000),
   RATE_LIMIT_MAX: z.coerce.number().default(100),
   AUTH_RATE_LIMIT_MAX: z.coerce.number().default(10),
+
+  // ── Email (Resend) ────────────────────────────────────────────────────────
+  RESEND_API_KEY: z.string().min(1, 'RESEND_API_KEY is required'),
+  EMAIL_FROM: z.string().default('Spendly <noreply@spendly.app>'),
+
+  // ── Razorpay ──────────────────────────────────────────────────────────────
+  RAZORPAY_KEY_ID: z.string().optional(),
+  RAZORPAY_KEY_SECRET: z.string().optional(),
+  RAZORPAY_PLAN_ID: z.string().optional(),
+  RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
 });
 
 // ─── Cross-field validation ───────────────────────────────────────────────────
@@ -597,6 +607,10 @@ import type {
   RefreshTokenInput,
   ChangePasswordInput,
   GoogleAuthInput,
+  ForgotPasswordInput,
+  ResetPasswordInput,
+  VerifyEmailInput,
+  ResendVerificationInput,
 } from '../lib/schemas';
 import {
   signUpService,
@@ -607,6 +621,10 @@ import {
   changePasswordService,
   googleAuthService,
   googleTokenAuthService,
+  forgotPasswordService,
+  resetPasswordService,
+  verifyEmailService,
+  resendVerificationService,
 } from '../services/auth.service';
 
 import { getGoogleAuthUrl } from '../lib/google-oauth';
@@ -774,6 +792,76 @@ export async function changePassword(
   }
 }
 
+// ─── POST /api/auth/forgot-password ──────────────────────────────────────────
+
+export async function forgotPassword(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    await forgotPasswordService(req.body as ForgotPasswordInput);
+    // Always 200 — prevent user enumeration
+    res.json({
+      success: true,
+      message: 'If that email is registered, a reset link has been sent.',
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── POST /api/auth/reset-password ───────────────────────────────────────────
+
+export async function resetPassword(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    await resetPasswordService(req.body as ResetPasswordInput);
+    res.json({
+      success: true,
+      message: 'Password reset successfully. Please sign in with your new password.',
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── POST /api/auth/verify-email ─────────────────────────────────────────────
+
+export async function verifyEmail(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    await verifyEmailService(req.body as VerifyEmailInput);
+    res.json({ success: true, message: 'Email verified successfully.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── POST /api/auth/resend-verification ──────────────────────────────────────
+
+export async function resendVerification(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    await resendVerificationService(req.body as ResendVerificationInput);
+    res.json({
+      success: true,
+      message: 'If that email is registered and unverified, a new link has been sent.',
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function googleAuthCallbackGet(
   req: Request,
   res: Response,
@@ -807,6 +895,138 @@ export async function googleAuthCallbackGet(
     res.redirect(`${env.FRONTEND_URL}/login?error=google_auth_failed`);
   }
 }
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\controllers\billing.controller.ts
+==============================
+
+import type { Request, Response, NextFunction } from 'express';
+import type { AuthenticatedRequest } from '../types/index';
+import {
+  getUserBillingService,
+  createSubscriptionService,
+  verifyPaymentService,
+  cancelSubscriptionService,
+  handleWebhookService,
+} from '../services/billing.service';
+
+// ─── GET /api/billing ─────────────────────────────────────────────────────────
+
+export async function getBilling(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const data = await getUserBillingService(userId);
+    res.json({ success: true, data });
+  } catch (err) { next(err); }
+}
+
+// ─── POST /api/billing/subscribe ──────────────────────────────────────────────
+
+export async function subscribe(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const data = await createSubscriptionService(userId);
+    res.status(201).json({ success: true, data });
+  } catch (err) { next(err); }
+}
+
+// ─── POST /api/billing/verify ─────────────────────────────────────────────────
+
+export async function verifyPayment(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const data = await verifyPaymentService(userId, req.body as {
+      razorpayPaymentId: string;
+      razorpaySubscriptionId: string;
+      razorpaySignature: string;
+    });
+    res.json({ success: true, data, message: 'Subscription activated.' });
+  } catch (err) { next(err); }
+}
+
+// ─── POST /api/billing/cancel ─────────────────────────────────────────────────
+
+export async function cancelSubscription(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const data = await cancelSubscriptionService(userId);
+    res.json({ success: true, data, message: 'Subscription will cancel at period end.' });
+  } catch (err) { next(err); }
+}
+
+// ─── POST /api/billing/webhook ────────────────────────────────────────────────
+
+export async function billingWebhook(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const signature = req.headers['x-razorpay-signature'] as string;
+    const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+    if (!rawBody) {
+      res.status(400).json({ error: 'No raw body' });
+      return;
+    }
+    await handleWebhookService(rawBody, signature);
+    res.json({ received: true });
+  } catch (err) { next(err); }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\controllers\budget.controller.ts
+==============================
+
+import type { Request, Response, NextFunction } from 'express';
+import type { AuthenticatedRequest } from '../types/index';
+import type { UpsertBudgetInput, BudgetOverviewInput } from '../lib/schemas';
+import {
+  getBudgetsService,
+  upsertBudgetService,
+  deleteBudgetService,
+  getBudgetOverviewService,
+} from '../services/budget.service';
+
+// ─── GET /api/budgets ─────────────────────────────────────────────────────────
+
+export async function getBudgets(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const budgets = await getBudgetsService(userId);
+    res.json({ success: true, data: budgets });
+  } catch (err) { next(err); }
+}
+
+// ─── GET /api/budgets/overview ────────────────────────────────────────────────
+
+export async function getBudgetOverview(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const month = typeof req.query.month === 'string' ? req.query.month : undefined;
+    const overview = await getBudgetOverviewService(userId, month);
+    res.json({ success: true, data: overview });
+  } catch (err) { next(err); }
+}
+
+// ─── PUT /api/budgets ─────────────────────────────────────────────────────────
+
+export async function upsertBudget(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const budget = await upsertBudgetService(userId, req.body as UpsertBudgetInput);
+    res.json({ success: true, data: budget, message: 'Budget saved.' });
+  } catch (err) { next(err); }
+}
+
+// ─── DELETE /api/budgets/:id ──────────────────────────────────────────────────
+
+export async function deleteBudget(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const id = parseInt(req.params['id'] as string, 10);
+    if (isNaN(id)) { res.status(400).json({ success: false, error: 'Invalid budget ID' }); return; }
+    await deleteBudgetService(userId, id);
+    res.json({ success: true, message: 'Budget deleted.' });
+  } catch (err) { next(err); }
+}
+
 
 ==============================
 FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\controllers\chat.controller.ts
@@ -971,6 +1191,23 @@ export async function deleteChatHistory(
 
 
 ==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\controllers\currency.controller.ts
+==============================
+
+import type { Request, Response, NextFunction } from 'express';
+import { getRatesService } from '../services/currency.service';
+
+// GET /api/currency/rates?base=INR
+export async function getRates(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const base = (req.query.base as string) || 'INR';
+    const rates = await getRatesService(base.toUpperCase());
+    res.json({ success: true, data: { base: base.toUpperCase(), rates } });
+  } catch (err) { next(err); }
+}
+
+
+==============================
 FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\controllers\expense.controller.ts
 ==============================
 
@@ -990,6 +1227,7 @@ import {
   updateExpenseService,
   deleteExpenseService,
   bulkDeleteExpensesService,
+  exportExpensesService,
 } from '../services/expense.service';
 
 // ─── GET /api/expenses ────────────────────────────────────────────────────────
@@ -1116,6 +1354,50 @@ export async function deleteExpense(
   }
 }
 
+// ─── GET /api/expenses/export ─────────────────────────────────────────────────
+
+export async function exportExpenses(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = (req as AuthenticatedRequest).user.sub;
+    const { from, to, category, search } = req.query as Record<string, string | undefined>;
+
+    const expenses = await exportExpensesService(userId, {
+      from,
+      to,
+      category: category as import('../generated/prisma').Category | undefined,
+      search,
+    });
+
+    const escapeCell = (v: string) => `"${v.replace(/"/g, '""')}"`;
+    const headers = ['Date', 'Title', 'Category', 'Amount (INR)', 'Notes'];
+    const rows = expenses.map((e) =>
+      [
+        e.date,
+        escapeCell(e.title),
+        e.category,
+        e.amount.toFixed(2),
+        escapeCell(e.notes ?? ''),
+      ].join(','),
+    );
+
+    const csv = [headers.join(','), ...rows].join('\n');
+    const fromLabel = from ?? '';
+    const toLabel = to ?? '';
+    const filename = `expenses${fromLabel ? `-${fromLabel}` : ''}${toLabel ? `-${toLabel}` : ''}.csv`;
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    // UTF-8 BOM so Excel opens with correct encoding
+    res.send('\uFEFF' + csv);
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ─── DELETE /api/expenses (bulk) ──────────────────────────────────────────────
 
 export async function bulkDeleteExpenses(
@@ -1136,6 +1418,642 @@ export async function bulkDeleteExpenses(
     });
   } catch (err) {
     next(err);
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\controllers\goal.controller.ts
+==============================
+
+import type { Request, Response, NextFunction } from 'express';
+import type { AuthenticatedRequest } from '../types/index';
+import type { CreateGoalInput, UpdateGoalInput } from '../lib/schemas';
+import {
+  getGoalsService,
+  createGoalService,
+  updateGoalService,
+  deleteGoalService,
+} from '../services/goal.service';
+
+// ─── GET /api/goals ───────────────────────────────────────────────────────────
+
+export async function getGoals(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const goals = await getGoalsService(userId);
+    res.json({ success: true, data: goals });
+  } catch (err) { next(err); }
+}
+
+// ─── POST /api/goals ──────────────────────────────────────────────────────────
+
+export async function createGoal(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const goal = await createGoalService(userId, req.body as CreateGoalInput);
+    res.status(201).json({ success: true, data: goal, message: 'Goal created.' });
+  } catch (err) { next(err); }
+}
+
+// ─── PATCH /api/goals/:id ─────────────────────────────────────────────────────
+
+export async function updateGoal(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const goalId = Number(req.params.id);
+    const goal = await updateGoalService(userId, goalId, req.body as UpdateGoalInput);
+    res.json({ success: true, data: goal, message: 'Goal updated.' });
+  } catch (err) { next(err); }
+}
+
+// ─── DELETE /api/goals/:id ────────────────────────────────────────────────────
+
+export async function deleteGoal(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const goalId = Number(req.params.id);
+    await deleteGoalService(userId, goalId);
+    res.json({ success: true, message: 'Goal deleted.' });
+  } catch (err) { next(err); }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\controllers\recurring.controller.ts
+==============================
+
+import type { Request, Response, NextFunction } from 'express';
+import type { AuthenticatedRequest } from '../types/index';
+import type { CreateRecurringInput, UpdateRecurringInput } from '../lib/schemas';
+import {
+  getRecurringExpensesService,
+  createRecurringService,
+  updateRecurringService,
+  deleteRecurringService,
+} from '../services/recurring.service';
+
+export async function getRecurringExpenses(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const data = await getRecurringExpensesService(userId);
+    res.json({ success: true, data });
+  } catch (err) { next(err); }
+}
+
+export async function createRecurringExpense(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const data = await createRecurringService(userId, req.body as CreateRecurringInput);
+    res.status(201).json({ success: true, data, message: 'Recurring expense created.' });
+  } catch (err) { next(err); }
+}
+
+export async function updateRecurringExpense(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const id = parseInt(req.params['id'] as string, 10);
+    if (isNaN(id)) { res.status(400).json({ success: false, error: 'Invalid ID' }); return; }
+    const data = await updateRecurringService(userId, id, req.body as UpdateRecurringInput);
+    res.json({ success: true, data, message: 'Recurring expense updated.' });
+  } catch (err) { next(err); }
+}
+
+export async function deleteRecurringExpense(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const id = parseInt(req.params['id'] as string, 10);
+    if (isNaN(id)) { res.status(400).json({ success: false, error: 'Invalid ID' }); return; }
+    await deleteRecurringService(userId, id);
+    res.json({ success: true, message: 'Recurring expense deleted.' });
+  } catch (err) { next(err); }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\controllers\user.controller.ts
+==============================
+
+import type { Request, Response, NextFunction } from 'express';
+import type { AuthenticatedRequest } from '../types/index';
+import type { UpdateUserSettingsInput, UpdateProfileInput } from '../lib/schemas';
+import {
+  getUserSettingsService,
+  updateUserSettingsService,
+  updateProfileService,
+  deleteAccountService,
+} from '../services/user.service';
+
+// ─── PATCH /api/user/profile ──────────────────────────────────────────────────
+
+export async function updateProfile(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const user = await updateProfileService(userId, req.body as UpdateProfileInput);
+    res.json({ success: true, data: user, message: 'Profile updated.' });
+  } catch (err) { next(err); }
+}
+
+// ─── DELETE /api/user ─────────────────────────────────────────────────────────
+
+export async function deleteAccount(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    await deleteAccountService(userId);
+    res.json({ success: true, message: 'Account deleted.' });
+  } catch (err) { next(err); }
+}
+
+// ─── GET /api/user/settings ───────────────────────────────────────────────────
+
+export async function getUserSettings(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const settings = await getUserSettingsService(userId);
+    res.json({ success: true, data: settings });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── PATCH /api/user/settings ─────────────────────────────────────────────────
+
+export async function updateUserSettings(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const settings = await updateUserSettingsService(userId, req.body as UpdateUserSettingsInput);
+    res.json({ success: true, data: settings, message: 'Settings saved.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\lib\email.ts
+==============================
+
+import { Resend } from 'resend';
+import { env } from '../config/env';
+
+// ─── Local helpers ────────────────────────────────────────────────────────────
+
+function fmtEmail(amount: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency,
+      maximumFractionDigits: 2,
+      minimumFractionDigits: 0,
+    }).format(amount);
+  } catch {
+    return `${currency} ${amount.toLocaleString()}`;
+  }
+}
+
+const CATEGORY_EMOJI: Record<string, string> = {
+  DINING: '🍽️',
+  SHOPPING: '🛍️',
+  TRANSPORT: '🚗',
+  ENTERTAINMENT: '🎬',
+  UTILITIES: '⚡',
+  HEALTH: '🏥',
+  EDUCATION: '📚',
+  OTHER: '📦',
+};
+
+const resend = new Resend(env.RESEND_API_KEY);
+
+// ─── Shared styles ────────────────────────────────────────────────────────────
+
+const baseHtml = (content: string) => `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Spendly</title>
+</head>
+<body style="margin:0;padding:0;background:#080810;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#080810;min-height:100vh;">
+    <tr>
+      <td align="center" style="padding:40px 16px;">
+        <table width="100%" style="max-width:480px;" cellpadding="0" cellspacing="0">
+
+          <!-- Logo -->
+          <tr>
+            <td align="center" style="padding-bottom:32px;">
+              <table cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="background:linear-gradient(135deg,#7c5cfc,#00d4ff);border-radius:14px;padding:12px;width:44px;height:44px;text-align:center;vertical-align:middle;">
+                    <span style="font-size:22px;color:#fff;">⚡</span>
+                  </td>
+                  <td style="padding-left:12px;vertical-align:middle;">
+                    <div style="font-size:20px;font-weight:800;color:#f0efff;letter-spacing:-0.5px;">Spendly</div>
+                    <div style="font-size:10px;color:#4a4870;letter-spacing:2px;text-transform:uppercase;font-family:monospace;">Smart Tracking</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Card -->
+          <tr>
+            <td style="background:rgba(13,13,26,0.95);border:1px solid rgba(124,92,252,0.2);border-radius:20px;padding:36px 32px;">
+              ${content}
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td align="center" style="padding-top:24px;">
+              <p style="font-size:11px;color:#4a4870;font-family:monospace;margin:0;">
+                © ${new Date().getFullYear()} Spendly · If you didn't request this, ignore this email.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+// ─── Send Verification Email ──────────────────────────────────────────────────
+
+export async function sendVerificationEmail(
+  to: string,
+  name: string,
+  token: string,
+): Promise<void> {
+  const verifyUrl = `${env.FRONTEND_URL}/verify-email?token=${token}`;
+
+  const content = `
+    <h1 style="font-size:24px;font-weight:800;color:#f0efff;margin:0 0 8px;letter-spacing:-0.5px;">
+      Verify your email
+    </h1>
+    <p style="font-size:14px;color:#8b89b0;margin:0 0 28px;line-height:1.6;">
+      Hi ${name}, thanks for signing up! Click the button below to verify your email address and activate your account.
+    </p>
+
+    <a href="${verifyUrl}" style="display:block;text-align:center;background:linear-gradient(135deg,#7c5cfc,#00d4ff);color:#fff;font-weight:700;font-size:15px;padding:14px 24px;border-radius:12px;text-decoration:none;letter-spacing:0.2px;margin-bottom:24px;">
+      Verify Email Address
+    </a>
+
+    <p style="font-size:12px;color:#4a4870;font-family:monospace;margin:0 0 8px;">
+      Or copy this link:
+    </p>
+    <p style="font-size:11px;color:#7c5cfc;font-family:monospace;word-break:break-all;background:rgba(124,92,252,0.08);padding:10px 12px;border-radius:8px;margin:0 0 24px;border:1px solid rgba(124,92,252,0.15);">
+      ${verifyUrl}
+    </p>
+
+    <p style="font-size:12px;color:#4a4870;font-family:monospace;margin:0;text-align:center;">
+      This link expires in <strong style="color:#8b89b0;">24 hours</strong>.
+    </p>`;
+
+  await resend.emails.send({
+    from: env.EMAIL_FROM,
+    to,
+    subject: 'Verify your Spendly email address',
+    html: baseHtml(content),
+  });
+}
+
+// ─── Send Password Reset Email ────────────────────────────────────────────────
+
+export async function sendPasswordResetEmail(
+  to: string,
+  name: string,
+  token: string,
+): Promise<void> {
+  const resetUrl = `${env.FRONTEND_URL}/reset-password?token=${token}`;
+
+  const content = `
+    <h1 style="font-size:24px;font-weight:800;color:#f0efff;margin:0 0 8px;letter-spacing:-0.5px;">
+      Reset your password
+    </h1>
+    <p style="font-size:14px;color:#8b89b0;margin:0 0 28px;line-height:1.6;">
+      Hi ${name}, we received a request to reset your password. Click the button below to set a new one.
+    </p>
+
+    <a href="${resetUrl}" style="display:block;text-align:center;background:linear-gradient(135deg,#7c5cfc,#00d4ff);color:#fff;font-weight:700;font-size:15px;padding:14px 24px;border-radius:12px;text-decoration:none;letter-spacing:0.2px;margin-bottom:24px;">
+      Reset Password
+    </a>
+
+    <p style="font-size:12px;color:#4a4870;font-family:monospace;margin:0 0 8px;">
+      Or copy this link:
+    </p>
+    <p style="font-size:11px;color:#7c5cfc;font-family:monospace;word-break:break-all;background:rgba(124,92,252,0.08);padding:10px 12px;border-radius:8px;margin:0 0 24px;border:1px solid rgba(124,92,252,0.15);">
+      ${resetUrl}
+    </p>
+
+    <div style="background:rgba(255,59,92,0.06);border:1px solid rgba(255,59,92,0.2);border-radius:10px;padding:12px 16px;margin-bottom:0;">
+      <p style="font-size:12px;color:#ff6b8a;font-family:monospace;margin:0;">
+        ⚠ This link expires in <strong>1 hour</strong>. If you didn't request this, your account is safe — just ignore this email.
+      </p>
+    </div>`;
+
+  await resend.emails.send({
+    from: env.EMAIL_FROM,
+    to,
+    subject: 'Reset your Spendly password',
+    html: baseHtml(content),
+  });
+}
+
+// ─── Send Budget Alert Email ──────────────────────────────────────────────────
+
+export async function sendBudgetAlertEmail(
+  to: string,
+  name: string,
+  category: string,
+  spent: number,
+  limit: number,
+  pct: number,
+  currency: string,
+  isExceeded: boolean,
+): Promise<void> {
+  try {
+    const emoji = CATEGORY_EMOJI[category] ?? '📦';
+    const budgetUrl = `${env.FRONTEND_URL}/budget`;
+    const icon = isExceeded ? '🚨' : '⚠️';
+    const subject = isExceeded
+      ? `🚨 Budget Exceeded: ${category}`
+      : `⚠️ Budget Warning: ${category}`;
+    const headingColor = isExceeded ? '#ff6b8a' : '#fbbf24';
+    const barColor = isExceeded ? '#ff3b5c' : '#fbbf24';
+    const barWidth = Math.min(pct, 100);
+
+    const content = `
+    <h1 style="font-size:22px;font-weight:800;color:${headingColor};margin:0 0 8px;letter-spacing:-0.5px;">
+      ${icon} Budget ${isExceeded ? 'Exceeded' : 'Warning'}
+    </h1>
+    <p style="font-size:14px;color:#8b89b0;margin:0 0 24px;line-height:1.6;">
+      Hi ${name}, your <strong style="color:#f0efff;">${emoji} ${category}</strong> budget has reached <strong style="color:${headingColor};">${Math.round(pct)}%</strong>.
+    </p>
+
+    <div style="background:rgba(8,8,16,0.8);border:1px solid rgba(124,92,252,0.15);border-radius:14px;padding:20px;margin-bottom:24px;">
+      <div style="display:flex;justify-content:space-between;margin-bottom:10px;">
+        <span style="font-size:12px;color:#4a4870;font-family:monospace;text-transform:uppercase;letter-spacing:1px;">Spent</span>
+        <span style="font-size:12px;color:#4a4870;font-family:monospace;text-transform:uppercase;letter-spacing:1px;">Limit</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:14px;">
+        <span style="font-size:20px;font-weight:800;color:${headingColor};">${fmtEmail(spent, currency)}</span>
+        <span style="font-size:20px;font-weight:800;color:#f0efff;">${fmtEmail(limit, currency)}</span>
+      </div>
+      <div style="background:rgba(124,92,252,0.12);border-radius:100px;height:8px;overflow:hidden;">
+        <div style="background:${barColor};height:100%;width:${barWidth}%;border-radius:100px;"></div>
+      </div>
+      <p style="font-size:11px;color:#4a4870;font-family:monospace;margin:8px 0 0;text-align:right;">${Math.round(pct)}% used</p>
+    </div>
+
+    <a href="${budgetUrl}" style="display:block;text-align:center;background:linear-gradient(135deg,#7c5cfc,#00d4ff);color:#fff;font-weight:700;font-size:15px;padding:14px 24px;border-radius:12px;text-decoration:none;letter-spacing:0.2px;">
+      View Budgets
+    </a>`;
+
+    await resend.emails.send({
+      from: env.EMAIL_FROM,
+      to,
+      subject,
+      html: baseHtml(content),
+    });
+  } catch (err) {
+    console.error('sendBudgetAlertEmail error:', err);
+  }
+}
+
+// ─── Send Large Expense Alert Email ──────────────────────────────────────────
+
+export async function sendLargeExpenseAlertEmail(
+  to: string,
+  name: string,
+  expenseTitle: string,
+  expenseAmount: number,
+  expenseCurrency: string,
+  convertedAmount: number,
+  homeCurrency: string,
+  category: string,
+  date: string,
+  threshold: number,
+): Promise<void> {
+  try {
+    const emoji = CATEGORY_EMOJI[category] ?? '📦';
+    const expensesUrl = `${env.FRONTEND_URL}/expenses`;
+
+    const content = `
+    <h1 style="font-size:22px;font-weight:800;color:#f0efff;margin:0 0 8px;letter-spacing:-0.5px;">
+      💸 Large Expense Recorded
+    </h1>
+    <p style="font-size:14px;color:#8b89b0;margin:0 0 24px;line-height:1.6;">
+      Hi ${name}, a large expense was just added to your account that exceeds your alert threshold.
+    </p>
+
+    <div style="background:rgba(8,8,16,0.8);border:1px solid rgba(124,92,252,0.15);border-radius:14px;padding:20px;margin-bottom:24px;">
+      <p style="font-size:18px;font-weight:800;color:#f0efff;margin:0 0 16px;">${expenseTitle}</p>
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="padding:6px 0;font-size:12px;color:#4a4870;font-family:monospace;text-transform:uppercase;letter-spacing:1px;">Amount</td>
+          <td style="padding:6px 0;font-size:13px;color:#f0efff;text-align:right;font-weight:600;">${fmtEmail(expenseAmount, expenseCurrency)}${expenseCurrency !== homeCurrency ? ` <span style="color:#4a4870;font-size:11px;">(${fmtEmail(convertedAmount, homeCurrency)})</span>` : ''}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;font-size:12px;color:#4a4870;font-family:monospace;text-transform:uppercase;letter-spacing:1px;">Category</td>
+          <td style="padding:6px 0;font-size:13px;color:#f0efff;text-align:right;">${emoji} ${category}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;font-size:12px;color:#4a4870;font-family:monospace;text-transform:uppercase;letter-spacing:1px;">Date</td>
+          <td style="padding:6px 0;font-size:13px;color:#f0efff;text-align:right;">${date}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;font-size:12px;color:#4a4870;font-family:monospace;text-transform:uppercase;letter-spacing:1px;">Threshold</td>
+          <td style="padding:6px 0;font-size:13px;color:#fbbf24;text-align:right;font-weight:600;">${fmtEmail(threshold, homeCurrency)}</td>
+        </tr>
+      </table>
+    </div>
+
+    <a href="${expensesUrl}" style="display:block;text-align:center;background:linear-gradient(135deg,#7c5cfc,#00d4ff);color:#fff;font-weight:700;font-size:15px;padding:14px 24px;border-radius:12px;text-decoration:none;letter-spacing:0.2px;">
+      View Expenses
+    </a>`;
+
+    await resend.emails.send({
+      from: env.EMAIL_FROM,
+      to,
+      subject: `💸 Large expense recorded: ${expenseTitle}`,
+      html: baseHtml(content),
+    });
+  } catch (err) {
+    console.error('sendLargeExpenseAlertEmail error:', err);
+  }
+}
+
+// ─── Send Weekly Report Email ─────────────────────────────────────────────────
+
+export interface WeeklyData {
+  fromDate: string;
+  toDate: string;
+  total: number;
+  count: number;
+  currency: string;
+  byCategory: Array<{ category: string; amount: number; count: number }>;
+}
+
+export async function sendWeeklyReportEmail(
+  to: string,
+  name: string,
+  data: WeeklyData,
+): Promise<void> {
+  try {
+    const topCategories = data.byCategory.slice(0, 5);
+    const categoryRows = topCategories
+      .map((c) => {
+        const emoji = CATEGORY_EMOJI[c.category] ?? '📦';
+        return `
+        <tr>
+          <td style="padding:8px 0;font-size:13px;color:#f0efff;border-bottom:1px solid rgba(124,92,252,0.08);">
+            ${emoji} ${c.category}
+          </td>
+          <td style="padding:8px 0;font-size:13px;color:#9d7fff;text-align:right;font-weight:600;border-bottom:1px solid rgba(124,92,252,0.08);">
+            ${fmtEmail(c.amount, data.currency)}
+          </td>
+          <td style="padding:8px 0;font-size:11px;color:#4a4870;text-align:right;font-family:monospace;border-bottom:1px solid rgba(124,92,252,0.08);">
+            ${c.count}x
+          </td>
+        </tr>`;
+      })
+      .join('');
+
+    const content = `
+    <h1 style="font-size:22px;font-weight:800;color:#f0efff;margin:0 0 8px;letter-spacing:-0.5px;">
+      📊 Weekly Spending Report
+    </h1>
+    <p style="font-size:14px;color:#8b89b0;margin:0 0 24px;line-height:1.6;">
+      Hi ${name}, here's your spending summary for <strong style="color:#f0efff;">${data.fromDate}</strong> to <strong style="color:#f0efff;">${data.toDate}</strong>.
+    </p>
+
+    <div style="background:rgba(8,8,16,0.8);border:1px solid rgba(124,92,252,0.15);border-radius:14px;padding:20px;margin-bottom:24px;">
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+        <div>
+          <p style="font-size:12px;color:#4a4870;font-family:monospace;text-transform:uppercase;letter-spacing:1px;margin:0 0 4px;">Total Spent</p>
+          <p style="font-size:28px;font-weight:900;color:#7c5cfc;margin:0;letter-spacing:-1px;">${fmtEmail(data.total, data.currency)}</p>
+        </div>
+        <div style="text-align:right;">
+          <p style="font-size:12px;color:#4a4870;font-family:monospace;text-transform:uppercase;letter-spacing:1px;margin:0 0 4px;">Transactions</p>
+          <p style="font-size:28px;font-weight:900;color:#00d4ff;margin:0;">${data.count}</p>
+        </div>
+      </div>
+    </div>
+
+    ${topCategories.length > 0 ? `
+    <div style="background:rgba(8,8,16,0.8);border:1px solid rgba(124,92,252,0.15);border-radius:14px;padding:20px;margin-bottom:24px;">
+      <p style="font-size:11px;color:#4a4870;font-family:monospace;text-transform:uppercase;letter-spacing:2px;margin:0 0 14px;">Top Categories</p>
+      <table width="100%" cellpadding="0" cellspacing="0">
+        ${categoryRows}
+      </table>
+    </div>` : ''}`;
+
+    await resend.emails.send({
+      from: env.EMAIL_FROM,
+      to,
+      subject: '📊 Your weekly spending report',
+      html: baseHtml(content),
+    });
+  } catch (err) {
+    console.error('sendWeeklyReportEmail error:', err);
+  }
+}
+
+// ─── Send Monthly Summary Email ───────────────────────────────────────────────
+
+export interface MonthlyData {
+  monthLabel: string; // e.g. "March 2025"
+  total: number;
+  count: number;
+  dailyAvg: number;
+  currency: string;
+  byCategory: Array<{ category: string; amount: number; count: number }>;
+}
+
+export async function sendMonthlySummaryEmail(
+  to: string,
+  name: string,
+  data: MonthlyData,
+): Promise<void> {
+  try {
+    const topCategories = data.byCategory.slice(0, 5);
+    const categoryRows = topCategories
+      .map((c) => {
+        const emoji = CATEGORY_EMOJI[c.category] ?? '📦';
+        const pct = data.total > 0 ? Math.round((c.amount / data.total) * 100) : 0;
+        return `
+        <tr>
+          <td style="padding:8px 0;font-size:13px;color:#f0efff;border-bottom:1px solid rgba(124,92,252,0.08);">
+            ${emoji} ${c.category}
+          </td>
+          <td style="padding:8px 0;font-size:13px;color:#9d7fff;text-align:right;font-weight:600;border-bottom:1px solid rgba(124,92,252,0.08);">
+            ${fmtEmail(c.amount, data.currency)}
+          </td>
+          <td style="padding:8px 0;font-size:11px;color:#4a4870;text-align:right;font-family:monospace;border-bottom:1px solid rgba(124,92,252,0.08);">
+            ${pct}%
+          </td>
+        </tr>`;
+      })
+      .join('');
+
+    const insightsUrl = `${env.FRONTEND_URL}/insights`;
+
+    const content = `
+    <h1 style="font-size:22px;font-weight:800;color:#f0efff;margin:0 0 8px;letter-spacing:-0.5px;">
+      📅 ${data.monthLabel} Summary
+    </h1>
+    <p style="font-size:14px;color:#8b89b0;margin:0 0 24px;line-height:1.6;">
+      Hi ${name}, here's a recap of your spending for <strong style="color:#f0efff;">${data.monthLabel}</strong>.
+    </p>
+
+    <div style="background:rgba(8,8,16,0.8);border:1px solid rgba(124,92,252,0.15);border-radius:14px;padding:20px;margin-bottom:24px;">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="padding:6px 0;font-size:12px;color:#4a4870;font-family:monospace;text-transform:uppercase;letter-spacing:1px;">Total Spent</td>
+          <td style="padding:6px 0;font-size:16px;font-weight:800;color:#7c5cfc;text-align:right;">${fmtEmail(data.total, data.currency)}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;font-size:12px;color:#4a4870;font-family:monospace;text-transform:uppercase;letter-spacing:1px;">Transactions</td>
+          <td style="padding:6px 0;font-size:16px;font-weight:800;color:#f0efff;text-align:right;">${data.count}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;font-size:12px;color:#4a4870;font-family:monospace;text-transform:uppercase;letter-spacing:1px;">Daily Average</td>
+          <td style="padding:6px 0;font-size:16px;font-weight:800;color:#00d4ff;text-align:right;">${fmtEmail(data.dailyAvg, data.currency)}</td>
+        </tr>
+      </table>
+    </div>
+
+    ${topCategories.length > 0 ? `
+    <div style="background:rgba(8,8,16,0.8);border:1px solid rgba(124,92,252,0.15);border-radius:14px;padding:20px;margin-bottom:24px;">
+      <p style="font-size:11px;color:#4a4870;font-family:monospace;text-transform:uppercase;letter-spacing:2px;margin:0 0 14px;">Category Breakdown</p>
+      <table width="100%" cellpadding="0" cellspacing="0">
+        ${categoryRows}
+      </table>
+    </div>` : ''}
+
+    <a href="${insightsUrl}" style="display:block;text-align:center;background:linear-gradient(135deg,#7c5cfc,#00d4ff);color:#fff;font-weight:700;font-size:15px;padding:14px 24px;border-radius:12px;text-decoration:none;letter-spacing:0.2px;">
+      View Insights
+    </a>`;
+
+    await resend.emails.send({
+      from: env.EMAIL_FROM,
+      to,
+      subject: `📅 Your ${data.monthLabel} spending summary`,
+      html: baseHtml(content),
+    });
+  } catch (err) {
+    console.error('sendMonthlySummaryEmail error:', err);
   }
 }
 
@@ -1317,11 +2235,24 @@ export function getRefreshTokenExpiry(): Date {
 
 
 ==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\lib\razorpay.ts
+==============================
+
+import Razorpay from 'razorpay';
+import { env } from '../config/env';
+
+export const razorpay = new Razorpay({
+  key_id: env.RAZORPAY_KEY_ID ?? '',
+  key_secret: env.RAZORPAY_KEY_SECRET ?? '',
+});
+
+
+==============================
 FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\lib\schemas.ts
 ==============================
 
 import { z } from 'zod';
-import { Category } from '../generated/prisma'; 
+import { Category, Frequency, GoalType } from '../generated/prisma';
 
 // ─── Auth Schemas ─────────────────────────────────────────────────────────────
 
@@ -1377,6 +2308,8 @@ export const createExpenseSchema = z.object({
     .number({ error: 'Amount must be a number' })
     .positive('Amount must be positive')
     .max(10_000_000, 'Amount too large'),
+  currency: z.string().min(3).max(3).optional(),
+  exchangeRate: z.number().positive().optional(),
   category: z.enum(categoryValues).optional(),
   date: z
     .string()
@@ -1388,6 +2321,8 @@ export const createExpenseSchema = z.object({
 export const updateExpenseSchema = z.object({
   title: z.string().min(1).max(200).trim().optional(),
   amount: z.number().positive().max(10_000_000).optional(),
+  currency: z.string().min(3).max(3).optional(),
+  exchangeRate: z.number().positive().optional(),
   category: z.enum(categoryValues).optional(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD').optional(),
   notes: z.string().max(1000).optional(),
@@ -1399,11 +2334,123 @@ export const expenseFiltersSchema = z.object({
   category: z.enum(categoryValues).optional(),
   search: z.string().max(200).optional(),
   page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
+  limit: z.coerce.number().int().min(1).max(2000).default(20),
 });
 
 export const bulkDeleteSchema = z.object({
   ids: z.array(z.number().int().positive()).min(1, 'At least one ID required'),
+});
+
+// ─── Password Reset Schemas ───────────────────────────────────────────────────
+
+export const forgotPasswordSchema = z.object({
+  email: z.string().email('Invalid email address').toLowerCase().trim(),
+});
+
+export const resetPasswordSchema = z
+  .object({
+    token: z.string().min(1, 'Reset token is required'),
+    newPassword: z
+      .string()
+      .min(8, 'Password must be at least 8 characters')
+      .max(128)
+      .regex(/[A-Z]/, 'Must contain at least one uppercase letter')
+      .regex(/[a-z]/, 'Must contain at least one lowercase letter')
+      .regex(/[0-9]/, 'Must contain at least one number'),
+    confirmPassword: z.string().min(1, 'Please confirm your password'),
+  })
+  .refine((d) => d.newPassword === d.confirmPassword, {
+    message: 'Passwords do not match',
+    path: ['confirmPassword'],
+  });
+
+// ─── Email Verification Schemas ───────────────────────────────────────────────
+
+export const verifyEmailSchema = z.object({
+  token: z.string().min(1, 'Verification token is required'),
+});
+
+export const resendVerificationSchema = z.object({
+  email: z.string().email('Invalid email address').toLowerCase().trim(),
+});
+
+// ─── Budget Schemas ───────────────────────────────────────────────────────────
+
+export const upsertBudgetSchema = z.object({
+  category: z.enum(categoryValues),
+  amount: z.number({ error: 'Amount must be a number' }).positive('Amount must be positive').max(10_000_000),
+});
+
+export const budgetOverviewSchema = z.object({
+  month: z
+    .string()
+    .regex(/^\d{4}-\d{2}$/, 'Month must be YYYY-MM')
+    .optional(),
+});
+
+// ─── Profile Schema ───────────────────────────────────────────────────────────
+
+export const updateProfileSchema = z.object({
+  name: z.string().min(2, 'Name must be at least 2 characters').max(100, 'Name too long').trim(),
+});
+
+// ─── User Settings Schema ─────────────────────────────────────────────────────
+
+export const updateUserSettingsSchema = z.object({
+  emailNotifications: z.boolean().optional(),
+  budgetAlerts: z.boolean().optional(),
+  weeklyReport: z.boolean().optional(),
+  onboardingCompleted: z.boolean().optional(),
+  currency: z.string().min(3).max(3).optional(),
+  alertThreshold: z.number().positive().max(10_000_000).nullable().optional(),
+});
+
+// ─── Recurring Expense Schemas ────────────────────────────────────────────────
+
+const frequencyValues = Object.values(Frequency) as [Frequency, ...Frequency[]];
+
+export const createRecurringSchema = z.object({
+  title: z.string().min(1, 'Title is required').max(200, 'Title too long').trim(),
+  amount: z.number({ error: 'Amount must be a number' }).positive('Amount must be positive').max(10_000_000),
+  category: z.enum(categoryValues).optional(),
+  frequency: z.enum(frequencyValues),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD'),
+  notes: z.string().max(1000).optional(),
+});
+
+export const updateRecurringSchema = z.object({
+  title: z.string().min(1).max(200).trim().optional(),
+  amount: z.number().positive().max(10_000_000).optional(),
+  category: z.enum(categoryValues).optional(),
+  frequency: z.enum(frequencyValues).optional(),
+  isActive: z.boolean().optional(),
+  notes: z.string().max(1000).optional(),
+});
+
+// ─── Financial Goal Schemas ───────────────────────────────────────────────────
+
+const goalTypeValues = Object.values(GoalType) as [GoalType, ...GoalType[]];
+
+export const createGoalSchema = z.object({
+  name: z.string().min(1, 'Name is required').max(200, 'Name too long').trim(),
+  type: z.enum(goalTypeValues),
+  targetAmount: z.number({ error: 'Amount must be a number' }).positive('Amount must be positive').max(100_000_000),
+  currentAmount: z.number().min(0).max(100_000_000).optional(),
+  category: z.enum(categoryValues).optional(),
+  period: z.string().regex(/^\d{4}-\d{2}$/, 'Period must be YYYY-MM').optional(),
+  deadline: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Deadline must be YYYY-MM-DD').optional(),
+  notes: z.string().max(1000).optional(),
+});
+
+export const updateGoalSchema = z.object({
+  name: z.string().min(1).max(200).trim().optional(),
+  targetAmount: z.number().positive().max(100_000_000).optional(),
+  currentAmount: z.number().min(0).max(100_000_000).optional(),
+  category: z.enum(categoryValues).optional(),
+  period: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+  deadline: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  isCompleted: z.boolean().optional(),
+  notes: z.string().max(1000).optional(),
 });
 
 // ─── Chat Schemas ─────────────────────────────────────────────────────────────
@@ -1437,6 +2484,19 @@ export type ChatQueryInput      = z.infer<typeof chatQuerySchema>;
 
 export type GoogleAuthInput = z.infer<typeof googleAuthSchema>;
 export type GoogleCallbackInput = z.infer<typeof googleCallbackSchema>;
+
+export type UpsertBudgetInput      = z.infer<typeof upsertBudgetSchema>;
+export type BudgetOverviewInput    = z.infer<typeof budgetOverviewSchema>;
+export type ForgotPasswordInput    = z.infer<typeof forgotPasswordSchema>;
+export type ResetPasswordInput     = z.infer<typeof resetPasswordSchema>;
+export type VerifyEmailInput       = z.infer<typeof verifyEmailSchema>;
+export type ResendVerificationInput = z.infer<typeof resendVerificationSchema>;
+export type UpdateUserSettingsInput  = z.infer<typeof updateUserSettingsSchema>;
+export type UpdateProfileInput       = z.infer<typeof updateProfileSchema>;
+export type CreateRecurringInput     = z.infer<typeof createRecurringSchema>;
+export type UpdateRecurringInput     = z.infer<typeof updateRecurringSchema>;
+export type CreateGoalInput          = z.infer<typeof createGoalSchema>;
+export type UpdateGoalInput          = z.infer<typeof updateGoalSchema>;
 
 
 ==============================
@@ -1681,6 +2741,10 @@ import {
   refreshTokenSchema,
   changePasswordSchema,
   googleAuthSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+  verifyEmailSchema,
+  resendVerificationSchema,
 } from '../lib/schemas';
 import {
   signUp,
@@ -1693,6 +2757,10 @@ import {
   googleAuthCallbackGet,
   googleAuthCallback,
   googleTokenAuth,
+  forgotPassword,
+  resetPassword,
+  verifyEmail,
+  resendVerification,
 } from '../controllers/auth.controller';
 
 export const authRouter: Router = Router();
@@ -1714,6 +2782,14 @@ authRouter.post(
 );
 authRouter.post('/google/token', authLimiter, googleTokenAuth);
 
+// Password reset (public, rate-limited)
+authRouter.post('/forgot-password', authLimiter, validate(forgotPasswordSchema), forgotPassword);
+authRouter.post('/reset-password', authLimiter, validate(resetPasswordSchema), resetPassword);
+
+// Email verification (public)
+authRouter.post('/verify-email', validate(verifyEmailSchema), verifyEmail);
+authRouter.post('/resend-verification', authLimiter, validate(resendVerificationSchema), resendVerification);
+
 // Protected — requires valid Bearer JWT
 authRouter.get('/me', authenticate, getMe);
 authRouter.patch(
@@ -1722,6 +2798,59 @@ authRouter.patch(
   validate(changePasswordSchema),
   changePassword,
 );
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\routes\billing.routes.ts
+==============================
+
+import { Router } from 'express';
+import { authenticate } from '../middleware/authenticate';
+import {
+  getBilling,
+  subscribe,
+  verifyPayment,
+  cancelSubscription,
+  billingWebhook,
+} from '../controllers/billing.controller';
+
+export const billingRouter: Router = Router();
+
+// Webhook — no auth, raw body already captured via express.json verify option
+billingRouter.post('/webhook', billingWebhook);
+
+// Authenticated routes
+billingRouter.use(authenticate);
+billingRouter.get('/', getBilling);
+billingRouter.post('/subscribe', subscribe);
+billingRouter.post('/verify', verifyPayment);
+billingRouter.post('/cancel', cancelSubscription);
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\routes\budget.routes.ts
+==============================
+
+import { Router } from 'express';
+import { authenticate } from '../middleware/authenticate';
+import { validate } from '../middleware/validate';
+import { upsertBudgetSchema, budgetOverviewSchema } from '../lib/schemas';
+import {
+  getBudgets,
+  getBudgetOverview,
+  upsertBudget,
+  deleteBudget,
+} from '../controllers/budget.controller';
+
+export const budgetRouter: Router = Router();
+
+budgetRouter.use(authenticate);
+
+// IMPORTANT: /overview must come before /:id to avoid route collision
+budgetRouter.get('/overview', validate(budgetOverviewSchema, 'query'), getBudgetOverview);
+budgetRouter.get('/', getBudgets);
+budgetRouter.put('/', validate(upsertBudgetSchema), upsertBudget);
+budgetRouter.delete('/:id', deleteBudget);
 
 
 ==============================
@@ -1750,6 +2879,20 @@ chatRouter.delete('/history', deleteChatHistory);
 
 
 ==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\routes\currency.routes.ts
+==============================
+
+import { Router } from 'express';
+import { authenticate } from '../middleware/authenticate';
+import { getRates } from '../controllers/currency.controller';
+
+export const currencyRouter: Router = Router();
+
+currencyRouter.use(authenticate);
+currencyRouter.get('/rates', getRates);
+
+
+==============================
 FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\routes\expense.routes.ts
 ==============================
 
@@ -1770,6 +2913,7 @@ import {
   updateExpense,
   deleteExpense,
   bulkDeleteExpenses,
+  exportExpenses,
 } from '../controllers/expense.controller';
 
 export const expenseRouter: Router = Router();
@@ -1780,6 +2924,7 @@ expenseRouter.use(authenticate);
 // Collection routes
 expenseRouter.get('/', validate(expenseFiltersSchema, 'query'), listExpenses);
 expenseRouter.get('/stats', getStats);
+expenseRouter.get('/export', exportExpenses);
 expenseRouter.post('/', validate(createExpenseSchema), createExpense);
 expenseRouter.delete('/', validate(bulkDeleteSchema), bulkDeleteExpenses);
 
@@ -1790,6 +2935,26 @@ expenseRouter.delete('/:id', deleteExpense);
 
 
 ==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\routes\goal.routes.ts
+==============================
+
+import { Router } from 'express';
+import { authenticate } from '../middleware/authenticate';
+import { validate } from '../middleware/validate';
+import { createGoalSchema, updateGoalSchema } from '../lib/schemas';
+import { getGoals, createGoal, updateGoal, deleteGoal } from '../controllers/goal.controller';
+
+export const goalRouter: Router = Router();
+
+goalRouter.use(authenticate);
+
+goalRouter.get('/', getGoals);
+goalRouter.post('/', validate(createGoalSchema), createGoal);
+goalRouter.patch('/:id', validate(updateGoalSchema), updateGoal);
+goalRouter.delete('/:id', deleteGoal);
+
+
+==============================
 FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\routes\index.ts
 ==============================
 
@@ -1797,12 +2962,75 @@ import { Router } from 'express';
 import { authRouter } from './auth.routes';
 import { expenseRouter } from './expense.routes';
 import { chatRouter } from './chat.routes';
+import { userRouter } from './user.routes';
+import { budgetRouter } from './budget.routes';
+import { recurringRouter } from './recurring.routes';
+import { goalRouter } from './goal.routes';
+import { currencyRouter } from './currency.routes';
+import { billingRouter } from './billing.routes';
 
 export const apiRouter: Router = Router();
 
 apiRouter.use('/auth', authRouter);
 apiRouter.use('/expenses', expenseRouter);
 apiRouter.use('/chat', chatRouter);
+apiRouter.use('/user', userRouter);
+apiRouter.use('/budgets', budgetRouter);
+apiRouter.use('/recurring', recurringRouter);
+apiRouter.use('/goals', goalRouter);
+apiRouter.use('/currency', currencyRouter);
+apiRouter.use('/billing', billingRouter);
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\routes\recurring.routes.ts
+==============================
+
+import { Router } from 'express';
+import { authenticate } from '../middleware/authenticate';
+import { validate } from '../middleware/validate';
+import { createRecurringSchema, updateRecurringSchema } from '../lib/schemas';
+import {
+  getRecurringExpenses,
+  createRecurringExpense,
+  updateRecurringExpense,
+  deleteRecurringExpense,
+} from '../controllers/recurring.controller';
+
+export const recurringRouter: Router = Router();
+
+recurringRouter.use(authenticate);
+
+recurringRouter.get('/', getRecurringExpenses);
+recurringRouter.post('/', validate(createRecurringSchema), createRecurringExpense);
+recurringRouter.patch('/:id', validate(updateRecurringSchema), updateRecurringExpense);
+recurringRouter.delete('/:id', deleteRecurringExpense);
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\routes\user.routes.ts
+==============================
+
+import { Router } from 'express';
+import { authenticate } from '../middleware/authenticate';
+import { validate } from '../middleware/validate';
+import { updateUserSettingsSchema, updateProfileSchema } from '../lib/schemas';
+import {
+  getUserSettings,
+  updateUserSettings,
+  updateProfile,
+  deleteAccount,
+} from '../controllers/user.controller';
+
+export const userRouter: Router = Router();
+
+// All user routes require authentication
+userRouter.use(authenticate);
+
+userRouter.patch('/profile', validate(updateProfileSchema), updateProfile);
+userRouter.delete('/', deleteAccount);
+userRouter.get('/settings', getUserSettings);
+userRouter.patch('/settings', validate(updateUserSettingsSchema), updateUserSettings);
 
 
 ==============================
@@ -1822,6 +3050,8 @@ import { apiLimiter } from './middleware/rateLimiter';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler';
 import { env } from './config/env';
 import { getLlmProviderInfo } from './agents/llm.factory';
+import { processRecurringExpenses } from './services/recurring.service';
+import { sendWeeklyReports, sendMonthlySummaries } from './services/alert.service';
 
 const app = express();
 
@@ -1847,7 +3077,7 @@ app.use(
         callback(new Error(`CORS blocked: ${origin}`));
       }
     },
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true,
   }),
@@ -1857,7 +3087,14 @@ app.set('trust proxy', 1);
 
 // ─── Body parsing ─────────────────────────────────────────────────────────────
 
-app.use(express.json({ limit: '10kb' }));
+app.use(
+  express.json({
+    limit: '10kb',
+    verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
+      req.rawBody = buf;
+    },
+  }),
+);
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
 // ─── HTTP logging ─────────────────────────────────────────────────────────────
@@ -1923,6 +3160,28 @@ async function start(): Promise<void> {
     }, 10_000).unref();
   };
 
+  // ── Recurring expense processor ─────────────────────────────────────────────
+  // Run once on startup, then every hour to auto-log due recurring expenses
+  processRecurringExpenses().catch(console.error);
+  const recurringInterval = setInterval(
+    () => processRecurringExpenses().catch(console.error),
+    60 * 60 * 1000,
+  );
+  recurringInterval.unref(); // don't block process shutdown
+
+  // ── Daily alert scheduler ────────────────────────────────────────────────────
+  // Runs every 24h; sends weekly reports on Mondays and monthly summaries on 1st
+  const dailyAlertInterval = setInterval(() => {
+    const now = new Date();
+    if (now.getDay() === 1) {
+      sendWeeklyReports().catch(console.error);
+    }
+    if (now.getDate() === 1) {
+      sendMonthlySummaries().catch(console.error);
+    }
+  }, 24 * 60 * 60 * 1000);
+  dailyAlertInterval.unref();
+
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
@@ -1943,9 +3202,346 @@ start().catch((err: Error) => {
 
 
 ==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\services\alert.service.ts
+==============================
+
+import { prisma } from '../config/db';
+import {
+  sendBudgetAlertEmail,
+  sendLargeExpenseAlertEmail,
+  sendWeeklyReportEmail,
+  sendMonthlySummaryEmail,
+} from '../lib/email';
+import { env } from '../config/env';
+import type { Category } from '../generated/prisma';
+
+// ─── Helper: ISO week string ──────────────────────────────────────────────────
+
+function getISOWeekString(date: Date): string {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+}
+
+// ─── Try to create AlertLog (silently skip on unique constraint violation) ────
+
+async function tryCreateAlertLog(
+  userId: number,
+  type: string,
+  ref: string,
+): Promise<boolean> {
+  try {
+    await prisma.alertLog.create({ data: { userId, type, ref } });
+    return true;
+  } catch {
+    // Unique constraint violation = already sent, silently skip
+    return false;
+  }
+}
+
+// ─── Check and send alerts after an expense is created ───────────────────────
+
+export async function checkExpenseAlerts(
+  userId: number,
+  expense: {
+    id: number;
+    title: string;
+    amount: number;
+    currency: string;
+    convertedAmount: number;
+    category: Category;
+    date: string;
+  },
+): Promise<void> {
+  // Guard: Resend API key required
+  if (!env.RESEND_API_KEY) return;
+
+  // 1. Load user and settings in parallel
+  const [user, settings] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, name: true },
+    }),
+    prisma.userSettings.findUnique({
+      where: { userId },
+      select: {
+        emailNotifications: true,
+        budgetAlerts: true,
+        alertThreshold: true,
+        currency: true,
+      },
+    }),
+  ]);
+
+  if (!user || !settings) return;
+  if (!settings.emailNotifications) return;
+
+  const homeCurrency = settings.currency ?? 'INR';
+
+  // 2. Large expense check
+  if (settings.alertThreshold != null && expense.convertedAmount >= settings.alertThreshold) {
+    const created = await tryCreateAlertLog(userId, 'large_expense', expense.id.toString());
+    if (created) {
+      await sendLargeExpenseAlertEmail(
+        user.email,
+        user.name,
+        expense.title,
+        expense.amount,
+        expense.currency,
+        expense.convertedAmount,
+        homeCurrency,
+        expense.category,
+        expense.date,
+        settings.alertThreshold,
+      );
+    }
+  }
+
+  // 3. Budget alert check
+  if (settings.budgetAlerts) {
+    // Parse YYYY-MM from expense date (YYYY-MM-DD)
+    const monthPrefix = expense.date.slice(0, 7); // "YYYY-MM"
+    const monthStart = `${monthPrefix}-01`;
+    // End of month: use the start of next month minus one day
+    const [year, month] = monthPrefix.split('-').map(Number);
+    const nextMonth = month === 12 ? 1 : month + 1;
+    const nextYear = month === 12 ? year + 1 : year;
+    const monthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`;
+
+    // Find budget for this category
+    const budget = await prisma.budget.findUnique({
+      where: { userId_category: { userId, category: expense.category } },
+    });
+
+    if (budget) {
+      // Compute total spending in this category for the month
+      const agg = await prisma.expense.aggregate({
+        where: {
+          userId,
+          category: expense.category,
+          date: { gte: monthStart, lt: monthEnd },
+        },
+        _sum: { convertedAmount: true },
+      });
+
+      const totalSpent = agg._sum.convertedAmount ?? 0;
+      const pct = (totalSpent / budget.amount) * 100;
+      const ref = `${monthPrefix}:${expense.category}`;
+
+      if (pct >= 100) {
+        const created = await tryCreateAlertLog(userId, 'budget_100', ref);
+        if (created) {
+          await sendBudgetAlertEmail(
+            user.email,
+            user.name,
+            expense.category,
+            totalSpent,
+            budget.amount,
+            pct,
+            homeCurrency,
+            true,
+          );
+        }
+      } else if (pct >= 80) {
+        const created = await tryCreateAlertLog(userId, 'budget_80', ref);
+        if (created) {
+          await sendBudgetAlertEmail(
+            user.email,
+            user.name,
+            expense.category,
+            totalSpent,
+            budget.amount,
+            pct,
+            homeCurrency,
+            false,
+          );
+        }
+      }
+    }
+  }
+}
+
+// ─── Send Weekly Reports (called every Monday) ────────────────────────────────
+
+export async function sendWeeklyReports(): Promise<void> {
+  if (!env.RESEND_API_KEY) return;
+
+  const now = new Date();
+
+  // Past week = last Monday through last Sunday
+  const day = now.getDay() || 7; // 1=Mon … 7=Sun; getDay() is 0=Sun, so || 7 converts
+  // "Last Monday" is 7 days ago from today (Monday)
+  const lastMonday = new Date(now);
+  lastMonday.setDate(now.getDate() - 7);
+  lastMonday.setHours(0, 0, 0, 0);
+
+  const lastSunday = new Date(lastMonday);
+  lastSunday.setDate(lastMonday.getDate() + 6);
+  lastSunday.setHours(23, 59, 59, 999);
+
+  const fromDate = lastMonday.toISOString().split('T')[0];
+  const toDate = lastSunday.toISOString().split('T')[0];
+  const weekRef = getISOWeekString(lastMonday);
+
+  // Get all users with weekly report enabled
+  const userSettings = await prisma.userSettings.findMany({
+    where: { weeklyReport: true, emailNotifications: true },
+    select: { userId: true, currency: true },
+  });
+
+  for (const us of userSettings) {
+    try {
+      // Check if already sent
+      const existing = await prisma.alertLog.findUnique({
+        where: { userId_type_ref: { userId: us.userId, type: 'weekly', ref: weekRef } },
+      });
+      if (existing) continue;
+
+      const user = await prisma.user.findUnique({
+        where: { id: us.userId },
+        select: { email: true, name: true },
+      });
+      if (!user) continue;
+
+      // Compute expenses for past week
+      const [agg, byCategory] = await Promise.all([
+        prisma.expense.aggregate({
+          where: { userId: us.userId, date: { gte: fromDate, lte: toDate } },
+          _sum: { convertedAmount: true },
+          _count: true,
+        }),
+        prisma.expense.groupBy({
+          by: ['category'],
+          where: { userId: us.userId, date: { gte: fromDate, lte: toDate } },
+          _sum: { convertedAmount: true },
+          _count: true,
+          orderBy: { _sum: { convertedAmount: 'desc' } },
+        }),
+      ]);
+
+      const total = agg._sum.convertedAmount ?? 0;
+      const count = agg._count;
+
+      // Skip if no expenses
+      if (count === 0) continue;
+
+      await sendWeeklyReportEmail(user.email, user.name, {
+        fromDate,
+        toDate,
+        total,
+        count,
+        currency: us.currency ?? 'INR',
+        byCategory: byCategory.map((c) => ({
+          category: c.category,
+          amount: c._sum.convertedAmount ?? 0,
+          count: c._count,
+        })),
+      });
+
+      await tryCreateAlertLog(us.userId, 'weekly', weekRef);
+    } catch (err) {
+      console.error(`Weekly report error for user ${us.userId}:`, err);
+    }
+  }
+}
+
+// ─── Send Monthly Summaries (called on 1st of each month) ────────────────────
+
+export async function sendMonthlySummaries(): Promise<void> {
+  if (!env.RESEND_API_KEY) return;
+
+  const now = new Date();
+
+  // Previous month
+  const prevMonth = now.getMonth() === 0 ? 11 : now.getMonth() - 1;
+  const prevYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+  const monthRef = `${prevYear}-${String(prevMonth + 1).padStart(2, '0')}`;
+  const monthStart = `${monthRef}-01`;
+  const nextMonthNum = prevMonth + 2 > 12 ? 1 : prevMonth + 2;
+  const nextMonthYear = prevMonth + 2 > 12 ? prevYear + 1 : prevYear;
+  const monthEnd = `${nextMonthYear}-${String(nextMonthNum).padStart(2, '0')}-01`;
+
+  // Days in the previous month
+  const daysInMonth = new Date(prevYear, prevMonth + 1, 0).getDate();
+
+  const monthLabel = new Date(prevYear, prevMonth, 1).toLocaleString('en-US', {
+    month: 'long',
+    year: 'numeric',
+  });
+
+  // Get all users with email notifications enabled
+  const userSettings = await prisma.userSettings.findMany({
+    where: { emailNotifications: true },
+    select: { userId: true, currency: true },
+  });
+
+  for (const us of userSettings) {
+    try {
+      // Check if already sent
+      const existing = await prisma.alertLog.findUnique({
+        where: { userId_type_ref: { userId: us.userId, type: 'monthly', ref: monthRef } },
+      });
+      if (existing) continue;
+
+      const user = await prisma.user.findUnique({
+        where: { id: us.userId },
+        select: { email: true, name: true },
+      });
+      if (!user) continue;
+
+      // Compute last month's expenses
+      const [agg, byCategory] = await Promise.all([
+        prisma.expense.aggregate({
+          where: { userId: us.userId, date: { gte: monthStart, lt: monthEnd } },
+          _sum: { convertedAmount: true },
+          _count: true,
+        }),
+        prisma.expense.groupBy({
+          by: ['category'],
+          where: { userId: us.userId, date: { gte: monthStart, lt: monthEnd } },
+          _sum: { convertedAmount: true },
+          _count: true,
+          orderBy: { _sum: { convertedAmount: 'desc' } },
+        }),
+      ]);
+
+      const total = agg._sum.convertedAmount ?? 0;
+      const count = agg._count;
+
+      // Skip if no expenses
+      if (count === 0) continue;
+
+      const dailyAvg = Math.round((total / daysInMonth) * 100) / 100;
+
+      await sendMonthlySummaryEmail(user.email, user.name, {
+        monthLabel,
+        total,
+        count,
+        dailyAvg,
+        currency: us.currency ?? 'INR',
+        byCategory: byCategory.map((c) => ({
+          category: c.category,
+          amount: c._sum.convertedAmount ?? 0,
+          count: c._count,
+        })),
+      });
+
+      await tryCreateAlertLog(us.userId, 'monthly', monthRef);
+    } catch (err) {
+      console.error(`Monthly summary error for user ${us.userId}:`, err);
+    }
+  }
+}
+
+
+==============================
 FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\services\auth.service.ts
 ==============================
 
+import crypto from 'crypto';
 import { prisma } from '../config/db';
 import { hashPassword, comparePassword } from '../lib/hash';
 import {
@@ -1955,11 +3551,19 @@ import {
 } from '../lib/jwt';
 import { AppError } from '../middleware/errorHandler';
 import { getGoogleUserInfo, verifyGoogleToken } from '../lib/google-oauth';
+import {
+  sendVerificationEmail,
+  sendPasswordResetEmail,
+} from '../lib/email';
 import type {
   SignUpInput,
   SignInInput,
   ChangePasswordInput,
   GoogleAuthInput,
+  ForgotPasswordInput,
+  ResetPasswordInput,
+  VerifyEmailInput,
+  ResendVerificationInput,
 } from '../lib/schemas';
 import type { PublicUser, TokenPair } from '../types/index';
 
@@ -1987,9 +3591,18 @@ export async function signUpService(input: SignUpInput): Promise<AuthResult> {
 
   const passwordHash = await hashPassword(password);
 
+  const emailVerificationToken = crypto.randomBytes(32).toString('hex');
+  const emailVerificationTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+
   const user = await prisma.user.create({
-    data: { name, email, passwordHash },
-    select: { id: true, name: true, email: true, role: true, createdAt: true },
+    data: {
+      name,
+      email,
+      passwordHash,
+      emailVerificationToken,
+      emailVerificationTokenExpiry,
+    },
+    select: { id: true, name: true, email: true, role: true, createdAt: true, emailVerified: true },
   });
 
   const tokens = generateTokenPair(user.id, user.email, user.role);
@@ -2001,6 +3614,9 @@ export async function signUpService(input: SignUpInput): Promise<AuthResult> {
       expiresAt: getRefreshTokenExpiry(),
     },
   });
+
+  // Fire-and-forget — don't block signup if email fails
+  sendVerificationEmail(user.email, user.name, emailVerificationToken).catch(console.error);
 
   return { user, tokens };
 }
@@ -2395,6 +4011,481 @@ export async function changePasswordService(
   ]);
 }
 
+// ─── Verify Email ─────────────────────────────────────────────────────────────
+
+export async function verifyEmailService(input: VerifyEmailInput): Promise<void> {
+  const { token } = input;
+
+  const user = await prisma.user.findUnique({
+    where: { emailVerificationToken: token },
+    select: {
+      id: true,
+      emailVerified: true,
+      emailVerificationTokenExpiry: true,
+    },
+  });
+
+  if (!user) {
+    throw new AppError(400, 'Invalid or expired verification link');
+  }
+
+  if (user.emailVerified) {
+    return; // Already verified — idempotent
+  }
+
+  if (!user.emailVerificationTokenExpiry || user.emailVerificationTokenExpiry < new Date()) {
+    throw new AppError(400, 'Verification link has expired. Please request a new one.');
+  }
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      emailVerified: true,
+      emailVerificationToken: null,
+      emailVerificationTokenExpiry: null,
+    },
+  });
+}
+
+// ─── Resend Verification Email ────────────────────────────────────────────────
+
+export async function resendVerificationService(input: ResendVerificationInput): Promise<void> {
+  const { email } = input;
+
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: { id: true, name: true, email: true, emailVerified: true, isActive: true },
+  });
+
+  // Always return success to prevent user enumeration
+  if (!user || !user.isActive || user.emailVerified) return;
+
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { emailVerificationToken: token, emailVerificationTokenExpiry: expiry },
+  });
+
+  sendVerificationEmail(user.email, user.name, token).catch(console.error);
+}
+
+// ─── Forgot Password ──────────────────────────────────────────────────────────
+
+export async function forgotPasswordService(input: ForgotPasswordInput): Promise<void> {
+  const { email } = input;
+
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: { id: true, name: true, email: true, isActive: true, authProvider: true },
+  });
+
+  // Always return success — prevent user enumeration
+  if (!user || !user.isActive) return;
+
+  // Google-only accounts have no password
+  if (user.authProvider === 'google') return;
+
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { passwordResetToken: token, passwordResetTokenExpiry: expiry },
+  });
+
+  sendPasswordResetEmail(user.email, user.name, token).catch(console.error);
+}
+
+// ─── Reset Password ───────────────────────────────────────────────────────────
+
+export async function resetPasswordService(input: ResetPasswordInput): Promise<void> {
+  const { token, newPassword } = input;
+
+  const user = await prisma.user.findUnique({
+    where: { passwordResetToken: token },
+    select: {
+      id: true,
+      passwordResetTokenExpiry: true,
+    },
+  });
+
+  if (!user) {
+    throw new AppError(400, 'Invalid or expired reset link');
+  }
+
+  if (!user.passwordResetTokenExpiry || user.passwordResetTokenExpiry < new Date()) {
+    throw new AppError(400, 'Reset link has expired. Please request a new one.');
+  }
+
+  const newHash = await hashPassword(newPassword);
+
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash: newHash,
+        passwordResetToken: null,
+        passwordResetTokenExpiry: null,
+      },
+    }),
+    // Revoke all sessions — forces re-login everywhere
+    prisma.refreshToken.updateMany({
+      where: { userId: user.id, revokedAt: null },
+      data: { revokedAt: new Date() },
+    }),
+  ]);
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\services\billing.service.ts
+==============================
+
+import crypto from 'crypto';
+import { prisma } from '../config/db';
+import { AppError } from '../middleware/errorHandler';
+import { env } from '../config/env';
+import { razorpay } from '../lib/razorpay';
+
+// ─── Plan limits ──────────────────────────────────────────────────────────────
+
+export const PLAN_LIMITS = {
+  FREE: { expenses: 100, aiMessages: 15 },
+  PRO: { expenses: null, aiMessages: null }, // null = unlimited
+} as const;
+
+export const PRO_PRICE_INR = 299;
+
+// ─── Get user billing ─────────────────────────────────────────────────────────
+
+export async function getUserBillingService(userId: number) {
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const [subscription, expenseCount, aiMessageCount] = await Promise.all([
+    prisma.subscription.findUnique({ where: { userId } }),
+    prisma.expense.count({ where: { userId, createdAt: { gte: monthStart } } }),
+    prisma.chatMessage.count({
+      where: { userId, role: 'user', createdAt: { gte: monthStart } },
+    }),
+  ]);
+
+  const plan = subscription?.plan ?? 'FREE';
+  const limits = PLAN_LIMITS[plan];
+
+  return {
+    plan,
+    status: subscription?.status ?? 'ACTIVE',
+    razorpaySubId: subscription?.razorpaySubId ?? null,
+    currentPeriodEnd: subscription?.currentPeriodEnd ?? null,
+    cancelAtPeriodEnd: subscription?.cancelAtPeriodEnd ?? false,
+    usage: {
+      expenses: expenseCount,
+      aiMessages: aiMessageCount,
+      limits,
+    },
+    keyId: env.RAZORPAY_KEY_ID ?? null,
+    billingEnabled: !!(env.RAZORPAY_KEY_ID && env.RAZORPAY_PLAN_ID),
+  };
+}
+
+// ─── Create subscription ──────────────────────────────────────────────────────
+
+export async function createSubscriptionService(userId: number) {
+  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_PLAN_ID || !env.RAZORPAY_KEY_SECRET) {
+    throw new AppError(503, 'Billing is not configured');
+  }
+
+  const existing = await prisma.subscription.findUnique({ where: { userId } });
+  if (existing?.plan === 'PRO' && existing.status === 'ACTIVE' && !existing.cancelAtPeriodEnd) {
+    throw new AppError(400, 'Already on PRO plan');
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sub = await (razorpay.subscriptions.create as any)({
+    plan_id: env.RAZORPAY_PLAN_ID,
+    customer_notify: 1,
+    quantity: 1,
+    total_count: 12,
+    notes: { userId: String(userId) },
+  });
+
+  await prisma.subscription.upsert({
+    where: { userId },
+    create: { userId, plan: 'FREE', status: 'PENDING', razorpaySubId: sub.id },
+    update: { status: 'PENDING', razorpaySubId: sub.id, cancelAtPeriodEnd: false },
+  });
+
+  return { subscriptionId: sub.id as string, keyId: env.RAZORPAY_KEY_ID };
+}
+
+// ─── Verify payment ───────────────────────────────────────────────────────────
+
+export async function verifyPaymentService(
+  userId: number,
+  data: {
+    razorpayPaymentId: string;
+    razorpaySubscriptionId: string;
+    razorpaySignature: string;
+  },
+) {
+  if (!env.RAZORPAY_KEY_SECRET) throw new AppError(503, 'Billing is not configured');
+
+  const { razorpayPaymentId, razorpaySubscriptionId, razorpaySignature } = data;
+  const body = `${razorpayPaymentId}|${razorpaySubscriptionId}`;
+  const expectedSig = crypto
+    .createHmac('sha256', env.RAZORPAY_KEY_SECRET)
+    .update(body)
+    .digest('hex');
+
+  if (expectedSig !== razorpaySignature) {
+    throw new AppError(400, 'Invalid payment signature');
+  }
+
+  // Fetch subscription to get billing period end
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rzpSub = await (razorpay.subscriptions.fetch as any)(razorpaySubscriptionId) as any;
+  const currentPeriodEnd = rzpSub.current_end
+    ? new Date((rzpSub.current_end as number) * 1000)
+    : null;
+
+  await prisma.subscription.upsert({
+    where: { userId },
+    create: {
+      userId,
+      plan: 'PRO',
+      status: 'ACTIVE',
+      razorpaySubId: razorpaySubscriptionId,
+      currentPeriodEnd,
+    },
+    update: {
+      plan: 'PRO',
+      status: 'ACTIVE',
+      razorpaySubId: razorpaySubscriptionId,
+      currentPeriodEnd,
+      cancelAtPeriodEnd: false,
+    },
+  });
+
+  return { plan: 'PRO' as const };
+}
+
+// ─── Cancel subscription ──────────────────────────────────────────────────────
+
+export async function cancelSubscriptionService(userId: number) {
+  const subscription = await prisma.subscription.findUnique({ where: { userId } });
+  if (!subscription?.razorpaySubId || subscription.plan !== 'PRO') {
+    throw new AppError(404, 'No active PRO subscription');
+  }
+  if (subscription.cancelAtPeriodEnd) {
+    throw new AppError(400, 'Subscription already scheduled for cancellation');
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (razorpay.subscriptions.cancel as any)(subscription.razorpaySubId, { cancel_at_cycle_end: 1 });
+
+  await prisma.subscription.update({
+    where: { userId },
+    data: { cancelAtPeriodEnd: true },
+  });
+
+  return { cancelAtPeriodEnd: true };
+}
+
+// ─── Handle webhook ───────────────────────────────────────────────────────────
+
+export async function handleWebhookService(rawBody: Buffer, signature: string) {
+  if (!env.RAZORPAY_WEBHOOK_SECRET) {
+    throw new AppError(503, 'Webhook secret not configured');
+  }
+
+  const expectedSig = crypto
+    .createHmac('sha256', env.RAZORPAY_WEBHOOK_SECRET)
+    .update(rawBody)
+    .digest('hex');
+
+  if (expectedSig !== signature) {
+    throw new AppError(400, 'Invalid webhook signature');
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const event = JSON.parse(rawBody.toString()) as any;
+  const { event: eventName, payload } = event;
+  const rzpSub = payload?.subscription?.entity;
+
+  if (!rzpSub?.id) return;
+
+  const userId = Number(rzpSub.notes?.userId);
+  if (!userId || isNaN(userId)) return;
+
+  if (eventName === 'subscription.activated' || eventName === 'subscription.charged') {
+    const currentPeriodEnd = rzpSub.current_end
+      ? new Date((rzpSub.current_end as number) * 1000)
+      : null;
+    await prisma.subscription.upsert({
+      where: { userId },
+      create: {
+        userId,
+        plan: 'PRO',
+        status: 'ACTIVE',
+        razorpaySubId: rzpSub.id as string,
+        currentPeriodEnd,
+      },
+      update: {
+        plan: 'PRO',
+        status: 'ACTIVE',
+        currentPeriodEnd,
+        cancelAtPeriodEnd: false,
+      },
+    });
+  } else if (eventName === 'subscription.cancelled') {
+    await prisma.subscription.updateMany({
+      where: { razorpaySubId: rzpSub.id as string },
+      data: { status: 'CANCELLED', cancelAtPeriodEnd: true },
+    });
+  } else if (eventName === 'subscription.expired' || eventName === 'subscription.halted') {
+    await prisma.subscription.updateMany({
+      where: { razorpaySubId: rzpSub.id as string },
+      data: { plan: 'FREE', status: 'EXPIRED', currentPeriodEnd: null },
+    });
+  }
+}
+
+// ─── Plan limit check (used in expense + chat services) ──────────────────────
+
+export async function checkPlanLimit(
+  userId: number,
+  resource: 'expenses' | 'aiMessages',
+): Promise<void> {
+  const subscription = await prisma.subscription.findUnique({ where: { userId } });
+  const plan = subscription?.plan ?? 'FREE';
+  if (plan === 'PRO') return;
+
+  const limit = PLAN_LIMITS.FREE[resource];
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  let count: number;
+  if (resource === 'expenses') {
+    count = await prisma.expense.count({ where: { userId, createdAt: { gte: monthStart } } });
+  } else {
+    count = await prisma.chatMessage.count({
+      where: { userId, role: 'user', createdAt: { gte: monthStart } },
+    });
+  }
+
+  if (count >= limit) {
+    const label = resource === 'expenses' ? 'expense' : 'AI message';
+    throw new AppError(
+      403,
+      `Monthly ${label} limit reached (${limit}). Upgrade to PRO for unlimited access.`,
+    );
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\services\budget.service.ts
+==============================
+
+import { prisma } from '../config/db';
+import { AppError } from '../middleware/errorHandler';
+import type { Category } from '../generated/prisma';
+import type { UpsertBudgetInput } from '../lib/schemas';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface BudgetOverviewItem {
+  id: number;
+  category: Category;
+  limit: number;
+  spent: number;
+  remaining: number;
+  percentage: number;
+  isOverBudget: boolean;
+}
+
+// ─── Get All Budgets ──────────────────────────────────────────────────────────
+
+export async function getBudgetsService(userId: number) {
+  return prisma.budget.findMany({
+    where: { userId },
+    orderBy: { category: 'asc' },
+    select: { id: true, category: true, amount: true, updatedAt: true },
+  });
+}
+
+// ─── Upsert Budget ────────────────────────────────────────────────────────────
+
+export async function upsertBudgetService(userId: number, input: UpsertBudgetInput) {
+  const { category, amount } = input;
+  return prisma.budget.upsert({
+    where: { userId_category: { userId, category } },
+    create: { userId, category, amount },
+    update: { amount },
+    select: { id: true, category: true, amount: true, updatedAt: true },
+  });
+}
+
+// ─── Delete Budget ────────────────────────────────────────────────────────────
+
+export async function deleteBudgetService(userId: number, budgetId: number) {
+  const budget = await prisma.budget.findFirst({ where: { id: budgetId, userId } });
+  if (!budget) throw new AppError(404, 'Budget not found');
+  await prisma.budget.delete({ where: { id: budgetId } });
+}
+
+// ─── Budget Overview (with spending) ─────────────────────────────────────────
+
+export async function getBudgetOverviewService(
+  userId: number,
+  month?: string, // YYYY-MM, defaults to current month
+): Promise<BudgetOverviewItem[]> {
+  // Resolve month
+  const now = new Date();
+  const targetMonth = month ?? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const [year, mon] = targetMonth.split('-').map(Number);
+
+  const from = `${targetMonth}-01`;
+  const lastDay = new Date(year, mon, 0).getDate();
+  const to = `${targetMonth}-${String(lastDay).padStart(2, '0')}`;
+
+  // Load budgets and expenses for the month in parallel
+  const [budgets, expenses] = await Promise.all([
+    prisma.budget.findMany({
+      where: { userId },
+      select: { id: true, category: true, amount: true },
+    }),
+    prisma.expense.findMany({
+      where: { userId, date: { gte: from, lte: to } },
+      select: { category: true, convertedAmount: true },
+    }),
+  ]);
+
+  // Aggregate spending per category (using home-currency converted amounts)
+  const spentByCategory: Partial<Record<Category, number>> = {};
+  for (const exp of expenses) {
+    spentByCategory[exp.category] = (spentByCategory[exp.category] ?? 0) + exp.convertedAmount;
+  }
+
+  return budgets.map((b) => {
+    const spent = Math.round((spentByCategory[b.category] ?? 0) * 100) / 100;
+    const remaining = Math.round((b.amount - spent) * 100) / 100;
+    const percentage = b.amount > 0 ? Math.round((spent / b.amount) * 100) : 0;
+    return {
+      id: b.id,
+      category: b.category,
+      limit: b.amount,
+      spent,
+      remaining,
+      percentage,
+      isOverBudget: spent > b.amount,
+    };
+  });
+}
+
 
 ==============================
 FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\services\chat.service.ts
@@ -2455,6 +4546,46 @@ export async function deleteChatHistoryService(
 
 
 ==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\services\currency.service.ts
+==============================
+
+// ─── Exchange Rate Service ────────────────────────────────────────────────────
+// Uses open.er-api.com (free, no API key, updates every 24h)
+
+interface RateCache {
+  rates: Record<string, number>;
+  expiresAt: number;
+}
+
+const cache = new Map<string, RateCache>();
+const TTL_MS = 60 * 60 * 1000; // 1 hour
+
+export async function getRatesService(base: string): Promise<Record<string, number>> {
+  const upper = base.toUpperCase();
+  const cached = cache.get(upper);
+  if (cached && Date.now() < cached.expiresAt) return cached.rates;
+
+  const res = await fetch(`https://open.er-api.com/v6/latest/${upper}`);
+  if (!res.ok) throw new Error(`Exchange rate fetch failed: ${res.status}`);
+
+  const json = await res.json() as { result: string; rates: Record<string, number> };
+  if (json.result !== 'success') throw new Error('Exchange rate API error');
+
+  cache.set(upper, { rates: json.rates, expiresAt: Date.now() + TTL_MS });
+  return json.rates;
+}
+
+// Returns how many units of `to` equal 1 unit of `from`
+export async function getExchangeRate(from: string, to: string): Promise<number> {
+  if (from.toUpperCase() === to.toUpperCase()) return 1;
+  const rates = await getRatesService(from.toUpperCase());
+  const rate = rates[to.toUpperCase()];
+  if (!rate) throw new Error(`Unknown currency: ${to}`);
+  return rate;
+}
+
+
+==============================
 FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\services\expense.service.ts
 ==============================
 
@@ -2468,6 +4599,7 @@ import type {
   BulkDeleteInput,
 } from '../lib/schemas';
 import type { ExpenseStats, PaginationMeta } from '../types/index';
+import { checkExpenseAlerts } from './alert.service';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -2534,33 +4666,51 @@ export async function getStatsService(
   const [aggregate, byCategory] = await Promise.all([
     prisma.expense.aggregate({
       where,
-      _sum: { amount: true },
+      _sum: { convertedAmount: true },
       _count: true,
-      _avg: { amount: true },
-      _max: { amount: true },
-      _min: { amount: true },
+      _avg: { convertedAmount: true },
+      _max: { convertedAmount: true },
+      _min: { convertedAmount: true },
     }),
     prisma.expense.groupBy({
       by: ['category'],
       where,
-      _sum: { amount: true },
+      _sum: { convertedAmount: true },
       _count: true,
-      orderBy: { _sum: { amount: 'desc' } },
+      orderBy: { _sum: { convertedAmount: 'desc' } },
     }),
   ]);
 
   return {
-    total: aggregate._sum.amount ?? 0,
+    total: aggregate._sum.convertedAmount ?? 0,
     count: aggregate._count,
-    average: aggregate._avg.amount ?? 0,
-    max: aggregate._max.amount ?? 0,
-    min: aggregate._min.amount ?? 0,
+    average: aggregate._avg.convertedAmount ?? 0,
+    max: aggregate._max.convertedAmount ?? 0,
+    min: aggregate._min.convertedAmount ?? 0,
     byCategory: byCategory.map((c) => ({
       category: c.category,
-      amount: c._sum.amount ?? 0,
+      amount: c._sum.convertedAmount ?? 0,
       count: c._count,
     })),
   };
+}
+
+// ─── Export (all matching, no pagination) ────────────────────────────────────
+
+export async function exportExpensesService(
+  userId: number,
+  filters: { from?: string; to?: string; category?: Category; search?: string },
+) {
+  const where: Prisma.ExpenseWhereInput = { userId };
+  const { from, to, category, search } = filters;
+
+  if (from && to) where.date = { gte: from, lte: to };
+  else if (from) where.date = { gte: from };
+  else if (to) where.date = { lte: to };
+  if (category) where.category = category;
+  if (search) where.title = { contains: search, mode: 'insensitive' };
+
+  return prisma.expense.findMany({ where, orderBy: { date: 'desc' } });
 }
 
 // ─── Get Single ───────────────────────────────────────────────────────────────
@@ -2578,17 +4728,36 @@ export async function createExpenseService(
   input: CreateExpenseInput,
 ) {
   const { title, amount, category, date, notes } = input;
+  const currency = input.currency ?? 'INR';
+  const exchangeRate = input.exchangeRate ?? 1.0;
+  const convertedAmount = Math.round(amount * exchangeRate * 100) / 100;
 
-  return prisma.expense.create({
+  const expense = await prisma.expense.create({
     data: {
       title,
       amount,
+      currency,
+      exchangeRate,
+      convertedAmount,
       category: (category as Category) ?? 'OTHER',
       date: date ?? new Date().toISOString().split('T')[0],
       notes,
       userId,
     },
   });
+
+  // Fire-and-forget: check and send relevant alerts
+  checkExpenseAlerts(userId, {
+    id: expense.id,
+    title: expense.title,
+    amount: expense.amount,
+    currency: expense.currency,
+    convertedAmount: expense.convertedAmount,
+    category: expense.category,
+    date: expense.date,
+  }).catch((err) => console.error('Alert error:', err));
+
+  return expense;
 }
 
 // ─── Update ───────────────────────────────────────────────────────────────────
@@ -2602,12 +4771,17 @@ export async function updateExpenseService(
   if (!existing) throw new AppError(404, 'Expense not found');
 
   const { title, amount, category, date, notes } = input;
+  const newAmount = amount ?? existing.amount;
+  const newRate = input.exchangeRate ?? existing.exchangeRate;
 
   return prisma.expense.update({
     where: { id },
     data: {
       ...(title !== undefined && { title }),
       ...(amount !== undefined && { amount }),
+      ...(input.currency !== undefined && { currency: input.currency }),
+      ...(input.exchangeRate !== undefined && { exchangeRate: input.exchangeRate }),
+      convertedAmount: Math.round(newAmount * newRate * 100) / 100,
       ...(category !== undefined && { category: category as Category }),
       ...(date !== undefined && { date }),
       ...(notes !== undefined && { notes }),
@@ -2636,6 +4810,358 @@ export async function bulkDeleteExpensesService(
     where: { id: { in: input.ids }, userId },
   });
   return count;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\services\goal.service.ts
+==============================
+
+import { prisma } from '../config/db';
+import { AppError } from '../middleware/errorHandler';
+import type { Category, GoalType } from '../generated/prisma';
+import type { CreateGoalInput, UpdateGoalInput } from '../lib/schemas';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface GoalWithProgress {
+  id: number;
+  name: string;
+  type: GoalType;
+  targetAmount: number;
+  currentAmount: number;
+  category: Category | null;
+  period: string | null;
+  deadline: string | null;
+  isCompleted: boolean;
+  notes: string | null;
+  progress: number; // 0–100
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function currentMonthStr() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function monthDateRange(period: string): { from: string; to: string } {
+  const [year, mon] = period.split('-').map(Number);
+  const lastDay = new Date(year, mon, 0).getDate();
+  return {
+    from: `${period}-01`,
+    to: `${period}-${String(lastDay).padStart(2, '0')}`,
+  };
+}
+
+// ─── Get Goals ────────────────────────────────────────────────────────────────
+
+export async function getGoalsService(userId: number): Promise<GoalWithProgress[]> {
+  const goals = await prisma.financialGoal.findMany({
+    where: { userId },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  // Gather unique (period, category) combos needed for SPENDING_LIMIT goals
+  const spendMap = new Map<string, number>();
+  await Promise.all(
+    goals
+      .filter((g) => g.type === 'SPENDING_LIMIT')
+      .map(async (goal) => {
+        const period = goal.period ?? currentMonthStr();
+        const key = `${period}:${goal.category ?? 'ALL'}`;
+        if (spendMap.has(key)) return;
+        const { from, to } = monthDateRange(period);
+        const where: Parameters<typeof prisma.expense.aggregate>[0]['where'] = {
+          userId,
+          date: { gte: from, lte: to },
+        };
+        if (goal.category) where.category = goal.category;
+        const agg = await prisma.expense.aggregate({ where, _sum: { convertedAmount: true } });
+        spendMap.set(key, Math.round((agg._sum.convertedAmount ?? 0) * 100) / 100);
+      }),
+  );
+
+  return goals.map((goal) => {
+    let currentAmount = goal.currentAmount;
+
+    if (goal.type === 'SPENDING_LIMIT') {
+      const period = goal.period ?? currentMonthStr();
+      const key = `${period}:${goal.category ?? 'ALL'}`;
+      currentAmount = spendMap.get(key) ?? 0;
+    }
+
+    const progress =
+      goal.targetAmount > 0
+        ? Math.min(Math.round((currentAmount / goal.targetAmount) * 100), 100)
+        : 0;
+
+    const isCompleted =
+      goal.isCompleted ||
+      (goal.type === 'SAVINGS' && currentAmount >= goal.targetAmount);
+
+    return {
+      id: goal.id,
+      name: goal.name,
+      type: goal.type,
+      targetAmount: goal.targetAmount,
+      currentAmount,
+      category: goal.category,
+      period: goal.period,
+      deadline: goal.deadline,
+      isCompleted,
+      notes: goal.notes,
+      progress,
+      createdAt: goal.createdAt,
+      updatedAt: goal.updatedAt,
+    };
+  });
+}
+
+// ─── Create Goal ──────────────────────────────────────────────────────────────
+
+export async function createGoalService(userId: number, input: CreateGoalInput) {
+  return prisma.financialGoal.create({
+    data: {
+      userId,
+      name: input.name,
+      type: input.type,
+      targetAmount: input.targetAmount,
+      currentAmount: input.currentAmount ?? 0,
+      category: input.category ?? null,
+      period: input.period ?? null,
+      deadline: input.deadline ?? null,
+      notes: input.notes ?? null,
+    },
+  });
+}
+
+// ─── Update Goal ──────────────────────────────────────────────────────────────
+
+export async function updateGoalService(
+  userId: number,
+  goalId: number,
+  input: UpdateGoalInput,
+) {
+  const goal = await prisma.financialGoal.findFirst({ where: { id: goalId, userId } });
+  if (!goal) throw new AppError(404, 'Goal not found');
+  return prisma.financialGoal.update({ where: { id: goalId }, data: input });
+}
+
+// ─── Delete Goal ──────────────────────────────────────────────────────────────
+
+export async function deleteGoalService(userId: number, goalId: number) {
+  const goal = await prisma.financialGoal.findFirst({ where: { id: goalId, userId } });
+  if (!goal) throw new AppError(404, 'Goal not found');
+  await prisma.financialGoal.delete({ where: { id: goalId } });
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\services\recurring.service.ts
+==============================
+
+import { prisma as db } from '../config/db';
+import type { CreateRecurringInput, UpdateRecurringInput } from '../lib/schemas';
+import { Frequency } from '../generated/prisma';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function todayString(): string {
+  return new Date().toISOString().split('T')[0]!;
+}
+
+function advanceDate(dateStr: string, frequency: Frequency): string {
+  const d = new Date(dateStr);
+  switch (frequency) {
+    case Frequency.DAILY:
+      d.setDate(d.getDate() + 1);
+      break;
+    case Frequency.WEEKLY:
+      d.setDate(d.getDate() + 7);
+      break;
+    case Frequency.MONTHLY:
+      d.setMonth(d.getMonth() + 1);
+      break;
+    case Frequency.YEARLY:
+      d.setFullYear(d.getFullYear() + 1);
+      break;
+  }
+  return d.toISOString().split('T')[0]!;
+}
+
+// ─── CRUD ─────────────────────────────────────────────────────────────────────
+
+export async function getRecurringExpensesService(userId: number) {
+  return db.recurringExpense.findMany({
+    where: { userId },
+    orderBy: [{ isActive: 'desc' }, { nextDueDate: 'asc' }],
+  });
+}
+
+export async function createRecurringService(userId: number, data: CreateRecurringInput) {
+  const today = todayString();
+  // nextDueDate = startDate if startDate >= today, else today
+  const nextDueDate = data.startDate >= today ? data.startDate : today;
+
+  return db.recurringExpense.create({
+    data: {
+      userId,
+      title: data.title,
+      amount: data.amount,
+      category: data.category ?? 'OTHER',
+      frequency: data.frequency,
+      startDate: data.startDate,
+      nextDueDate,
+      notes: data.notes,
+    },
+  });
+}
+
+export async function updateRecurringService(userId: number, id: number, data: UpdateRecurringInput) {
+  const existing = await db.recurringExpense.findFirst({ where: { id, userId } });
+  if (!existing) throw Object.assign(new Error('Recurring expense not found'), { status: 404 });
+
+  return db.recurringExpense.update({
+    where: { id },
+    data: {
+      ...(data.title !== undefined && { title: data.title }),
+      ...(data.amount !== undefined && { amount: data.amount }),
+      ...(data.category !== undefined && { category: data.category }),
+      ...(data.frequency !== undefined && { frequency: data.frequency }),
+      ...(data.isActive !== undefined && { isActive: data.isActive }),
+      ...(data.notes !== undefined && { notes: data.notes }),
+    },
+  });
+}
+
+export async function deleteRecurringService(userId: number, id: number) {
+  const existing = await db.recurringExpense.findFirst({ where: { id, userId } });
+  if (!existing) throw Object.assign(new Error('Recurring expense not found'), { status: 404 });
+  await db.recurringExpense.delete({ where: { id } });
+}
+
+// ─── Scheduler ────────────────────────────────────────────────────────────────
+
+/**
+ * Finds all active recurring expenses whose nextDueDate <= today,
+ * creates an expense entry for each, and advances nextDueDate.
+ * Safe to call multiple times — will not double-create for the same day
+ * because nextDueDate is advanced on each run.
+ */
+export async function processRecurringExpenses(): Promise<void> {
+  const today = todayString();
+
+  const due = await db.recurringExpense.findMany({
+    where: {
+      isActive: true,
+      nextDueDate: { lte: today },
+    },
+  });
+
+  if (due.length === 0) return;
+
+  for (const rec of due) {
+    // Walk forward from current nextDueDate until we've covered all missed occurrences
+    let cursor = rec.nextDueDate;
+
+    while (cursor <= today) {
+      await db.expense.create({
+        data: {
+          userId: rec.userId,
+          title: rec.title,
+          amount: rec.amount,
+          category: rec.category,
+          date: cursor,
+          notes: rec.notes ?? undefined,
+        },
+      });
+      cursor = advanceDate(cursor, rec.frequency);
+    }
+
+    // Update nextDueDate to next future occurrence
+    await db.recurringExpense.update({
+      where: { id: rec.id },
+      data: { nextDueDate: cursor },
+    });
+  }
+
+  console.log(`[recurring] Processed ${due.length} recurring expense(s) — ${today}`);
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src\services\user.service.ts
+==============================
+
+import { prisma } from '../config/db';
+import type { UpdateUserSettingsInput, UpdateProfileInput } from '../lib/schemas';
+
+const SETTINGS_SELECT = {
+  emailNotifications: true,
+  budgetAlerts: true,
+  weeklyReport: true,
+  onboardingCompleted: true,
+  currency: true,
+  alertThreshold: true,
+} as const;
+
+// ─── Update Profile ───────────────────────────────────────────────────────────
+
+export async function updateProfileService(userId: number, input: UpdateProfileInput) {
+  return prisma.user.update({
+    where: { id: userId },
+    data: { name: input.name },
+    select: {
+      id: true, name: true, email: true, role: true, isActive: true,
+      authProvider: true, emailVerified: true, createdAt: true, lastLoginAt: true,
+      _count: { select: { expenses: true } },
+    },
+  });
+}
+
+// ─── Delete Account ───────────────────────────────────────────────────────────
+
+export async function deleteAccountService(userId: number) {
+  await prisma.user.delete({ where: { id: userId } });
+}
+
+// ─── Get User Settings ────────────────────────────────────────────────────────
+
+export async function getUserSettingsService(userId: number) {
+  // For brand-new users (no existing record), check whether they already have
+  // expenses. If yes, they are an existing user — skip onboarding automatically.
+  const existing = await prisma.userSettings.findUnique({ where: { userId } });
+
+  if (!existing) {
+    const expenseCount = await prisma.expense.count({ where: { userId } });
+    const onboardingCompleted = expenseCount > 0;
+    return prisma.userSettings.create({
+      data: { userId, onboardingCompleted },
+      select: SETTINGS_SELECT,
+    });
+  }
+
+  return prisma.userSettings.findUniqueOrThrow({
+    where: { userId },
+    select: SETTINGS_SELECT,
+  });
+}
+
+// ─── Update User Settings ─────────────────────────────────────────────────────
+
+export async function updateUserSettingsService(
+  userId: number,
+  input: UpdateUserSettingsInput,
+) {
+  return prisma.userSettings.upsert({
+    where: { userId },
+    create: { userId, ...input },
+    update: input,
+    select: SETTINGS_SELECT,
+  });
 }
 
 
@@ -2867,6 +5393,7 @@ export interface PublicUser {
   email: string;
   role: Role;
   createdAt: Date;
+  emailVerified?: boolean;
 }
 
 // ─── SSE Streaming ────────────────────────────────────────────────────────────

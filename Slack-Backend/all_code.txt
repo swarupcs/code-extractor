@@ -1,0 +1,2297 @@
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\config\awsConfig.js
+==============================
+
+import AWS from 'aws-sdk';
+
+import {
+  AWS_ACCESS_KEY_ID,
+  AWS_REGION,
+  AWS_SECRET_ACCESS_KEY
+} from './serverConfig.js';
+
+export const s3 = new AWS.S3({
+  region: AWS_REGION,
+  accessKeyId: AWS_ACCESS_KEY_ID,
+  secretAccessKey: AWS_SECRET_ACCESS_KEY
+});
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\config\bullBoardConfig.js
+==============================
+
+import { createBullBoard } from '@bull-board/api';
+import { BullAdapter } from '@bull-board/api/bullAdapter.js';
+import { ExpressAdapter } from '@bull-board/express';
+
+import mailQueue from '../queues/mailQueue.js';
+import testQueue from '../queues/testQueue.js';
+
+const bullServerAdapter = new ExpressAdapter();
+bullServerAdapter.setBasePath('/ui');
+
+createBullBoard({
+  queues: [new BullAdapter(mailQueue), new BullAdapter(testQueue)],
+  serverAdapter: bullServerAdapter
+});
+
+export default bullServerAdapter;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\config\dbConfig.js
+==============================
+
+import mongoose from 'mongoose';
+
+import { DEV_DB_URL, NODE_ENV, PROD_DB_URL } from './serverConfig.js';
+
+export default async function connectDB() {
+  try {
+    if (NODE_ENV === 'development') {
+      await mongoose.connect(DEV_DB_URL);
+    } else if (NODE_ENV === 'production') {
+      await mongoose.connect(PROD_DB_URL);
+    }
+    console.log(`Connected to mongodb database from ${NODE_ENV} environment`);
+  } catch (error) {
+    console.log('Error connecting to database', error);
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\config\mailConfig.js
+==============================
+
+import nodemailer from 'nodemailer';
+
+import { MAIL_ID, MAIL_PASSWORD } from './serverConfig.js';
+
+const transporter = nodemailer.createTransport({
+  service: 'Gmail',
+  host: 'smtp.gmail.com',
+  // host: 'sandbox.smtp.mailtrap.io', // ✅ Mailtrap host
+  port: 465, // for GMAIL
+  // port: 587, // ✅ Mailtrap port (587)
+  secure: true,
+  // secure: false, // ✅ Must be false for port 587
+  auth: {
+    user: MAIL_ID,
+    pass: MAIL_PASSWORD
+  }
+});
+
+export default transporter;
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\config\redisConfig.js
+==============================
+
+import { REDIS_HOST, REDIS_PASSWORD, REDIS_PORT } from './serverConfig.js';
+
+export default {
+  host: REDIS_HOST,
+  port: REDIS_PORT,
+  password: REDIS_PASSWORD
+};
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\config\serverConfig.js
+==============================
+
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+export const PORT = process.env.PORT || 3000;
+
+export const NODE_ENV = process.env.NODE_ENV || 'development';
+
+export const DEV_DB_URL = process.env.DEV_DB_URL;
+
+export const PROD_DB_URL = process.env.PROD_DB_URL;
+
+export const JWT_SECRET = process.env.JWT_SECRET;
+
+export const JWT_EXPIRY = process.env.JWT_EXPIRY || '1d';
+
+export const MAIL_ID = process.env.MAIL_ID;
+
+export const MAIL_PASSWORD = process.env.MAIL_PASSWORD;
+
+export const REDIS_PORT = process.env.REDIS_PORT || 6379;
+
+export const REDIS_HOST = process.env.REDIS_HOST || 'localhost';
+
+export const REDIS_PASSWORD = process.env.REDIS_PASSWORD;
+
+export const APP_LINK = process.env.APP_LINK || 'http://localhost:3000';
+
+export const ENABLE_EMAIL_VERIFICATION =
+  process.env.ENABLE_EMAIL_VERIFICATION || false;
+
+export const AWS_REGION = process.env.AWS_REGION;
+
+export const AWS_ACCESS_KEY_ID = process.env.AWS_ACCESS_KEY_ID;
+
+export const AWS_SECRET_ACCESS_KEY = process.env.AWS_SECRET_ACCESS_KEY;
+
+export const AWS_BUCKET_NAME = process.env.AWS_BUCKET_NAME;
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\controllers\channelController.js
+==============================
+
+import { StatusCodes } from 'http-status-codes';
+
+import { getChannelByIdService } from '../services/channelService.js';
+import {
+  customErrorResponse,
+  internalErrorResponse,
+  successResponse
+} from '../utils/common/responseObjects.js';
+
+export const getChannelByIdController = async (req, res) => {
+  try {
+    const response = await getChannelByIdService(
+      req.params.channelId,
+      req.user
+    );
+    // console.log('Channel', response);
+    return res
+      .status(StatusCodes.OK)
+      .json(successResponse(response, 'Channel fetched successfully'));
+  } catch (error) {
+    console.log('get channel by id controller error', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\controllers\channelSocketController.js
+==============================
+
+import { JOIN_CHANNEL } from '../utils/common/eventConstants.js';
+
+export default function messageHandlers(io, socket) {
+  socket.on(JOIN_CHANNEL, async function joinChannelHandler(data, cb) {
+    const roomId = data.channelId;
+    socket.join(roomId);
+    console.log(`User ${socket.id} joined the channel: ${roomId}`);
+    cb?.({
+      success: true,
+      message: 'Successfully joined the channel',
+      data: roomId
+    });
+  });
+}
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\controllers\memberController.js
+==============================
+
+import { StatusCodes } from 'http-status-codes';
+
+import { isMemberPartOfWorkspaceService } from '../services/memberService.js';
+import {
+  customErrorResponse,
+  internalErrorResponse,
+  successResponse
+} from '../utils/common/responseObjects.js';
+
+export const isMemberPartOfWorkspaceController = async function (req, res) {
+  try {
+    const response = await isMemberPartOfWorkspaceService(
+      req.params.workspaceId,
+      req.user
+    );
+
+    return res
+      .status(StatusCodes.OK)
+      .json(successResponse(response, 'User is a member of the workspace'));
+  } catch (error) {
+    console.log('User controller error', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\controllers\messageController.js
+==============================
+
+import { StatusCodes } from 'http-status-codes';
+
+import { s3 } from '../config/awsConfig.js';
+import { AWS_BUCKET_NAME } from '../config/serverConfig.js';
+import { getMessagesService } from '../services/messageService.js';
+import {
+  customErrorResponse,
+  internalErrorResponse,
+  successResponse
+} from '../utils/common/responseObjects.js';
+
+export const getMessages = async (req, res) => {
+  try {
+    const messages = await getMessagesService(
+      {
+        channelId: req.params.channelId
+      },
+      req.query.page || 1,
+      req.query.limit || 20,
+      req.user
+    );
+
+    return res
+      .status(StatusCodes.OK)
+      .json(successResponse(messages, 'Messages Fetched Successfully'));
+  } catch (error) {
+    console.log('User controller error', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+export const getPresignedUrlFromAWS = async (req, res) => {
+  try {
+    const url = await s3.getSignedUrlPromise('putObject', {
+      Bucket: AWS_BUCKET_NAME,
+      Key: `${Date.now()}`,
+      Expires: 60 // 1 minute
+    });
+    return res
+      .status(StatusCodes.OK)
+      .json(successResponse(url, 'Presigned URL generated successfully'));
+  } catch (err) {
+    console.log('Error in getPresignedUrlFromAWS', err);
+    if (err.statusCode) {
+      return res.status(err.statusCode).json(customErrorResponse(err));
+    }
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(err));
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\controllers\messageSocketController.js
+==============================
+
+import { createMessageService } from '../services/messageService.js';
+import {
+  NEW_MESSAGE_EVENT,
+  NEW_MESSAGE_RECEIVED_EVENT
+} from '../utils/common/eventConstants.js';
+
+export default function messageHandlers(io, socket) {
+  socket.on(NEW_MESSAGE_EVENT, async function createMessageHandler(data, cb) {
+    console.log(data, typeof data);
+    const { channelId } = data;
+    const messageResponse = await createMessageService(data);
+    // socket.broadcast.emit(NEW_MESSAGE_RECEIVED_EVENT, messageResponse);
+    console.log('Channel', channelId);
+    io.to(channelId).emit(NEW_MESSAGE_RECEIVED_EVENT, messageResponse); // Implementation of rooms
+    cb({
+      success: true,
+      message: 'Successfully created the message',
+      data: messageResponse
+    });
+  });
+}
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\controllers\userController.js
+==============================
+
+import { StatusCodes } from 'http-status-codes';
+
+import { signInService, signUpService } from '../services/userService.js';
+import {
+  customErrorResponse,
+  internalErrorResponse,
+  successResponse
+} from '../utils/common/responseObjects.js';
+
+export const signUp = async (req, res) => {
+  try {
+    const user = await signUpService(req.body);
+    // console.log("user", user);
+
+    return res
+      .status(StatusCodes.CREATED)
+      .json(successResponse(user, 'User created successfully'));
+  } catch (error) {
+    console.log('User controller error', error);
+    if (error.statusCode) {
+      
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+
+export const signIn = async (req, res) => {
+  try {
+    const response = await signInService(req.body);
+    return res
+      .status(StatusCodes.OK)
+      .json(successResponse(response, 'User signed in successfully'));
+  } catch (error) {
+    console.log('User controller error', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\controllers\workspaceController.js
+==============================
+
+import { StatusCodes } from 'http-status-codes';
+
+import { verifyTokenService } from '../services/userService.js';
+import {
+  addChannelToWorkspaceService,
+  addMemberToWorkspaceService,
+  createWorkspaceService,
+  deleteWorkspaceService,
+  getWorkspaceByJoinCodeService,
+  getWorkspaceService,
+  getWorkspacesUserIsMemberOfService,
+  joinWorkspaceService,
+  resetWorkspaceJoinCodeService,
+  updateWorkspaceService
+} from '../services/workspaceService.js';
+import {
+  customErrorResponse,
+  internalErrorResponse,
+  successResponse
+} from '../utils/common/responseObjects.js';
+
+export const createWorkspaceController = async (req, res) => {
+  try {
+    const response = await createWorkspaceService({
+      ...req.body,
+      owner: req.user
+    });
+    return res
+      .status(StatusCodes.CREATED)
+      .json(successResponse(response, 'Workspace created successfully'));
+  } catch (error) {
+    console.log(error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+export const getWorkspacesUserIsMemberOfController = async (req, res) => {
+  try {
+    const response = await getWorkspacesUserIsMemberOfService(req.user);
+    return res
+      .status(StatusCodes.OK)
+      .json(successResponse(response, 'Workspaces fetched successfully'));
+  } catch (error) {
+    console.log(error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+export const deleteWorkspaceController = async (req, res) => {
+  try {
+    const response = await deleteWorkspaceService(
+      req.params.workspaceId,
+      req.user
+    );
+    return res
+      .status(StatusCodes.OK)
+      .json(successResponse(response, 'Workspace deleted successfully'));
+  } catch (error) {
+    console.log(error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+export const getWorkspaceController = async (req, res) => {
+  try {
+    const response = await getWorkspaceService(
+      req.params.workspaceId,
+      req.user
+    );
+    return res
+      .status(StatusCodes.OK)
+      .json(successResponse(response, 'Workspace fetched successfully'));
+  } catch (error) {
+    console.log('Get workspace controller error', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+export const getWorkspaceByJoinCodeController = async (req, res) => {
+  try {
+    const response = await getWorkspaceByJoinCodeService(
+      req.params.joinCode,
+      req.user
+    );
+    return res
+      .status(StatusCodes.OK)
+      .json(successResponse(response, 'Workspace fetched successfully'));
+  } catch (error) {
+    console.log('Get workspace by joincode controller error', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+export const updateWorkspaceController = async (req, res) => {
+  try {
+    const response = await updateWorkspaceService(
+      req.params.workspaceId,
+      req.body,
+      req.user
+    );
+    return res
+      .status(StatusCodes.OK)
+      .json(successResponse(response, 'Workspace updated successfully'));
+  } catch (error) {
+    console.log('update workspace controller error', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+export const addMemberToWorkspaceController = async (req, res) => {
+  try {
+    const response = await addMemberToWorkspaceService(
+      req.params.workspaceId,
+      req.body.memberId,
+      req.body.role || 'member',
+      req.user
+    );
+    return res
+      .status(StatusCodes.OK)
+      .json(
+        successResponse(response, 'Member added to workspace successfully')
+      );
+  } catch (error) {
+    console.log('add member to workspace controller error', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+export const addChannelToWorkspaceController = async (req, res) => {
+  try {
+    const response = await addChannelToWorkspaceService(
+      req.params.workspaceId,
+      req.body.channelName,
+      req.user
+    );
+    return res
+      .status(StatusCodes.OK)
+      .json(
+        successResponse(response, 'Channel added to workspace successfully')
+      );
+  } catch (error) {
+    console.log('add channel to workspace controller error', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+export const resetJoinCodeController = async (req, res) => {
+  try {
+    const response = await resetWorkspaceJoinCodeService(
+      req.params.workspaceId,
+      req.user
+    );
+    return res
+      .status(StatusCodes.OK)
+      .json(successResponse(response, 'Join code reset successfully'));
+  } catch (error) {
+    console.log('reset join code controller error', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+export const joinWorkspaceController = async (req, res) => {
+  try {
+    const response = await joinWorkspaceService(
+      req.params.workspaceId,
+      req.body.joinCode,
+      req.user
+    );
+    return res
+      .status(StatusCodes.OK)
+      .json(successResponse(response, 'Joined workspace successfully'));
+  } catch (error) {
+    console.log('join workspace controller error', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+export const verifyEmailController = async (req, res) => {
+  try {
+    const response = await verifyTokenService(req.params.token);
+    return res
+      .status(StatusCodes.OK)
+      .json(successResponse(response, 'Email verified successfully'));
+  } catch (error) {
+    console.log('verify email controller error', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json(customErrorResponse(error));
+    }
+
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\index.js
+==============================
+
+import cors from 'cors';
+import express from 'express';
+import { createServer } from 'http';
+import { StatusCodes } from 'http-status-codes';
+import { Server } from 'socket.io';
+
+import bullServerAdapter from './config/bullBoardConfig.js';
+import connectDB from './config/dbConfig.js';
+import mailer from './config/mailConfig.js';
+import { PORT } from './config/serverConfig.js';
+import ChannelSocketHandlers from './controllers/channelSocketController.js';
+import MessageSocketHandlers from './controllers/messageSocketController.js';
+import { verifyEmailController } from './controllers/workspaceController.js';
+import apiRouter from './routes/apiRoutes.js';
+
+const app = express();
+const server = createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: '*'
+  }
+});
+
+app.use(cors());
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+app.use('/ui', bullServerAdapter.getRouter());
+
+app.use('/api', apiRouter);
+
+app.get('/verify/:token', verifyEmailController);
+
+app.get('/ping', (req, res) => {
+  return res.status(StatusCodes.OK).json({ message: 'pong' });
+});
+
+io.on('connection', (socket) => {
+  console.log('a user connected', socket.id);
+
+  // socket.on('messageFromClient', (data) => {
+  //   console.log('Message from client', data);
+
+  //   io.emit('new message', data.toUpperCase());
+  // });
+  MessageSocketHandlers(io, socket);
+  ChannelSocketHandlers(io, socket);
+});
+
+server.listen(PORT, async () => {
+  console.log(`Server is running on port ${PORT}`);
+  connectDB();
+
+  // Verify transporter before sending mail
+  mailer.verify(function (error) {
+    if (error) {
+      console.error('Error verifying transporter:', error);
+    } else {
+      console.log('Server is ready to take our messages');
+    }
+  });
+});
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\middlewares\authMiddleware.js
+==============================
+
+import { StatusCodes } from 'http-status-codes';
+import jwt from 'jsonwebtoken';
+
+import { JWT_SECRET } from '../config/serverConfig.js';
+import userRepository from '../repositories/userRepository.js';
+import {
+  customErrorResponse,
+  internalErrorResponse
+} from '../utils/common/responseObjects.js';
+
+export const isAuthenticated = async (req, res, next) => {
+  try {
+    const token = req.headers['x-access-token'];
+
+    if (!token) {
+      return res.status(StatusCodes.FORBIDDEN).json(
+        customErrorResponse({
+          message: 'No auth token provided'
+        })
+      );
+    }
+
+    const response = jwt.verify(token, JWT_SECRET);
+
+    if (!response) {
+      return res.status(StatusCodes.FORBIDDEN).json(
+        customErrorResponse({
+          explanation: 'Invalid data sent from the client',
+          message: 'Invalid auth token provided'
+        })
+      );
+    }
+
+    const user = await userRepository.getById(response.id);
+    req.user = user.id;
+    next();
+  } catch (error) {
+    console.log('Auth middleware error', error);
+    if (
+      error.name === 'JsonWebTokenError' ||
+      error.name === 'TokenExpiredError'
+    ) {
+      return res.status(StatusCodes.FORBIDDEN).json(
+        customErrorResponse({
+          explanation: 'Invalid data sent from the client',
+          message: 'Invalid auth token provided'
+        })
+      );
+    }
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json(internalErrorResponse(error));
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\processors\mailProcessor.js
+==============================
+
+import mailer from '../config/mailConfig.js';
+import mailQueue from '../queues/mailQueue.js';
+mailQueue.process(async (job) => {
+  const emailData = job.data;
+  console.log('Processing email', emailData);
+
+  try {
+    const response = await mailer.sendMail(emailData);
+    console.log('Email sent', response);
+  } catch (error) {
+    console.log('Error processing email', error);
+  }
+});
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\producers\mailQueueProducer.js
+==============================
+
+import '../processors/mailProcessor.js';
+
+import mailQueue from '../queues/mailQueue.js';
+export const addEmailtoMailQueue = async (emailData) => {
+  console.log('initiating email sending process');
+  try {
+    await mailQueue.add(emailData);
+    console.log('Email added to mail queue');
+  } catch (error) {
+    console.log('Add email to mail queue error', error);
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\queues\mailQueue.js
+==============================
+
+import Queue from 'bull';
+
+import redisConfig from '../config/redisConfig.js';
+
+export default new Queue('mailQueue', {
+  redis: redisConfig
+});
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\queues\testQueue.js
+==============================
+
+import Queue from 'bull';
+
+import redisConfig from '../config/redisConfig.js';
+
+export default new Queue('testQueue', {
+  redis: redisConfig
+});
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\repositories\channelRepostiory.js
+==============================
+
+import Channel from '../schema/channel.js';
+import crudRepository from './crudRepository.js';
+
+const channelRepository = {
+  ...crudRepository(Channel),
+  getChannelWithWorkspaceDetails: async function (channelId) {
+    const channel = await Channel.findById(channelId).populate('workspaceId');
+    return channel;
+  }
+};
+
+export default channelRepository;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\repositories\crudRepository.js
+==============================
+
+export default function crudRepository(model) {
+  return {
+    create: async function (data) {
+      const newDoc = await model.create(data);
+      return newDoc;
+    },
+    getAll: async function () {
+      const allDocs = await model.find();
+      return allDocs;
+    },
+    getById: async function (id) {
+      const doc = await model.findById(id);
+      return doc;
+    },
+    delete: async function (id) {
+      const response = await model.findByIdAndDelete(id);
+      return response;
+    },
+    update: async function (id, data) {
+      const updatedDoc = await model.findByIdAndUpdate(id, data, {
+        new: true
+      });
+      return updatedDoc;
+    },
+    deleteMany: async function (modelIds) {
+      const response = await model.deleteMany({
+        _id: {
+          $in: modelIds
+        }
+      });
+      return response;
+    }
+  };
+}
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\repositories\messageRepository.js
+==============================
+
+import Message from '../schema/message.js';
+import crudRepository from './crudRepository.js';
+
+const messageRepository = {
+  ...crudRepository(Message),
+  getPaginatedMessaged: async (messageParams, page, limit) => {
+    const messages = await Message.find(messageParams)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate('senderId', 'username email avatar');
+
+    return messages;
+  },
+  getMessageDetails: async (messageId) => {
+    const message = await Message.findById(messageId).populate(
+      'senderId',
+      'username email avatar'
+    );
+    return message;
+  }
+};
+
+export default messageRepository;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\repositories\userRepository.js
+==============================
+
+import User from '../schema/user.js';
+import crudRepository from './crudRepository.js';
+
+const userRepository = {
+  ...crudRepository(User),
+
+  signUpUser: async function (data) {
+    const newUser = new User(data);
+    await newUser.save();
+    return newUser;
+  },
+
+  getByEmail: async function (email) {
+    const user = await User.findOne({ email });
+    return user;
+  },
+
+  getByUsername: async function (username) {
+    const user = await User.findOne({ username }).select('-password'); // exclude password
+    return user;
+  },
+
+  getByToken: async function (token) {
+    const user = await User.findOne({ verificationToken: token });
+    return user;
+  }
+};
+
+export default userRepository;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\repositories\workspaceRepository.js
+==============================
+
+import { StatusCodes } from 'http-status-codes';
+
+import User from '../schema/user.js';
+import Workspace from '../schema/workspace.js';
+import ClientError from '../utils/errors/clientError.js';
+import channelRepository from './channelRepostiory.js';
+import crudRepository from './crudRepository.js';
+const workspaceRepository = {
+  ...crudRepository(Workspace),
+
+  getWorkspaceDetailsById: async function (workspaceId) {
+    const workspace = await Workspace.findById(workspaceId)
+      .populate('members.memberId', 'username email avatar')
+      .populate('channels');
+
+    return workspace;
+  },
+
+  getWorkspaceByName: async function (workspaceName) {
+    const workspace = await Workspace.findOne({
+      name: workspaceName
+    });
+
+    if (!workspace) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Workspace not found',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+
+    return workspace;
+  },
+
+  getWorkspaceByJoinCode: async function (joinCode) {
+    const workspace = await Workspace.findOne({
+      joinCode
+    });
+
+    if (!workspace) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Workspace not found',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+
+    return workspace;
+  },
+
+  addMemberToWorkspace: async function (workspaceId, memberId, role) {
+    const workspace = await Workspace.findById(workspaceId);
+
+    if (!workspace) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Workspace not found',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+
+    const isValidUser = await User.findById(memberId);
+    if (!isValidUser) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'User not found',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+
+    const isMemberAlreadyPartOfWorkspace = workspace.members.find(
+      (member) => member.memberId == memberId
+    );
+
+    if (isMemberAlreadyPartOfWorkspace) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'User already part of workspace',
+        statusCode: StatusCodes.FORBIDDEN
+      });
+    }
+
+    workspace.members.push({
+      memberId,
+      role
+    });
+
+    await workspace.save();
+
+    return workspace;
+  },
+
+  addChannelToWorkspace: async function (workspaceId, channelName) {
+    const workspace =
+      await Workspace.findById(workspaceId).populate('channels');
+
+    if (!workspace) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Workspace not found',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+
+    const isChannelAlreadyPartOfWorkspace = workspace.channels.find(
+      (channel) => channel.name === channelName
+    );
+
+    if (isChannelAlreadyPartOfWorkspace) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from client',
+        message: 'Channel already part of workspace',
+        statusCode: StatusCodes.FORBIDDEN
+      });
+    }
+
+        const channel = await channelRepository.create({
+          name: channelName,
+          workspaceId: workspaceId
+        });
+
+    workspace.channels.push(channel);
+    await workspace.save();
+
+    return workspace;
+  },
+
+  fetchAllWorkspaceByMemberId: async function (memberId) {
+    const workspaces = await Workspace.find({
+      'members.memberId': memberId
+    }).populate('members.memberId', 'username email avatar');
+
+    return workspaces;
+  }
+};
+
+export default workspaceRepository;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\routes\apiRoutes.js
+==============================
+
+import express from 'express';
+
+import v1Router from './v1/v1Router.js';
+
+const router = express.Router();
+
+router.use('/v1', v1Router);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\routes\v1\channel.js
+==============================
+
+import express from 'express';
+
+import { getChannelByIdController } from '../../controllers/channelController.js';
+import { isAuthenticated } from '../../middlewares/authMiddleware.js';
+
+const router = express.Router();
+
+router.get('/:channelId', isAuthenticated, getChannelByIdController);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\routes\v1\members.js
+==============================
+
+import express from 'express';
+
+import { isMemberPartOfWorkspaceController } from '../../controllers/memberController.js';
+import { isAuthenticated } from '../../middlewares/authMiddleware.js';
+
+const router = express.Router();
+
+router.get(
+  '/workspace/:workspace',
+  isAuthenticated,
+  isMemberPartOfWorkspaceController
+);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\routes\v1\messages.js
+==============================
+
+import express from 'express';
+
+import {
+  getMessages,
+  getPresignedUrlFromAWS
+} from '../../controllers/messageController.js';
+import { isAuthenticated } from '../../middlewares/authMiddleware.js';
+
+const router = express.Router();
+
+router.get('/pre-signed-url', isAuthenticated, getPresignedUrlFromAWS);
+router.get('/:channelId', isAuthenticated, getMessages);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\routes\v1\users.js
+==============================
+
+import express from 'express';
+
+import { signIn, signUp } from '../../controllers/userController.js';
+import {
+  userSignInSchema,
+  userSignUpSchema
+} from '../../validators/userSchema.js';
+import { validate } from '../../validators/zodValidator.js';
+
+const router = express.Router();
+
+router.post('/signup', validate(userSignUpSchema), signUp);
+router.post('/signin', validate(userSignInSchema), signIn);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\routes\v1\v1Router.js
+==============================
+
+import express from 'express';
+
+import channelRouter from './channel.js';
+import memberRouter from './members.js';
+import messageRouter from './messages.js';
+import userRouter from './users.js';
+import workspaceRouter from './workspaces.js';
+
+const router = express.Router();
+
+router.use('/users', userRouter);
+
+router.use('/workspaces', workspaceRouter);
+
+router.use('/channels', channelRouter);
+
+router.use('/members', memberRouter);
+
+router.use('/messages', messageRouter);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\routes\v1\workspaces.js
+==============================
+
+import express from 'express';
+
+import {
+  addChannelToWorkspaceController,
+  addMemberToWorkspaceController,
+  createWorkspaceController,
+  deleteWorkspaceController,
+  getWorkspaceByJoinCodeController,
+  getWorkspaceController,
+  getWorkspacesUserIsMemberOfController,
+  joinWorkspaceController,
+  resetJoinCodeController,
+  updateWorkspaceController
+} from '../../controllers/workspaceController.js';
+import { isAuthenticated } from '../../middlewares/authMiddleware.js';
+import {
+  addChannelToWorkspaceSchema,
+  addMemberToWorkspaceSchema,
+  createWorkspaceSchema
+} from '../../validators/workspaceSchema.js';
+import { validate } from '../../validators/zodValidator.js';
+
+const router = express.Router();
+
+router.post(
+  '/',
+  isAuthenticated,
+  validate(createWorkspaceSchema),
+  createWorkspaceController
+);
+
+router.get('/', isAuthenticated, getWorkspacesUserIsMemberOfController);
+
+router.delete('/:workspaceId', isAuthenticated, deleteWorkspaceController);
+
+router.get('/:workspaceId', isAuthenticated, getWorkspaceController);
+
+router.get(
+  '/join/:joinCode',
+  isAuthenticated,
+  getWorkspaceByJoinCodeController
+);
+
+router.put('/:workspaceId/join', isAuthenticated, joinWorkspaceController);
+
+router.put('/:workspaceId', isAuthenticated, updateWorkspaceController);
+
+router.put(
+  '/:workspaceId/members',
+  isAuthenticated,
+  validate(addMemberToWorkspaceSchema),
+  addMemberToWorkspaceController
+);
+
+router.put(
+  '/:workspaceId/channels',
+  isAuthenticated,
+  validate(addChannelToWorkspaceSchema),
+  addChannelToWorkspaceController
+);
+
+router.put(
+  '/:workspaceId/joinCode/reset',
+  isAuthenticated,
+  resetJoinCodeController
+);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\schema\channel.js
+==============================
+
+import mongoose from 'mongoose';
+ 
+ const channelSchema = new mongoose.Schema(
+   {
+     name: {
+       type: String,
+       required: [true, 'Channel name is required']
+     },
+     workspaceId: {
+       type: mongoose.Schema.Types.ObjectId,
+       ref: 'Workspace',
+       required: [true, 'Workspace ID is required']
+     }
+   },
+   { timestamps: true }
+ );
+ 
+ const Channel = mongoose.model('Channel', channelSchema);
+ 
+ export default Channel;
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\schema\message.js
+==============================
+
+import mongoose from 'mongoose';
+
+const messageSchema = new mongoose.Schema(
+  {
+    body: {
+      type: String,
+      required: [true, 'Message body is required']
+    },
+    image: {
+      type: String
+    },
+    channelId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Channel',
+      required: [true, 'Channel ID is required']
+    },
+    senderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: [true, 'Sender ID is required']
+    },
+    workspaceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Workspace',
+      required: [true, 'Workspace ID is required']
+    }
+  },
+  { timestamps: true }
+);
+
+const Message = mongoose.model('Message', messageSchema);
+
+export default Message;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\schema\user.js
+==============================
+
+import bcrypt from 'bcrypt';
+import mongoose from 'mongoose';
+import { v4 as uuidv4 } from 'uuid';
+
+const userSchema = new mongoose.Schema(
+  {
+    email: {
+      type: String,
+      required: [true, 'Email is required'],
+      unique: [true, 'Email already exists'],
+      minLength: [3, 'Username must be at least 3 characters'],
+      match: [
+        // eslint-disable-next-line no-useless-escape
+        /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/,
+        'Please fill a valid email address'
+      ]
+    },
+    password: {
+      type: String,
+      required: [true, 'Password is required']
+    },
+    username: {
+      type: String,
+      required: [true, 'Username is required'],
+      unique: [true, 'Username already exists'],
+      match: [
+        /^[a-zA-Z0-9]+$/,
+        'Username must contain only letters and numbers'
+      ]
+    },
+    avatar: {
+      type: String
+    },
+    isVerified: {
+      type: Boolean,
+      default: false
+    },
+    verificationToken: {
+      type: String
+    },
+    verificationTokenExpiry: {
+      type: Date
+    }
+  },
+  { timestamps: true }
+);
+
+userSchema.pre('save', function saveUser(next) {
+  if (this.isNew) {
+    const user = this;
+    const SALT = bcrypt.genSaltSync(9);
+    const hashedPassword = bcrypt.hashSync(user.password, SALT);
+    user.password = hashedPassword;
+    user.avatar = `https://robohash.org/${user.username}`;
+    user.verificationToken = uuidv4().substring(0, 10).toUpperCase();
+    user.verificationTokenExpiry = Date.now() + 3600000; // 1 hour
+  }
+  next();
+});
+
+const User = mongoose.model('User', userSchema);
+
+export default User;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\schema\workspace.js
+==============================
+
+import mongoose from 'mongoose';
+
+const workspaceSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: [true, 'Workspace name is required'],
+    unique: true
+  },
+  description: {
+    type: String
+  },
+  members: [
+    {
+      memberId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      },
+      role: {
+        type: String,
+        enum: ['admin', 'member'],
+        default: 'member'
+      }
+    }
+  ],
+  joinCode: {
+    type: String,
+    required: [true, 'Join code is required']
+  },
+  channels: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Channel'
+    }
+  ]
+});
+
+const Workspace = mongoose.model('Workspace', workspaceSchema);
+
+export default Workspace;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\services\channelService.js
+==============================
+
+import { StatusCodes } from 'http-status-codes';
+
+import channelRepository from '../repositories/channelRepostiory.js';
+import messageRepository from '../repositories/messageRepository.js';
+import ClientError from '../utils/errors/clientError.js';
+import { isUserMemberOfWorkspace } from './workspaceService.js';
+
+export const getChannelByIdService = async (channelId, userId) => {
+  try {
+    const channel =
+      await channelRepository.getChannelWithWorkspaceDetails(channelId);
+
+    // console.log(channel);
+
+    if (!channel || !channel.workspaceId) {
+      throw new ClientError({
+        message: 'Channel not found with the provided ID',
+        explanation: 'Invalid data sent from the client',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+
+    const isUserPartOfWorkspace = isUserMemberOfWorkspace(
+      channel.workspaceId,
+      userId
+    );
+
+    if (!isUserPartOfWorkspace) {
+      throw new ClientError({
+        message:
+          'User is not a member of the workspace and hence cannot access the channel',
+        explanation: 'User is not a member of the workspace',
+        statusCode: StatusCodes.UNAUTHORIZED
+      });
+    }
+    const messages = await messageRepository.getPaginatedMessaged(
+      {
+        channelId
+      },
+      1,
+      20
+    );
+
+    // console.log('Channel in service', channel);
+
+    return {
+      messages,
+      _id: channel._id,
+      name: channel.name,
+      createdAt: channel.createdAt,
+      updatedAt: channel.updatedAt,
+      workspaceId: channel.workspaceId
+    };
+  } catch (error) {
+    console.log('Get channel by ID service error', error);
+    throw error;
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\services\memberService.js
+==============================
+
+import { StatusCodes } from 'http-status-codes';
+
+import userRepository from '../repositories/userRepository.js';
+import workspaceRepository from '../repositories/workspaceRepository.js';
+import ClientError from '../utils/errors/clientError.js';
+import { isUserMemberOfWorkspace } from './workspaceService.js';
+
+export const isMemberPartOfWorkspaceService = async (workspaceId, memberId) => {
+  const workspace = await workspaceRepository.getById(workspaceId);
+
+    if (!workspace) {
+      throw new ClientError({
+        explanation: 'Workspace not found',
+        message: 'Workspace not found',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+
+  const isUserAMember = isUserMemberOfWorkspace(workspace, memberId);
+
+  if (!isUserAMember) {
+    throw new ClientError({
+      explanation: 'User is not a member of the workspace',
+      message: 'User is not a member of the workspace',
+      statusCode: StatusCodes.UNAUTHORIZED
+    });
+  }
+  const user = await userRepository.getById(memberId);
+  return user;
+};
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\services\messageService.js
+==============================
+
+import { StatusCodes } from 'http-status-codes';
+
+import channelRepository from '../repositories/channelRepostiory.js';
+import messageRepository from '../repositories/messageRepository.js';
+import ClientError from '../utils/errors/clientError.js';
+import { isUserMemberOfWorkspace } from './workspaceService.js';
+
+export const getMessagesService = async (messageParams, page, limit, user) => {
+  const channelDetails = await channelRepository.getChannelWithWorkspaceDetails(
+    messageParams.channelId
+  );
+
+  const workspace = channelDetails.workspaceId;
+
+  const isMember = isUserMemberOfWorkspace(workspace, user);
+
+  if (!isMember) {
+    throw new ClientError({
+      explanation: 'User is not a member of the workspace',
+      message: 'User is not a member of the workspace',
+      statusCode: StatusCodes.UNAUTHORIZED
+    });
+  }
+  const messages = await messageRepository.getPaginatedMessaged(
+    messageParams,
+    page,
+    limit
+  );
+  return messages;
+};
+
+export const createMessageService = async (message) => {
+  const newMessage = await messageRepository.create(message);
+  const messageDetails = await messageRepository.getMessageDetails(
+    newMessage._id
+  );
+
+  return messageDetails;
+};
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\services\userService.js
+==============================
+
+import bcrypt from 'bcrypt';
+import { StatusCodes } from 'http-status-codes';
+
+import { ENABLE_EMAIL_VERIFICATION } from '../config/serverConfig.js';
+import { addEmailtoMailQueue } from '../producers/mailQueueProducer.js';
+import userRepository from '../repositories/userRepository.js';
+import { createJWT } from '../utils/common/authUtils.js';
+import { verifyEmailMail } from '../utils/common/mailObject.js';
+import ClientError from '../utils/errors/clientError.js';
+import ValidationError from '../utils/errors/validationError.js';
+
+export const signUpService = async (data) => {
+  try {
+    const newUser = await userRepository.signUpUser(data);
+    if (ENABLE_EMAIL_VERIFICATION === 'true') {
+      // send verification email
+      addEmailtoMailQueue({
+        ...verifyEmailMail(newUser.verificationToken),
+        to: newUser.email
+      });
+    }
+    // console.log('newUser', newUser);
+    return newUser;
+  } catch (error) {
+    console.log('User service error', error);
+    if (error.name === 'ValidationError') {
+      throw new ValidationError(
+        {
+          error: error.errors
+        },
+        error.message
+      );
+    }
+    if (error.name === 'MongoServerError' && error.code === 11000) {
+      throw new ValidationError(
+        {
+          error: ['A user with same email or username already exists']
+        },
+        'A user with same email or username already exists'
+      );
+    }
+
+    throw new ValidationError(
+      {
+        error: ['A user with same email or username already exists']
+      },
+      'A user with same email or username already exists'
+    );
+  }
+};
+
+export const verifyTokenService = async (token) => {
+  try {
+    const user = await userRepository.getByToken(token);
+    if (!user) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Invalid token',
+        statusCode: StatusCodes.BAD_REQUEST
+      });
+    }
+
+    // check if the token has expired or not
+    if (user.verificationTokenExpiry < Date.now()) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Token has expired',
+        statusCode: StatusCodes.BAD_REQUEST
+      });
+    }
+
+    user.isVerified = true;
+    user.verificationToken = null;
+    user.verificationTokenExpiry = null;
+    await user.save();
+
+    // console.log(user);
+
+    return user;
+  } catch (error) {
+    console.log('User service error', error);
+    throw error;
+  }
+};
+
+export const signInService = async (data) => {
+  try {
+    const user = await userRepository.getByEmail(data.email);
+    if (!user) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'No registered user found with this email',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+
+    // match the incoming password with the hashed password
+    const isMatch = bcrypt.compareSync(data.password, user.password);
+
+    if (!isMatch) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Invalid password, please try again',
+        statusCode: StatusCodes.BAD_REQUEST
+      });
+    }
+
+    return {
+      username: user.username,
+      avatar: user.avatar,
+      email: user.email,
+      _id: user._id,
+      token: createJWT({ id: user._id, email: user.email })
+    };
+  } catch (error) {
+    console.log('User service error', error);
+    throw error;
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\services\workspaceService.js
+==============================
+
+import { StatusCodes } from 'http-status-codes';
+import { v4 as uuidv4 } from 'uuid';
+
+import { addEmailtoMailQueue } from '../producers/mailQueueProducer.js';
+import channelRepository from '../repositories/channelRepostiory.js';
+import userRepository from '../repositories/userRepository.js';
+import workspaceRepository from '../repositories/workspaceRepository.js';
+import { workspaceJoinMail } from '../utils/common/mailObject.js';
+import ClientError from '../utils/errors/clientError.js';
+import ValidationError from '../utils/errors/validationError.js';
+
+const isUserAdminOfWorkspace = (workspace, userId) => {
+  // console.log(workspace.members, userId);
+  const response = workspace.members.find(
+    (member) =>
+      (member.memberId.toString() === userId ||
+        member.memberId._id.toString() === userId) &&
+      member.role === 'admin'
+  );
+  // console.log(response);
+  return response;
+};
+
+export const isUserMemberOfWorkspace = (workspace, userId) => {
+  // console.log(userId);
+  return workspace.members.find((member) => {
+    // console.log('member id ', member.memberId.toString());
+    return member.memberId._id.toString() === userId;
+  });
+};
+
+const isChannelAlreadyPartOfWorkspace = (workspace, channelName) => {
+  return workspace.channels.find(
+    (channel) => channel.name.toLowerCase() === channelName.toLowerCase()
+  );
+};
+
+export const createWorkspaceService = async (workspaceData) => {
+  try {
+    const joinCode = uuidv4().substring(0, 6).toUpperCase();
+
+    const response = await workspaceRepository.create({
+      name: workspaceData.name,
+      description: workspaceData.description,
+      joinCode
+    });
+
+    await workspaceRepository.addMemberToWorkspace(
+      response._id,
+      workspaceData.owner,
+      'admin'
+    );
+
+    const updatedWorkspace = await workspaceRepository.addChannelToWorkspace(
+      response._id,
+      'general'
+    );
+
+    return updatedWorkspace;
+  } catch (error) {
+    console.log('Create workspace service error', error);
+    if (error.name === 'ValidationError') {
+      throw new ValidationError(
+        {
+          error: error.errors
+        },
+        error.message
+      );
+    }
+    if (error.name === 'MongoServerError' && error.code === 11000) {
+      throw new ValidationError(
+        {
+          error: ['A workspace with same details already exists']
+        },
+        'A workspace with same details already exists'
+      );
+    }
+    throw error;
+  }
+};
+
+export const getWorkspacesUserIsMemberOfService = async (userId) => {
+  try {
+    const response =
+      await workspaceRepository.fetchAllWorkspaceByMemberId(userId);
+    return response;
+  } catch (error) {
+    console.log('Get workspaces user is member of service error', error);
+    throw error;
+  }
+};
+
+export const deleteWorkspaceService = async (workspaceId, userId) => {
+  try {
+    const workspace = await workspaceRepository.getById(workspaceId);
+    if (!workspace) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Workspace not found',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+    // console.log(workspace.members, userId);
+    const isAllowed = isUserAdminOfWorkspace(workspace, userId);
+    //   const channelIds = workspace.channels.map((channel) => channel._id);
+
+    if (isAllowed) {
+      await channelRepository.deleteMany(workspace.channels);
+
+      const response = await workspaceRepository.delete(workspaceId);
+      return response;
+    }
+    throw new ClientError({
+      explanation: 'User is either not a memeber or an admin of the workspace',
+      message: 'User is not allowed to delete the workspace',
+      statusCode: StatusCodes.UNAUTHORIZED
+    });
+  } catch (error) {
+    console.log(error);
+    throw error;
+  }
+};
+
+export const getWorkspaceService = async (workspaceId, userId) => {
+  try {
+    const workspace =
+      await workspaceRepository.getWorkspaceDetailsById(workspaceId);
+    if (!workspace) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Workspace not found',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+    const isMember = isUserMemberOfWorkspace(workspace, userId);
+    if (!isMember) {
+      throw new ClientError({
+        explanation: 'User is not a member of the workspace',
+        message: 'User is not a member of the workspace',
+        statusCode: StatusCodes.UNAUTHORIZED
+      });
+    }
+    return workspace;
+  } catch (error) {
+    console.log('Get workspace service error', error);
+    throw error;
+  }
+};
+
+export const getWorkspaceByJoinCodeService = async (joinCode, userId) => {
+  try {
+    const workspace =
+      await workspaceRepository.getWorkspaceByJoinCode(joinCode);
+    if (!workspace) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Workspace not found',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+    const isMember = isUserMemberOfWorkspace(workspace, userId);
+    if (!isMember) {
+      throw new ClientError({
+        explanation: 'User is not a member of the workspace',
+        message: 'User is not a member of the workspace',
+        statusCode: StatusCodes.UNAUTHORIZED
+      });
+    }
+    return workspace;
+  } catch (error) {
+    console.log('Get workspace by join code service error', error);
+    throw error;
+  }
+};
+
+export const updateWorkspaceService = async (
+  workspaceId,
+  workspaceData,
+  userId
+) => {
+  try {
+    const workspace = await workspaceRepository.getById(workspaceId);
+    if (!workspace) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Workspace not found',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+    const isAdmin = isUserAdminOfWorkspace(workspace, userId);
+    if (!isAdmin) {
+      throw new ClientError({
+        explanation: 'User is not an admin of the workspace',
+        message: 'User is not an admin of the workspace',
+        statusCode: StatusCodes.UNAUTHORIZED
+      });
+    }
+    const updatedWorkspace = await workspaceRepository.update(
+      workspaceId,
+      workspaceData
+    );
+    return updatedWorkspace;
+  } catch (error) {
+    console.log('update workspace service error', error);
+    throw error;
+  }
+};
+
+export const resetWorkspaceJoinCodeService = async (workspaceId, userId) => {
+  try {
+    const newJoinCode = uuidv4().substring(0, 6).toUpperCase();
+    const updatedWorkspace = await updateWorkspaceService(
+      workspaceId,
+      {
+        joinCode: newJoinCode
+      },
+      userId
+    );
+    return updatedWorkspace;
+  } catch (error) {
+    console.log('resetWorkspaceJoinCodeService error', error);
+    throw error;
+  }
+};
+
+export const addMemberToWorkspaceService = async (
+  workspaceId,
+  memberId,
+  role,
+  userId
+) => {
+  try {
+    const workspace = await workspaceRepository.getById(workspaceId);
+    if (!workspace) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Workspace not found',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+
+    const isAdmin = isUserAdminOfWorkspace(workspace, userId);
+    if (!isAdmin) {
+      throw new ClientError({
+        explanation: 'User is not an admin of the workspace',
+        message: 'User is not an admin of the workspace',
+        statusCode: StatusCodes.UNAUTHORIZED
+      });
+    }
+
+    const isValidUser = await userRepository.getById(memberId);
+    if (!isValidUser) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'User not found',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+    const isMember = isUserMemberOfWorkspace(workspace, memberId);
+    if (isMember) {
+      throw new ClientError({
+        explanation: 'User is already a member of the workspace',
+        message: 'User is already a member of the workspace',
+        statusCode: StatusCodes.UNAUTHORIZED
+      });
+    }
+    const response = await workspaceRepository.addMemberToWorkspace(
+      workspaceId,
+      memberId,
+      role
+    );
+    addEmailtoMailQueue({
+      ...workspaceJoinMail(workspace),
+      to: isValidUser.email
+    });
+    return response;
+  } catch (error) {
+    console.log('addMemberToWorkspaceService error', error);
+    throw error;
+  }
+};
+
+export const addChannelToWorkspaceService = async (
+  workspaceId,
+  channelName,
+  userId
+) => {
+  try {
+    const workspace =
+      await workspaceRepository.getWorkspaceDetailsById(workspaceId);
+    if (!workspace) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Workspace not found',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+    const isAdmin = isUserAdminOfWorkspace(workspace, userId);
+    if (!isAdmin) {
+      throw new ClientError({
+        explanation: 'User is not an admin of the workspace',
+        message: 'User is not an admin of the workspace',
+        statusCode: StatusCodes.UNAUTHORIZED
+      });
+    }
+    const isChannelPartOfWorkspace = isChannelAlreadyPartOfWorkspace(
+      workspace,
+      channelName
+    );
+    if (isChannelPartOfWorkspace) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Channel already part of workspace',
+        statusCode: StatusCodes.FORBIDDEN
+      });
+    }
+    // console.log('addChannelToWorkspaceService', workspaceId, channelName);
+
+    const response = await workspaceRepository.addChannelToWorkspace(
+      workspaceId,
+      channelName
+    );
+
+    return response;
+  } catch (error) {
+    console.log('addChannelToWorkspaceService error', error);
+    throw error;
+  }
+};
+
+export const joinWorkspaceService = async (workspaceId, joinCode, userId) => {
+  try {
+    const workspace =
+      await workspaceRepository.getWorkspaceDetailsById(workspaceId);
+    if (!workspace) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Workspace not found',
+        statusCode: StatusCodes.NOT_FOUND
+      });
+    }
+
+    if (workspace.joinCode !== joinCode) {
+      throw new ClientError({
+        explanation: 'Invalid data sent from the client',
+        message: 'Invalid join code',
+        statusCode: StatusCodes.UNAUTHORIZED
+      });
+    }
+
+    const updatedWorkspace = await workspaceRepository.addMemberToWorkspace(
+      workspaceId,
+      userId,
+      'member'
+    );
+
+    return updatedWorkspace;
+  } catch (error) {
+    console.log('joinWorkspaceService error', error);
+    throw error;
+  }
+};
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\utils\common\authUtils.js
+==============================
+
+import jwt from 'jsonwebtoken';
+
+import { JWT_EXPIRY, JWT_SECRET } from '../../config/serverConfig.js';
+export const createJWT = (payload) => {
+  return jwt.sign(payload, JWT_SECRET, {
+    expiresIn: JWT_EXPIRY
+  });
+};
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\utils\common\eventConstants.js
+==============================
+
+export const NEW_MESSAGE_EVENT = 'NewMessage';
+export const NEW_MESSAGE_RECEIVED_EVENT = 'NewMessageReceived';
+export const JOIN_CHANNEL = 'JoinChannel';
+export const LEAVE_CHANNEL = 'LeaveChannel';
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\utils\common\mailObject.js
+==============================
+
+import { APP_LINK, MAIL_ID } from '../../config/serverConfig.js';
+
+export const workspaceJoinMail = function (workspace) {
+  return {
+    from: MAIL_ID,
+    subject: 'You have been added to a workspace',
+    text: `Congratulations! You have been added to the workspace ${workspace.name}`
+  };
+};
+
+export const verifyEmailMail = function (verificationToken) {
+  return {
+    from: MAIL_ID,
+    subject: 'Welcome to the app. Please verify your email',
+    text: `
+      Welcome to the app. Please verify your email by clicking on the link below:
+     ${APP_LINK}/verify/${verificationToken}
+    `
+  };
+};
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\utils\common\responseObjects.js
+==============================
+
+export const internalErrorResponse = (error) => {
+  return {
+    success: false,
+    err: error,
+    data: {},
+    message: 'Internal server error'
+  };
+};
+
+export const customErrorResponse = (error) => {
+  if (!error.message && !error.explanation) {
+    return internalErrorResponse(error);
+  }
+  return {
+    success: false,
+    err: error.explanation,
+    data: {},
+    message: error.message
+  };
+};
+
+export const successResponse = (data, message) => {
+  return {
+    success: true,
+    message,
+    data,
+    err: {}
+  };
+};
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\utils\errors\clientError.js
+==============================
+
+import { StatusCodes } from 'http-status-codes';
+
+class ClientError extends Error {
+  constructor(error) {
+    super();
+    this.name = 'ClientError';
+    this.message = error.message;
+    this.explanation = error.explanation;
+    this.statusCode = error.statusCode
+      ? error.statusCode
+      : StatusCodes.BAD_REQUEST;
+  }
+}
+
+export default ClientError;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\utils\errors\validationError.js
+==============================
+
+import { StatusCodes } from 'http-status-codes';
+
+class ValidationError extends Error {
+  constructor(errorDetails, message) {
+    super(message);
+    this.name = 'ValidationError';
+    let explanation = [];
+    Object.keys(errorDetails.error).forEach((key) => {
+      explanation.push(errorDetails.error[key]);
+    });
+    this.explanation = explanation;
+    this.message = message;
+    this.statusCode = StatusCodes.BAD_REQUEST;
+  }
+}
+
+export default ValidationError;
+
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\validators\userSchema.js
+==============================
+
+import { z } from 'zod';
+
+export const userSignUpSchema = z.object({
+  email: z.string().email(),
+  username: z.string().min(3),
+  password: z.string()
+});
+
+export const userSignInSchema = z.object({
+  email: z.string().email(),
+  password: z.string()
+});
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\validators\workspaceSchema.js
+==============================
+
+import { z } from 'zod';
+
+export const createWorkspaceSchema = z.object({
+  name: z.string().min(3).max(50)
+});
+
+export const addMemberToWorkspaceSchema = z.object({
+  memberId: z.string()
+});
+
+export const addChannelToWorkspaceSchema = z.object({
+  channelName: z.string()
+});
+
+==============================
+FILE: E:\My Projects\Slack Clone\Slack-Backend\src\validators\zodValidator.js
+==============================
+
+import { StatusCodes } from 'http-status-codes';
+
+import { customErrorResponse } from '../utils/common/responseObjects.js';
+
+export const validate = (schema) => {
+  return async (req, res, next) => {
+    try {
+      await schema.parseAsync(req.body);
+      next();
+    } catch (error) {
+      let explanation = [];
+      let errorMessage = '';
+      console.log('Validation error', error.errors);
+      error.errors.forEach((key) => {
+        explanation.push(key.path[0] + ' ' + key.message);
+        errorMessage += ' : ' + key.path[0] + ' ' + key.message;
+      });
+      res.status(StatusCodes.BAD_REQUEST).json(
+        customErrorResponse({
+          message: 'Validation error' + errorMessage,
+          explanation: explanation
+        })
+      );
+    }
+  };
+};

@@ -1,0 +1,4012 @@
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\app.ts
+==============================
+
+// src/app.ts
+import 'express-async-errors'; // must be first import
+import type { Application, Request, Response } from 'express';
+import express from 'express';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import dotenv from 'dotenv';
+
+import { globalErrorHandler, notFoundHandler } from './middleware/errorHandler';
+import { logger } from './utils/logger';
+import { db } from './libs/db';
+
+import authRoutes from './routes/auth.routes';
+import problemRoutes from './routes/problem.routes';
+import submissionRoutes from './routes/submission.routes';
+import runCodeRoutes from './routes/runCode.routes';
+import sheetsRoutes from './routes/sheets.routes';
+import userStatsRoutes from './routes/userStats.routes';
+import discussionsRoutes from './routes/discussions.routes';
+import leaderboardRoutes from './routes/leaderboard.routes';
+import roadmapRoutes from './routes/roadmaps.routes';
+
+dotenv.config();
+
+// ─── Validate required env vars at startup ────────────────────────────────────
+const REQUIRED_ENV = [
+  'DATABASE_URL',
+  'JWT_SECRET',
+  'ALLOWED_ORIGINS',
+  'SESSION_SECRET',
+  'GOOGLE_CLIENT_ID',
+  'GOOGLE_CLIENT_SECRET',
+  'GOOGLE_CALLBACK_URL',
+];
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    logger.error(`❌  Missing required environment variable: ${key}`);
+    process.exit(1);
+  }
+}
+
+const app: Application = express();
+
+app.set('trust proxy', 1);
+
+// ─── Security ─────────────────────────────────────────────────────────────────
+app.use(helmet());
+
+const allowedOrigins = (process.env.ALLOWED_ORIGINS as string)
+  .split(',')
+  .map((o) => o.trim().replace(/\r/g, ''));
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error(`CORS: Origin ${origin} not allowed`));
+    },
+    credentials: true,
+  }),
+);
+
+// ─── Rate limiting ────────────────────────────────────────────────────────────
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many requests, please try again later.' },
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many auth attempts, please try again later.' },
+});
+
+app.use(globalLimiter);
+
+// ─── Body parsing ─────────────────────────────────────────────────────────────
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+
+// ─── Health check ─────────────────────────────────────────────────────────────
+app.get('/', (_req: Request, res: Response) => {
+  res.json({ success: true, message: 'AlgoDrill API is running 🚀' });
+});
+
+app.get('/ping', (_req: Request, res: Response) => {
+  res.json({ success: true, message: 'pong', timestamp: new Date().toISOString() });
+});
+
+// ─── Routes ───────────────────────────────────────────────────────────────────
+app.use('/api/v1/auth', authLimiter, authRoutes);
+app.use('/api/v1/problems', problemRoutes);
+app.use('/api/v1/code', runCodeRoutes);
+app.use('/api/v1/submissions', submissionRoutes);
+app.use('/api/v1/sheets', sheetsRoutes);
+app.use('/api/v1/user-stats', userStatsRoutes);
+app.use('/api/v1/discussions', discussionsRoutes);
+app.use('/api/v1/leaderboard', leaderboardRoutes);
+app.use('/api/v1/roadmaps', roadmapRoutes);
+
+// ─── Error handling ───────────────────────────────────────────────────────────
+app.use(notFoundHandler);
+app.use(globalErrorHandler);
+
+// ─── Graceful shutdown ────────────────────────────────────────────────────────
+async function shutdown(signal: string): Promise<void> {
+  logger.info(`\n${signal} received — shutting down gracefully...`);
+  try {
+    await db.$disconnect();
+    logger.info('✅  Database disconnected');
+  } catch (err) {
+    logger.error('Error during DB disconnect:', err);
+  }
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
+
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught Exception:', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled Rejection:', reason);
+  process.exit(1);
+});
+
+// ─── Start ────────────────────────────────────────────────────────────────────
+const PORT = parseInt(process.env.PORT ?? '8080', 10);
+const ENV = process.env.NODE_ENV ?? 'development';
+
+async function start(): Promise<void> {
+  // 1. Verify DB connection before accepting traffic
+  logger.info('⏳  Connecting to database...');
+  try {
+    await db.$connect();
+    logger.info('✅  Database connected');
+  } catch (err) {
+    logger.error('❌  Failed to connect to database:', err);
+    process.exit(1);
+  }
+
+  // 2. Start HTTP server
+  app.listen(PORT, () => {
+    logger.info('');
+    logger.info('┌─────────────────────────────────────────┐');
+    logger.info(`│   🚀  AlgoDrill API                      │`);
+    logger.info(`│   ➜   http://localhost:${PORT}             │`);
+    logger.info(`│   ENV  ${ENV.padEnd(33)}│`);
+    logger.info('└─────────────────────────────────────────┘');
+    logger.info('');
+  });
+}
+
+void start();
+
+export default app;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\config\passport.ts
+==============================
+
+// src/config/passport.ts
+import passport from 'passport';
+import {
+  Strategy as GoogleStrategy,
+  type StrategyOptions,
+  type Profile,
+} from 'passport-google-oauth20';
+import { linkGoogleAccount } from '../services/auth.service';
+import { logger } from '../utils/logger';
+
+// ─── Google OAuth Strategy ────────────────────────────────────────────────────
+
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID as string,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET as string,
+      callbackURL: process.env.GOOGLE_CALLBACK_URL as string,
+    } satisfies StrategyOptions,
+    (
+      _accessToken: string,
+      _refreshToken: string,
+      profile: Profile, // ← top-level import type
+      done: (err: Error | null, user?: Express.User | false) => void,
+    ) => {
+      const email = profile.emails?.[0]?.value;
+      if (!email) return done(new Error('No email provided by Google'), undefined);
+
+      linkGoogleAccount(
+        // ← no async/await, use .then/.catch
+        profile.id,
+        email,
+        profile.displayName,
+        profile.photos?.[0]?.value,
+      )
+        .then((user) => done(null, user as Express.User))
+        .catch((err: Error) => {
+          logger.error('Passport Google strategy error:', err);
+          done(err, undefined);
+        });
+    },
+  ),
+);
+
+// ─── Session Serialization ────────────────────────────────────────────────────
+
+passport.serializeUser((user, done) => {
+  done(null, (user as { id: string }).id);
+});
+
+passport.deserializeUser((id: string, done) => {
+  // ← non-async, use .then/.catch
+  import('../libs/db')
+    .then(({ db }) => db.user.findUnique({ where: { id } }))
+    .then((user) => done(null, user as Express.User | null))
+    .catch((err: unknown) => done(err, null));
+});
+
+export default passport;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\controllers\auth.controller.ts
+==============================
+
+// src/controllers/auth.controller.ts
+import type { Request, Response, RequestHandler } from 'express';
+import jwt from 'jsonwebtoken';
+import { ApiResponse } from '../utils/ApiResponse';
+import { asyncHandler } from '../utils/asyncHandler';
+import {
+  registerUser,
+  loginUser,
+  getUserProfile,
+  updateProfile,
+  signToken,
+} from '../services/auth.service';
+
+const isDev = process.env.NODE_ENV !== 'production';
+
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  // 'strict' blocks cookies on cross-origin requests (e.g. localhost:5173 → :8080)
+  // Use 'lax' in development so the cookie is actually stored by the browser
+  sameSite: (isDev ? 'lax' : 'strict') as 'lax' | 'strict',
+  secure: !isDev, // only require HTTPS in production
+  maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
+};
+
+export const registerHandler: RequestHandler = asyncHandler(async (req: Request, res: Response) => {
+  const user = await registerUser(req.body);
+  res.cookie('jwt', signToken(user.id), COOKIE_OPTIONS);
+  return ApiResponse.created(res, 'User registered successfully', user);
+});
+
+export const loginHandler: RequestHandler = asyncHandler(async (req: Request, res: Response) => {
+  const user = await loginUser(req.body);
+  res.cookie('jwt', signToken(user.id), COOKIE_OPTIONS);
+  return ApiResponse.success(res, 'Logged in successfully', user);
+});
+
+export const logoutHandler: RequestHandler = asyncHandler(async (_req: Request, res: Response) => {
+  res.clearCookie('jwt', {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: process.env.NODE_ENV !== 'development',
+  });
+  return ApiResponse.success(res, 'Logged out successfully');
+});
+
+export const checkHandler: RequestHandler = asyncHandler(async (req: Request, res: Response) => {
+  return ApiResponse.success(res, 'Authenticated', req.user);
+});
+
+export const getUserDetailsHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const profile = await getUserProfile(req.user!.id);
+    return ApiResponse.success(res, 'User details fetched successfully', profile);
+  },
+);
+
+export const updateProfileHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const updated = await updateProfile(req.user!.id, req.body);
+    return ApiResponse.success(res, 'Profile updated successfully', updated);
+  },
+);
+
+export const googleCallbackHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const user = req.user as { id: string } | undefined;
+    const clientUrl =
+      process.env.NODE_ENV === 'production'
+        ? process.env.CLIENT_PROD_URL
+        : (process.env.CLIENT_DEV_URL ?? 'http://localhost:5173');
+
+    if (!user) return res.redirect(`${clientUrl}/login?error=google_login_failed`);
+
+    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET as string, { expiresIn: '7d' });
+    res.cookie('jwt', token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV !== 'development',
+      maxAge: 1000 * 60 * 60 * 24 * 7,
+    });
+    return res.redirect(`${clientUrl}/auth/google/callback?success=google_login`);
+  },
+);
+
+// Used by passport session route — intentionally not asyncHandler
+export const getCurrentUserHandler: RequestHandler = (req: Request, res: Response): void => {
+  if (req.isAuthenticated()) {
+    res.status(200).json({ success: true, data: req.user });
+  } else {
+    res.status(401).json({ success: false, message: 'Not authenticated' });
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\controllers\discussions.controller.ts
+==============================
+
+import type { Request, Response, RequestHandler } from 'express';
+import { ApiResponse } from '../utils/ApiResponse';
+import { asyncHandler } from '../utils/asyncHandler';
+import {
+  createDiscussion,
+  getAllDiscussions,
+  getDiscussionById,
+  updateDiscussion,
+  deleteDiscussion,
+  createComment,
+  updateComment,
+  deleteComment,
+  vote,
+  toggleBookmark,
+  getBookmarkedDiscussions,
+  formatDiscussion,
+  formatComment,
+} from '../services/discussion.service';
+
+// ─── Discussions ──────────────────────────────────────────────────────────────
+
+export const createDiscussionHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const discussion = await createDiscussion({ ...req.body, userId: req.user!.id });
+    return ApiResponse.created(
+      res,
+      'Discussion created successfully',
+      formatDiscussion(discussion, req.user!.id),
+    );
+  },
+);
+
+export const getAllDiscussionsHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const userId = req.user?.id ?? null;
+    const discussions = await getAllDiscussions();
+    return ApiResponse.success(
+      res,
+      discussions.length ? 'Discussions fetched successfully' : 'No discussions found',
+      discussions.map((d: Parameters<typeof formatDiscussion>[0]) => formatDiscussion(d, userId)),
+    );
+  },
+);
+
+export const getDiscussionHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const userId = req.user?.id ?? null;
+    const discussion = await getDiscussionById(String(req.params['id']));
+    return ApiResponse.success(
+      res,
+      'Discussion fetched successfully',
+      formatDiscussion(discussion, userId),
+    );
+  },
+);
+
+export const updateDiscussionHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const updated = await updateDiscussion({
+      ...req.body,
+      userId: req.user!.id,
+      discussionId: String(req.params['id']),
+    });
+    return ApiResponse.success(
+      res,
+      'Discussion updated successfully',
+      formatDiscussion(updated, req.user!.id),
+    );
+  },
+);
+
+export const deleteDiscussionHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    await deleteDiscussion(req.user!.id, String(req.params['id']));
+    return ApiResponse.success(res, 'Discussion deleted successfully');
+  },
+);
+
+// ─── Comments ─────────────────────────────────────────────────────────────────
+
+export const createCommentHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const comment = await createComment({ ...req.body, userId: req.user!.id });
+    return ApiResponse.created(
+      res,
+      'Comment created successfully',
+      formatComment(comment, req.user!.id),
+    );
+  },
+);
+
+export const updateCommentHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const updated = await updateComment(req.user!.id, String(req.params['id']), req.body.content);
+    return ApiResponse.success(
+      res,
+      'Comment updated successfully',
+      formatComment(updated, req.user!.id),
+    );
+  },
+);
+
+export const deleteCommentHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    await deleteComment(req.user!.id, String(req.params['id']));
+    return ApiResponse.success(res, 'Comment deleted successfully');
+  },
+);
+
+// ─── Votes ────────────────────────────────────────────────────────────────────
+
+export const voteDiscussionHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const result = await vote({
+      userId: req.user!.id,
+      entityId: String(req.params['id']),
+      value: req.body.value,
+      type: 'discussion',
+    });
+    return ApiResponse.success(res, 'Vote updated', result);
+  },
+);
+
+export const voteCommentHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const result = await vote({
+      userId: req.user!.id,
+      entityId: String(req.params['id']),
+      value: req.body.value,
+      type: 'comment',
+    });
+    return ApiResponse.success(res, 'Vote updated', result);
+  },
+);
+
+// ─── Bookmarks ────────────────────────────────────────────────────────────────
+
+export const toggleBookmarkHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const result = await toggleBookmark(req.user!.id, String(req.params['id']));
+    return ApiResponse.success(
+      res,
+      result.bookmarked ? 'Bookmark added' : 'Bookmark removed',
+      result,
+    );
+  },
+);
+
+export const getBookmarksHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const userId = req.user!.id;
+    const discussions = await getBookmarkedDiscussions(userId);
+    return ApiResponse.success(
+      res,
+      discussions.length ? 'Bookmarks fetched successfully' : 'No bookmarks found',
+      discussions.map((d: Parameters<typeof formatDiscussion>[0]) => formatDiscussion(d, userId)),
+    );
+  },
+);
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\controllers\leaderboard.controller.ts
+==============================
+
+// src/controllers/leaderboard.controller.ts
+import type { Request, Response, RequestHandler } from 'express';
+import { ApiResponse } from '../utils/ApiResponse';
+import { asyncHandler } from '../utils/asyncHandler';
+import { getLeaderboard } from '../services/leaderboard.service';
+
+export const getLeaderboardData: RequestHandler = asyncHandler(async (req: Request, res: Response) => {
+  const limit = Math.max(1, parseInt(String(req.query['limit'] ?? '50'), 10));
+  const offset = Math.max(0, parseInt(String(req.query['offset'] ?? '0'), 10));
+
+  const result = await getLeaderboard({ limit, offset });
+  return ApiResponse.success(res, 'Leaderboard fetched successfully', result);
+});
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\controllers\playlist.controller.ts
+==============================
+
+// src/controllers/playlist.controller.ts
+import type { Request, Response, RequestHandler } from 'express';
+import { ApiResponse } from '../utils/ApiResponse';
+import { asyncHandler } from '../utils/asyncHandler';
+import {
+  createSheet,
+  getAllSheets,
+  getSheetById,
+  addProblemsToSheet,
+  deleteSheet,
+  removeProblemsFromSheet,
+  replaceProblemsInSheet,
+  updateSheet,
+} from '../services/sheet.service';
+
+export const createSheetHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const sheet = await createSheet({ ...req.body, userId: req.user!.id });
+    return ApiResponse.created(res, 'Sheet created successfully', sheet);
+  },
+);
+
+export const getAllSheetsHandler: RequestHandler = asyncHandler(
+  async (_req: Request, res: Response) => {
+    const sheets = await getAllSheets();
+    return ApiResponse.success(res, 'Sheets fetched successfully', sheets);
+  },
+);
+
+export const getSheetByIdHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const sheet = await getSheetById(String(req.params['sheetId']), req.user?.id ?? null);
+    return ApiResponse.success(res, 'Sheet fetched successfully', sheet);
+  },
+);
+
+export const addProblemsToSheetHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const result = await addProblemsToSheet(String(req.params['sheetId']), req.body.problemIds);
+    return ApiResponse.created(res, 'Problems added to sheet successfully', result);
+  },
+);
+
+export const deleteSheetHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    await deleteSheet(String(req.params['sheetId']));
+    return ApiResponse.success(res, 'Sheet deleted successfully');
+  },
+);
+
+export const removeProblemsFromSheetHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const result = await removeProblemsFromSheet(
+      String(req.params['sheetId']),
+      req.body.problemIds,
+    );
+    return ApiResponse.success(res, 'Problems removed from sheet', result);
+  },
+);
+
+export const replaceSheetProblemsHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const result = await replaceProblemsInSheet(String(req.params['sheetId']), req.body.problemIds);
+    return ApiResponse.success(res, 'Sheet problems updated', result);
+  },
+);
+
+export const updateSheetHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const sheet = await updateSheet({ ...req.body, sheetId: String(req.params['sheetId']) });
+    return ApiResponse.success(res, 'Sheet updated successfully', sheet);
+  },
+);
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\controllers\problem.controller.ts
+==============================
+
+import type { Request, Response, RequestHandler } from 'express';
+import { ApiResponse } from '../utils/ApiResponse';
+import { asyncHandler } from '../utils/asyncHandler';
+import {
+  createProblem,
+  getAllProblems,
+  getProblemById,
+  updateProblem,
+  deleteProblem,
+  getSolvedProblemsByUser,
+} from '../services/problem.service';
+
+export const createProblemHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const problem = await createProblem({ ...req.body, userId: req.user!.id });
+    return ApiResponse.created(res, 'Problem created successfully', problem);
+  },
+);
+
+export const getAllProblemsHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const userId = (req.body?.userId as string | undefined) ?? null;
+    const problems = await getAllProblems(userId);
+    return ApiResponse.success(res, 'Problems fetched successfully', problems);
+  },
+);
+
+export const getProblemByIdHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const problem = await getProblemById(String(req.params['id']));
+    return ApiResponse.success(res, 'Problem fetched successfully', problem);
+  },
+);
+
+export const updateProblemHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const updated = await updateProblem({
+      ...req.body,
+      problemId: String(req.params['problemId']),
+    });
+    return ApiResponse.success(res, 'Problem updated successfully', updated);
+  },
+);
+
+export const deleteProblemHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    await deleteProblem(String(req.params['id']));
+    return ApiResponse.success(res, 'Problem deleted successfully');
+  },
+);
+
+export const getSolvedProblemsHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const problems = await getSolvedProblemsByUser(req.user!.id);
+    return ApiResponse.success(
+      res,
+      problems.length ? 'Problems fetched successfully' : 'No solved problems yet',
+      problems,
+    );
+  },
+);
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\controllers\roadmaps.controller.ts
+==============================
+
+import type { Request, Response, RequestHandler } from 'express';
+import { ApiResponse } from '../utils/ApiResponse';
+import { AppError } from '../utils/AppError';
+import { asyncHandler } from '../utils/asyncHandler';
+import {
+  getAllPublishedRoadmaps,
+  getRoadmapBySlug,
+  saveRoadmapProgress,
+  resetRoadmapProgress,
+  getAllRoadmapsAdmin,
+  getRoadmapByIdAdmin,
+  createRoadmap,
+  updateRoadmap,
+  deleteRoadmap,
+  toggleRoadmapPublish,
+} from '../services/roadmap.service';
+
+// ─── Public ───────────────────────────────────────────────────────────────────
+
+export const getAllRoadmapsHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const roadmaps = await getAllPublishedRoadmaps(req.user?.id);
+    return ApiResponse.success(res, 'Roadmaps fetched successfully', roadmaps);
+  },
+);
+
+export const getRoadmapHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const roadmap = await getRoadmapBySlug(String(req.params['slug']), req.user?.id);
+    return ApiResponse.success(res, 'Roadmap fetched successfully', roadmap);
+  },
+);
+
+// ─── Progress ─────────────────────────────────────────────────────────────────
+
+export const saveProgressHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    if (!Array.isArray(req.body.completedTopicIds)) {
+      throw AppError.badRequest('completedTopicIds must be an array');
+    }
+    const result = await saveRoadmapProgress(
+      req.user!.id,
+      String(req.params['id']),
+      req.body.completedTopicIds,
+    );
+    return ApiResponse.success(res, 'Progress saved', result);
+  },
+);
+
+export const resetProgressHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    await resetRoadmapProgress(req.user!.id, String(req.params['id']));
+    return ApiResponse.success(res, 'Progress reset');
+  },
+);
+
+// ─── Admin ────────────────────────────────────────────────────────────────────
+
+export const getAllRoadmapsAdminHandler: RequestHandler = asyncHandler(
+  async (_req: Request, res: Response) => {
+    const roadmaps = await getAllRoadmapsAdmin();
+    return ApiResponse.success(res, 'Roadmaps fetched', roadmaps);
+  },
+);
+
+export const getRoadmapAdminHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const roadmap = await getRoadmapByIdAdmin(String(req.params['id']));
+    return ApiResponse.success(res, 'Roadmap fetched', roadmap);
+  },
+);
+
+export const createRoadmapHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const roadmap = await createRoadmap(req.body);
+    return ApiResponse.created(res, 'Roadmap created', roadmap);
+  },
+);
+
+export const updateRoadmapHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const roadmap = await updateRoadmap({ ...req.body, id: String(req.params['id']) });
+    return ApiResponse.success(res, 'Roadmap updated', roadmap);
+  },
+);
+
+export const deleteRoadmapHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    await deleteRoadmap(String(req.params['id']));
+    return ApiResponse.success(res, 'Roadmap deleted');
+  },
+);
+
+export const togglePublishHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const roadmap = await toggleRoadmapPublish(String(req.params['id']));
+    return ApiResponse.success(
+      res,
+      roadmap.isPublished ? 'Roadmap published' : 'Roadmap unpublished',
+      roadmap,
+    );
+  },
+);
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\controllers\runProblem.controller.ts
+==============================
+
+// src/controllers/runProblem.controller.ts
+import type { Request, Response, RequestHandler } from 'express';
+import { ApiResponse } from '../utils/ApiResponse';
+import { asyncHandler } from '../utils/asyncHandler';
+import { runCode, submitCode } from '../services/codeExecution.service';
+
+export const runProblem: RequestHandler = asyncHandler(async (req: Request, res: Response) => {
+  const result = await runCode(req.body);
+  return ApiResponse.success(res, 'Code executed successfully', result);
+});
+
+export const submitProblem: RequestHandler = asyncHandler(async (req: Request, res: Response) => {
+  const result = await submitCode({ ...req.body, userId: req.user!.id });
+  return ApiResponse.success(
+    res,
+    result.allPassed ? 'All test cases passed!' : 'Some test cases failed',
+    result,
+  );
+});
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\controllers\submission.controller.ts
+==============================
+
+import type { Request, Response, RequestHandler } from 'express';
+import { ApiResponse } from '../utils/ApiResponse';
+import { asyncHandler } from '../utils/asyncHandler';
+import { getUserSubmissions, getUserSubmissionsForProblem } from '../services/submission.service';
+
+export const getUserSubmissionsHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const data = await getUserSubmissions(req.user!.id);
+    return ApiResponse.success(res, 'Submissions fetched successfully', data);
+  },
+);
+
+export const getUserSubmissionsForProblemHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const data = await getUserSubmissionsForProblem(req.user!.id, String(req.params['problemId']));
+    return data.total > 0
+      ? ApiResponse.success(res, 'Submissions fetched successfully', data)
+      : ApiResponse.success(res, 'No submissions found for this problem', data);
+  },
+);
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\controllers\userStats.controller.ts
+==============================
+
+import type { Request, Response, RequestHandler } from 'express';
+import { ApiResponse } from '../utils/ApiResponse';
+import { asyncHandler } from '../utils/asyncHandler';
+import { getHeatmap, getProgressData, getSolvedStats } from '../services/userStats.service';
+
+export const getHeatmapHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const heatmap = await getHeatmap(req.user!.id);
+    return ApiResponse.success(res, 'Heatmap data fetched successfully', { heatmap });
+  },
+);
+
+export const getProgressHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const data = await getProgressData(req.user!.id);
+    return ApiResponse.success(res, 'Progress data fetched successfully', data);
+  },
+);
+
+export const getSolvedStatsHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const stats = await getSolvedStats(req.user!.id);
+    return ApiResponse.success(res, 'Solved stats fetched successfully', stats);
+  },
+);
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\libs\db.ts
+==============================
+
+// src/libs/db.ts
+import { PrismaClient } from '../generated/prisma';
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __prisma: PrismaClient | undefined;
+}
+
+const createPrismaClient = (): PrismaClient =>
+  new PrismaClient({
+    log:
+      process.env.NODE_ENV === 'development'
+        ? ['query', 'info', 'warn', 'error']
+        : ['error'],
+  });
+
+export const db: PrismaClient =
+  globalThis.__prisma ?? createPrismaClient();
+
+if (process.env.NODE_ENV !== 'production') {
+  globalThis.__prisma = db;
+}
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\libs\formatMemory.ts
+==============================
+
+// src/libs/formatMemory.ts
+
+/**
+ * Formats memory value from KB to a human-readable string.
+ * @param memoryKB - Memory in KB (number or numeric string)
+ */
+export const formatMemory = (memoryKB: number | string | null | undefined): string | undefined => {
+  if (memoryKB === undefined || memoryKB === null || memoryKB === '') return undefined;
+  const kb = parseFloat(String(memoryKB));
+  if (isNaN(kb)) return undefined;
+  if (kb >= 1024) return `${(kb / 1024).toFixed(2)} MB`;
+  return `${kb.toFixed(2)} KB`;
+};
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\libs\judge0.lib.ts
+==============================
+
+// src/libs/judge0.lib.ts
+import axios from 'axios';
+import type { Judge0Result, Judge0Submission, TestCaseDetail } from '../types/index';
+import { AppError } from '../utils/AppError';
+import { formatMemory } from './formatMemory';
+
+export const judge0 = axios.create({
+  baseURL: process.env.JUDGE0_API_URL,
+  timeout: 15_000,
+});
+
+// ─── Language Maps ─────────────────────────────────────────────────────────────
+
+const LANGUAGE_ID_MAP: Record<string, number> = {
+  PYTHON: 71,
+  JAVA: 62,
+  JAVASCRIPT: 63,
+  TYPESCRIPT: 74,
+};
+
+const LANGUAGE_NAME_MAP: Record<number, string> = {
+  74: 'TypeScript',
+  63: 'JavaScript',
+  71: 'Python',
+  62: 'Java',
+};
+
+const STATUS_MAP: Record<number, string> = {
+  1: 'In Queue',
+  2: 'Processing',
+  3: 'Accepted',
+  4: 'Wrong Answer',
+  5: 'Time Limit Exceeded',
+  6: 'Compilation Error',
+  7: 'Runtime Error (SIGSEGV)',
+  8: 'Runtime Error (SIGXFSZ)',
+  9: 'Runtime Error (SIGFPE)',
+  10: 'Runtime Error (SIGABRT)',
+  11: 'Runtime Error (NZEC)',
+  12: 'Runtime Error (Other)',
+  13: 'Internal Error',
+  14: 'Exec Format Error',
+};
+
+export const getJudge0LanguageId = (language: string): number | undefined =>
+  LANGUAGE_ID_MAP[language.toUpperCase()];
+
+export const getLanguageName = (languageId: number): string =>
+  LANGUAGE_NAME_MAP[languageId] ?? 'Unknown';
+
+export const getStatusDescription = (result: Judge0Result): string => {
+  if (!result?.status) return 'Unknown';
+  return STATUS_MAP[result.status.id] ?? `Status ${result.status.id}`;
+};
+
+// ─── Shared result mappers (used by codeExecution.service.ts) ────────────────
+
+/**
+ * Maps a raw Judge0 result + expected output into a normalised TestCaseDetail.
+ * The _rawTime / _rawMemory fields are used for performance averaging and
+ * must be stripped before sending to the client.
+ */
+export function mapJudge0Result(
+  result: Judge0Result,
+  index: number,
+  expectedOutput: string,
+): TestCaseDetail {
+  const stdout = result.stdout?.trim() ?? '';
+  return {
+    testCase: index + 1,
+    passed: stdout === expectedOutput.trim(),
+    stdout,
+    expected: expectedOutput,
+    stderr: result.stderr ?? null,
+    compile_output: result.compile_output ?? null,
+    status: getStatusDescription(result),
+    memory: result.memory ? (formatMemory(result.memory) ?? undefined) : undefined,
+    time: result.time ? `${result.time} s` : undefined,
+    _rawTime: result.time ? parseFloat(result.time) : null,
+    _rawMemory: result.memory ? parseFloat(String(result.memory)) : null,
+  };
+}
+
+/**
+ * Averages runtime + memory across all test case results for a summary metric.
+ */
+export function buildPerformanceSummary(
+  details: TestCaseDetail[],
+): { totalTime: string; totalMemory: string } {
+  const times = details
+    .map((r) => r._rawTime)
+    .filter((t): t is number => t !== null && !isNaN(t));
+  const memories = details
+    .map((r) => r._rawMemory)
+    .filter((m): m is number => m !== null && !isNaN(m) && m > 0);
+
+  const avgTime = times.length ? times.reduce((a, b) => a + b, 0) / times.length : null;
+  const avgMemory =
+    memories.length ? memories.reduce((a, b) => a + b, 0) / memories.length : null;
+
+  return {
+    totalTime: avgTime !== null ? `${avgTime.toFixed(3)} s` : '—',
+    totalMemory: avgMemory !== null ? (formatMemory(avgMemory) ?? '—') : '—',
+  };
+}
+
+// ─── Batch submission ─────────────────────────────────────────────────────────
+
+export const submitBatch = async (
+  submissions: Judge0Submission[],
+): Promise<Array<{ token: string }>> => {
+  const { data } = await judge0.post<Array<{ token: string }>>(
+    '/submissions/batch',
+    { submissions },
+    { params: { base64_encoded: false, fields: 'token' } },
+  );
+  return data;
+};
+
+// ─── Polling ──────────────────────────────────────────────────────────────────
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+interface PollOptions {
+  initialDelay?: number;
+  pollInterval?: number;
+  maxWaitTime?: number;
+}
+
+export const pollBatchResults = async (
+  tokens: string[],
+  {
+    initialDelay = 200,
+    pollInterval = 300,
+    maxWaitTime = 30_000,
+  }: PollOptions = {},
+): Promise<Judge0Result[]> => {
+  const tokenString = tokens.join(',');
+  const startTime = Date.now();
+
+  await sleep(initialDelay);
+
+  while (true) {
+    if (Date.now() - startTime > maxWaitTime) {
+      throw new AppError('Judge0 polling timed out after 30s', 504);
+    }
+
+    try {
+      const { data } = await judge0.get<{ submissions: Judge0Result[] }>(
+        '/submissions/batch',
+        {
+          params: {
+            tokens: tokenString,
+            base64_encoded: false,
+            fields: 'token,stdout,stderr,compile_output,status,memory,time',
+          },
+        },
+      );
+
+      const results = data?.submissions;
+      if (!results?.length) {
+        await sleep(pollInterval);
+        continue;
+      }
+
+      const allDone = results.every((r) => r.status?.id !== 1 && r.status?.id !== 2);
+      if (allDone) return results;
+    } catch {
+      // retry on transient network errors
+    }
+
+    await sleep(pollInterval);
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\middleware\auth.middleware.ts
+==============================
+
+// src/middleware/auth.middleware.ts
+import type { Request, Response, NextFunction, RequestHandler } from 'express';
+import jwt from 'jsonwebtoken';
+import { db } from '../libs/db';
+import { AppError } from '../utils/AppError';
+import { asyncHandler } from '../utils/asyncHandler';
+import type { AuthUser } from '../types/index';
+
+interface JwtPayload {
+  id: string;
+  iat: number;
+  exp: number;
+}
+
+// ─── authMiddleware ───────────────────────────────────────────────────────────
+
+export const authMiddleware: RequestHandler = asyncHandler(
+  async (req: Request, _res: Response, next: NextFunction) => {
+    const token = req.cookies?.jwt as string | undefined;
+    if (!token) throw AppError.unauthorized('No token provided');
+
+    let decoded: JwtPayload;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET as string) as JwtPayload;
+    } catch {
+      throw AppError.unauthorized('Invalid or expired token');
+    }
+
+    const user = await db.user.findUnique({
+      where: { id: decoded.id },
+      select: { id: true, image: true, name: true, username: true, email: true, role: true },
+    });
+
+    if (!user) throw AppError.notFound('User not found');
+
+    req.user = user as AuthUser;
+    next();
+  },
+);
+
+// ─── optionalAuth ─────────────────────────────────────────────────────────────
+
+export const optionalAuth: RequestHandler = asyncHandler(
+  async (req: Request, _res: Response, next: NextFunction) => {
+    const token = req.cookies?.jwt as string | undefined;
+
+    if (!token) {
+      req.user = undefined;
+      return next();
+    }
+
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as JwtPayload;
+      const user = await db.user.findUnique({
+        where: { id: decoded.id },
+        select: { id: true, image: true, name: true, username: true, email: true, role: true },
+      });
+      req.user = (user as AuthUser) ?? undefined;
+    } catch {
+      req.user = undefined;
+    }
+
+    next();
+  },
+);
+
+// ─── checkAdmin ───────────────────────────────────────────────────────────────
+
+export const checkAdmin: RequestHandler = asyncHandler(
+  async (req: Request, _res: Response, next: NextFunction) => {
+    const userId = req.user?.id;
+    if (!userId) throw AppError.unauthorized();
+
+    const user = await db.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+
+    if (!user || user.role !== 'ADMIN') throw AppError.forbidden('Admins only');
+
+    next();
+  },
+);
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\middleware\errorHandler.ts
+==============================
+
+// src/middleware/errorHandler.ts
+import type { Request, Response, NextFunction } from 'express';
+import { Prisma } from '../generated/prisma/index.js';
+import { AppError } from '../utils/AppError.js';
+import { logger } from '../utils/logger.js';
+import { ZodError } from 'zod';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function errorBody(req: Request, statusCode: number, message: string, errors: unknown = null) {
+  return {
+    success: false,
+    statusCode,
+    message,
+    timestamp: new Date().toISOString(),
+    path: req.originalUrl,
+    data: null,
+    errors,
+  };
+}
+
+// ─── Global error handler ────────────────────────────────────────────────────
+
+export const globalErrorHandler = (
+  err: unknown,
+  req: Request,
+  res: Response,
+  _next: NextFunction,
+): void => {
+  // ── AppError (operational / known errors) ─────────────────────────────────
+  if (err instanceof AppError) {
+    const withErrors = err as AppError & { errors?: unknown };
+    res
+      .status(err.statusCode)
+      .json(errorBody(req, err.statusCode, err.message, withErrors.errors ?? null));
+    return;
+  }
+
+  // ── Zod validation errors ─────────────────────────────────────────────────
+  if (err instanceof ZodError) {
+    const errors = err.errors.map((e) => ({ field: e.path.join('.'), message: e.message }));
+    res.status(400).json(errorBody(req, 400, 'Validation failed', errors));
+    return;
+  }
+
+  // ── Prisma errors ─────────────────────────────────────────────────────────
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    if (err.code === 'P2002') {
+      res.status(409).json(errorBody(req, 409, 'A record with this value already exists.'));
+      return;
+    }
+    if (err.code === 'P2025') {
+      res.status(404).json(errorBody(req, 404, 'Record not found.'));
+      return;
+    }
+    logger.error('Prisma known request error:', err);
+    res.status(500).json(errorBody(req, 500, 'Database error'));
+    return;
+  }
+
+  if (err instanceof Prisma.PrismaClientValidationError) {
+    res.status(400).json(errorBody(req, 400, 'Invalid data provided to database'));
+    return;
+  }
+
+  // ── JWT errors ────────────────────────────────────────────────────────────
+  if (err instanceof Error && err.name === 'JsonWebTokenError') {
+    res.status(401).json(errorBody(req, 401, 'Invalid token'));
+    return;
+  }
+  if (err instanceof Error && err.name === 'TokenExpiredError') {
+    res.status(401).json(errorBody(req, 401, 'Token expired'));
+    return;
+  }
+
+  // ── Unknown / programming errors ──────────────────────────────────────────
+  logger.error('Unhandled error:', err);
+  const message =
+    process.env.NODE_ENV === 'production'
+      ? 'Internal server error'
+      : err instanceof Error
+        ? err.message
+        : 'Unknown error';
+  res.status(500).json(errorBody(req, 500, message));
+};
+
+// ─── 404 catch-all ────────────────────────────────────────────────────────────
+
+export const notFoundHandler = (req: Request, res: Response): void => {
+  res.status(404).json(errorBody(req, 404, `Route ${req.originalUrl} not found`));
+};
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\middleware\validate.ts
+==============================
+
+// src/middleware/validate.ts
+import type { Request, Response, NextFunction } from 'express';
+import type { ZodSchema } from 'zod';
+import { AppError } from '../utils/AppError';
+
+/**
+ * Zod validation middleware.
+ * Uses safeParse so we get structured field-level errors rather than a thrown
+ * ZodError — the global error handler still catches thrown ZodErrors from
+ * asyncHandler contexts, but this gives a consistent 400 shape for request
+ * body validation specifically.
+ */
+export const validate =
+  (schema: ZodSchema) =>
+  (req: Request, _res: Response, next: NextFunction): void => {
+    const result = schema.safeParse(req.body);
+
+    if (!result.success) {
+      const errors = result.error.errors.map((e) => ({
+        field: e.path.join('.'),
+        message: e.message,
+      }));
+      // Attach cleaned data and pass a structured error to the global handler
+      return next(
+        Object.assign(AppError.badRequest('Validation failed'), { errors }),
+      );
+    }
+
+    // Replace req.body with the parsed (coerced + stripped) data
+    req.body = result.data;
+    next();
+  };
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\routes\auth.routes.ts
+==============================
+
+// src/routes/auth.routes.ts
+import { Router } from 'express';
+import session from 'express-session';
+import passport from '../config/passport';
+import {
+  registerHandler,
+  loginHandler,
+  logoutHandler,
+  checkHandler,
+  getUserDetailsHandler,
+  updateProfileHandler,
+  googleCallbackHandler,
+  getCurrentUserHandler,
+} from '../controllers/auth.controller';
+import { authMiddleware } from '../middleware/auth.middleware';
+import { validate } from '../middleware/validate';
+import { loginSchema, registerSchema, updateProfileSchema } from '../utils/schemas';
+
+// src/routes/auth.routes.ts
+const authRoutes: Router = Router();
+
+authRoutes.use(
+  session({
+    secret: process.env.SESSION_SECRET as string,
+    resave: false,
+    saveUninitialized: false,
+    cookie: { secure: process.env.NODE_ENV === 'production', httpOnly: true },
+  }),
+);
+authRoutes.use(passport.initialize());
+authRoutes.use(passport.session());
+
+// ─── Local auth ───────────────────────────────────────────────────────────────
+authRoutes.post('/register', validate(registerSchema), registerHandler);
+authRoutes.post('/login', validate(loginSchema), loginHandler);
+authRoutes.post('/logout', authMiddleware, logoutHandler);
+authRoutes.get('/check', authMiddleware, checkHandler);
+authRoutes.get('/me', getCurrentUserHandler);
+
+// ─── Profile ──────────────────────────────────────────────────────────────────
+authRoutes.get('/profile', authMiddleware, getUserDetailsHandler);
+authRoutes.patch('/profile', authMiddleware, validate(updateProfileSchema), updateProfileHandler);
+
+// ─── Google OAuth ─────────────────────────────────────────────────────────────
+authRoutes.get('/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
+authRoutes.get(
+  '/google/callback',
+  passport.authenticate('google', { failureRedirect: '/login', session: true }),
+  googleCallbackHandler,
+);
+
+export default authRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\routes\discussions.routes.ts
+==============================
+
+// src/routes/discussions.routes.ts
+import { Router } from 'express';
+import { authMiddleware, optionalAuth } from '../middleware/auth.middleware';
+import { validate } from '../middleware/validate';
+import { createCommentSchema, createDiscussionSchema, voteSchema } from '../utils/schemas';
+import {
+  createDiscussionHandler,
+  getAllDiscussionsHandler,
+  getDiscussionHandler,
+  updateDiscussionHandler,
+  deleteDiscussionHandler,
+  createCommentHandler,
+  updateCommentHandler,
+  deleteCommentHandler,
+  voteDiscussionHandler,
+  voteCommentHandler,
+  toggleBookmarkHandler,
+  getBookmarksHandler,
+} from '../controllers/discussions.controller';
+
+const discussionsRoutes: Router = Router();
+
+// ─── Discussions ──────────────────────────────────────────────────────────────
+discussionsRoutes.get('/', optionalAuth, getAllDiscussionsHandler);
+discussionsRoutes.post(
+  '/',
+  authMiddleware,
+  validate(createDiscussionSchema),
+  createDiscussionHandler,
+);
+discussionsRoutes.get('/bookmarks', authMiddleware, getBookmarksHandler);
+discussionsRoutes.get('/:id', optionalAuth, getDiscussionHandler);
+discussionsRoutes.put(
+  '/:id',
+  authMiddleware,
+  validate(createDiscussionSchema),
+  updateDiscussionHandler,
+);
+discussionsRoutes.delete('/:id', authMiddleware, deleteDiscussionHandler);
+
+// ─── Votes ────────────────────────────────────────────────────────────────────
+discussionsRoutes.post('/:id/vote', authMiddleware, validate(voteSchema), voteDiscussionHandler);
+discussionsRoutes.post('/:id/bookmark', authMiddleware, toggleBookmarkHandler);
+
+// ─── Comments ─────────────────────────────────────────────────────────────────
+discussionsRoutes.post(
+  '/comments',
+  authMiddleware,
+  validate(createCommentSchema),
+  createCommentHandler,
+);
+discussionsRoutes.put('/comments/:id', authMiddleware, updateCommentHandler);
+discussionsRoutes.delete('/comments/:id', authMiddleware, deleteCommentHandler);
+discussionsRoutes.post(
+  '/comments/:id/vote',
+  authMiddleware,
+  validate(voteSchema),
+  voteCommentHandler,
+);
+
+export default discussionsRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\routes\leaderboard.routes.ts
+==============================
+
+// src/routes/leaderboard.routes.ts
+import { Router } from 'express';
+import { getLeaderboardData } from '../controllers/leaderboard.controller';
+
+const leaderboardRoutes: Router = Router();
+
+// GET /api/v1/leaderboard?limit=50&offset=0
+leaderboardRoutes.get('/', getLeaderboardData);
+
+export default leaderboardRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\routes\problem.routes.ts
+==============================
+
+// src/routes/problem.routes.ts
+import { Router } from 'express';
+import { authMiddleware, checkAdmin } from '../middleware/auth.middleware';
+import {
+  createProblemHandler,
+  deleteProblemHandler,
+  getAllProblemsHandler,
+  getSolvedProblemsHandler,
+  getProblemByIdHandler,
+  updateProblemHandler,
+} from '../controllers/problem.controller';
+
+const problemRoutes: Router = Router();
+
+// GET  /api/v1/problems          – list all problems
+// POST /api/v1/problems          – create a problem (admin)
+// GET  /api/v1/problems/solved   – problems solved by me
+// GET  /api/v1/problems/:id      – get one problem
+// PUT  /api/v1/problems/:id      – update a problem (admin)
+// DELETE /api/v1/problems/:id    – delete a problem (admin)
+
+problemRoutes.get('/solved', authMiddleware, getSolvedProblemsHandler);
+problemRoutes.post('/', authMiddleware, checkAdmin, createProblemHandler);
+problemRoutes.post('/all', getAllProblemsHandler); // POST because body carries optional userId
+problemRoutes.get('/:id', getProblemByIdHandler);
+problemRoutes.put('/:id', authMiddleware, checkAdmin, updateProblemHandler);
+problemRoutes.delete('/:id', authMiddleware, checkAdmin, deleteProblemHandler);
+
+export default problemRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\routes\roadmaps.routes.ts
+==============================
+
+// src/routes/roadmaps.routes.ts
+import { Router } from 'express';
+import { authMiddleware, checkAdmin, optionalAuth } from '../middleware/auth.middleware';
+import { validate } from '../middleware/validate';
+import { createRoadmapSchema, roadmapProgressSchema } from '../utils/schemas';
+import {
+  getAllRoadmapsHandler,
+  getRoadmapHandler,
+  saveProgressHandler,
+  resetProgressHandler,
+  getAllRoadmapsAdminHandler,
+  getRoadmapAdminHandler,
+  createRoadmapHandler,
+  updateRoadmapHandler,
+  deleteRoadmapHandler,
+  togglePublishHandler,
+} from '../controllers/roadmaps.controller';
+
+const roadmapRoutes: Router = Router();
+
+// ─── Public ───────────────────────────────────────────────────────────────────
+roadmapRoutes.get('/', optionalAuth, getAllRoadmapsHandler);
+roadmapRoutes.get('/:slug', optionalAuth, getRoadmapHandler);
+
+// ─── Progress ─────────────────────────────────────────────────────────────────
+roadmapRoutes.post(
+  '/:id/progress',
+  authMiddleware,
+  validate(roadmapProgressSchema),
+  saveProgressHandler,
+);
+roadmapRoutes.delete('/:id/progress', authMiddleware, resetProgressHandler);
+
+// ─── Admin ────────────────────────────────────────────────────────────────────
+roadmapRoutes.get('/admin/all', authMiddleware, checkAdmin, getAllRoadmapsAdminHandler);
+roadmapRoutes.get('/admin/:id', authMiddleware, checkAdmin, getRoadmapAdminHandler);
+roadmapRoutes.post(
+  '/',
+  authMiddleware,
+  checkAdmin,
+  validate(createRoadmapSchema),
+  createRoadmapHandler,
+);
+roadmapRoutes.put('/:id', authMiddleware, checkAdmin, updateRoadmapHandler);
+roadmapRoutes.delete('/:id', authMiddleware, checkAdmin, deleteRoadmapHandler);
+roadmapRoutes.patch('/:id/publish', authMiddleware, checkAdmin, togglePublishHandler);
+
+export default roadmapRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\routes\runCode.routes.ts
+==============================
+
+// src/routes/runCode.routes.ts
+import { Router } from 'express';
+import { authMiddleware } from '../middleware/auth.middleware';
+import { runProblem, submitProblem } from '../controllers/runProblem.controller';
+import { validate } from '../middleware/validate';
+import { runCodeSchema } from '../utils/schemas';
+
+const runCodeRoutes: Router = Router();
+
+// POST /api/v1/code/run    – run against public test cases
+// POST /api/v1/code/submit – submit against all test cases
+runCodeRoutes.post('/run', authMiddleware, validate(runCodeSchema), runProblem);
+runCodeRoutes.post('/submit', authMiddleware, validate(runCodeSchema), submitProblem);
+
+export default runCodeRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\routes\sheets.routes.ts
+==============================
+
+// src/routes/sheets.routes.ts
+import { Router } from 'express';
+import { authMiddleware, optionalAuth } from '../middleware/auth.middleware';
+import {
+  createSheetHandler,
+  deleteSheetHandler,
+  getAllSheetsHandler,
+  getSheetByIdHandler,
+  addProblemsToSheetHandler,
+  removeProblemsFromSheetHandler,
+  replaceSheetProblemsHandler,
+  updateSheetHandler,
+} from '../controllers/playlist.controller';
+
+const sheetsRoutes: Router = Router();
+
+// GET    /api/v1/sheets              – list all sheets
+// POST   /api/v1/sheets              – create sheet
+// GET    /api/v1/sheets/:id          – get one sheet
+// PUT    /api/v1/sheets/:id          – update sheet metadata + problems
+// DELETE /api/v1/sheets/:id          – delete sheet
+// POST   /api/v1/sheets/:id/problems – add problems
+// DELETE /api/v1/sheets/:id/problems – remove problems
+// PUT    /api/v1/sheets/:id/problems – replace all problems
+
+sheetsRoutes.get('/', getAllSheetsHandler);
+sheetsRoutes.post('/', authMiddleware, createSheetHandler);
+sheetsRoutes.get('/:sheetId', optionalAuth, getSheetByIdHandler);
+sheetsRoutes.put('/:sheetId', authMiddleware, updateSheetHandler);
+sheetsRoutes.delete('/:sheetId', authMiddleware, deleteSheetHandler);
+sheetsRoutes.post('/:sheetId/problems', authMiddleware, addProblemsToSheetHandler);
+sheetsRoutes.delete('/:sheetId/problems', authMiddleware, removeProblemsFromSheetHandler);
+sheetsRoutes.put('/:sheetId/problems', authMiddleware, replaceSheetProblemsHandler);
+
+export default sheetsRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\routes\submission.routes.ts
+==============================
+
+// src/routes/submission.routes.ts
+import { Router } from 'express';
+import { authMiddleware } from '../middleware/auth.middleware';
+import {
+  getUserSubmissionsHandler,
+  getUserSubmissionsForProblemHandler,
+} from '../controllers/submission.controller';
+
+const submissionRoutes: Router = Router();
+
+// GET /api/v1/submissions                      – all my submissions
+// GET /api/v1/submissions/problem/:problemId   – my submissions for one problem
+submissionRoutes.get('/', authMiddleware, getUserSubmissionsHandler);
+submissionRoutes.get('/problem/:problemId', authMiddleware, getUserSubmissionsForProblemHandler);
+
+export default submissionRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\routes\userStats.routes.ts
+==============================
+
+// src/routes/userStats.routes.ts
+import { Router } from 'express';
+import { authMiddleware } from '../middleware/auth.middleware';
+import {
+  getHeatmapHandler,
+  getProgressHandler,
+  getSolvedStatsHandler,
+} from '../controllers/userStats.controller';
+
+const userStatsRoutes: Router = Router();
+
+// GET /api/v1/user-stats/heatmap  – submission heatmap (last 365 days)
+// GET /api/v1/user-stats/progress – weekly/monthly/language stats
+// GET /api/v1/user-stats/solved   – difficulty breakdown + streaks
+userStatsRoutes.get('/heatmap', authMiddleware, getHeatmapHandler);
+userStatsRoutes.get('/progress', authMiddleware, getProgressHandler);
+userStatsRoutes.get('/solved', authMiddleware, getSolvedStatsHandler);
+
+export default userStatsRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\services\auth.service.ts
+==============================
+
+// src/services/auth.service.ts
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { db } from '../libs/db';
+import { UserRole } from '../generated/prisma/index';
+import { AppError } from '../utils/AppError';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface RegisterInput {
+  email: string;
+  password: string;
+  name: string;
+}
+
+export interface LoginInput {
+  email: string;
+  password: string;
+}
+
+export interface UpdateProfileInput {
+  name?: string;
+  bio?: string;
+  location?: string;
+  githubUrl?: string;
+  twitterUrl?: string;
+  website?: string;
+}
+
+export interface SafeUser {
+  id: string;
+  email: string;
+  name: string | null;
+  username: string | null;
+  role: string;
+  image: string | null;
+}
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  username: string | null;
+  displayName: string | null;
+  role: string;
+  avatarUrl: string | null;
+  bio: string | null;
+  location: string | null;
+  github: string | null;
+  twitter: string | null;
+  website: string | null;
+  joinDate: string;
+  rank: number;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+export function signToken(userId: string): string {
+  return jwt.sign({ id: userId }, process.env.JWT_SECRET as string, {
+    expiresIn: '7d',
+  });
+}
+
+async function generateUniqueUsername(baseUsername: string): Promise<string> {
+  const MAX_ATTEMPTS = 50;
+  const similar = await db.user.findMany({
+    where: { username: { startsWith: baseUsername } },
+    select: { username: true },
+  });
+  const existing = new Set(
+    similar
+      .map((u: { username: string | null }) => u.username)
+      .filter((u: string | null): u is string => u !== null),
+  );
+  let username = baseUsername;
+  let suffix = 0;
+  while (existing.has(username)) {
+    suffix++;
+    if (suffix > MAX_ATTEMPTS) {
+      // Fall back to a random suffix to guarantee uniqueness
+      username = `${baseUsername}_${Date.now()}`;
+      break;
+    }
+    username = `${baseUsername}_${suffix}`;
+  }
+  return username;
+}
+
+// ─── Service Methods ──────────────────────────────────────────────────────────
+
+export async function registerUser(input: RegisterInput): Promise<SafeUser> {
+  const { email, password, name } = input;
+
+  const existing = await db.user.findUnique({ where: { email } });
+  if (existing) throw AppError.conflict('User with this email already exists');
+
+  const baseUsername = (email.split('@')[0] ?? email).toLowerCase();
+  const username = await generateUniqueUsername(baseUsername);
+  const hashedPassword = await bcrypt.hash(password, 12);
+
+  const newUser = await db.user.create({
+    data: { email, password: hashedPassword, name, role: UserRole.USER, username },
+  });
+
+  return {
+    id: newUser.id,
+    email: newUser.email,
+    name: newUser.name,
+    role: newUser.role,
+    image: newUser.image,
+    username: newUser.username,
+  };
+}
+
+export async function loginUser(input: LoginInput): Promise<SafeUser> {
+  const { email, password } = input;
+
+  const user = await db.user.findUnique({ where: { email } });
+  if (!user) throw AppError.unauthorized('Invalid credentials');
+
+  const isMatch = await bcrypt.compare(password, user.password);
+  if (!isMatch) throw AppError.unauthorized('Invalid credentials');
+
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    username: user.username,
+    role: user.role,
+    image: user.image,
+  };
+}
+
+export async function getUserProfile(userId: string): Promise<UserProfile> {
+  const userDetails = await db.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      email: true,
+      username: true,
+      name: true,
+      role: true,
+      image: true,
+      bio: true,
+      location: true,
+      githubUrl: true,
+      twitterUrl: true,
+      website: true,
+      createdAt: true,
+    },
+  });
+
+  if (!userDetails) throw AppError.notFound('User not found');
+
+  const userSolvedCount = await db.problemSolved.count({ where: { userId } });
+  const usersAhead = await db.problemSolved.groupBy({
+    by: ['userId'],
+    _count: { problemId: true },
+    having: { problemId: { _count: { gt: userSolvedCount } } },
+  });
+
+  return {
+    id: userDetails.id,
+    email: userDetails.email,
+    username: userDetails.username,
+    displayName: userDetails.name,
+    role: userDetails.role,
+    avatarUrl: userDetails.image,
+    bio: userDetails.bio ?? null,
+    location: userDetails.location ?? null,
+    github: userDetails.githubUrl ?? null,
+    twitter: userDetails.twitterUrl ?? null,
+    website: userDetails.website ?? null,
+    joinDate: userDetails.createdAt.toLocaleDateString('en-US', {
+      month: 'short',
+      year: 'numeric',
+    }),
+    rank: usersAhead.length + 1,
+  };
+}
+
+export async function updateProfile(userId: string, input: UpdateProfileInput) {
+  const { name, bio, location, githubUrl, twitterUrl, website } = input;
+
+  return db.user.update({
+    where: { id: userId },
+    data: {
+      ...(name !== undefined && { name }),
+      ...(bio !== undefined && { bio }),
+      ...(location !== undefined && { location }),
+      ...(githubUrl !== undefined && { githubUrl }),
+      ...(twitterUrl !== undefined && { twitterUrl }),
+      ...(website !== undefined && { website }),
+    },
+    select: {
+      id: true,
+      name: true,
+      bio: true,
+      location: true,
+      githubUrl: true,
+      twitterUrl: true,
+      website: true,
+    },
+  });
+}
+
+export async function linkGoogleAccount(
+  googleId: string,
+  email: string,
+  displayName: string,
+  photoUrl: string | undefined,
+) {
+  let user = await db.user.findUnique({ where: { googleId } });
+
+  if (!user) {
+    const existingUser = await db.user.findUnique({ where: { email } });
+    const baseUsername = email.split('@')[0] ?? email;
+
+    if (existingUser) {
+      user = await db.user.update({
+        where: { email },
+        data: {
+          googleId,
+          image: photoUrl,
+          username: existingUser.username || (await generateUniqueUsername(baseUsername)),
+        },
+      });
+    } else {
+      const username = await generateUniqueUsername(baseUsername);
+      user = await db.user.create({
+        data: {
+          googleId,
+          name: displayName,
+          email,
+          image: photoUrl,
+          password: 'google_oauth',
+          username,
+        },
+      });
+    }
+  }
+
+  return user;
+}
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\services\codeExecution.service.ts
+==============================
+
+// src/services/codeExecution.service.ts
+import { db } from '../libs/db';
+import {
+  getLanguageName,
+  mapJudge0Result,
+  buildPerformanceSummary,
+  pollBatchResults,
+  submitBatch,
+} from '../libs/judge0.lib';
+import { AppError } from '../utils/AppError';
+import type { TestCaseDetail } from '../types/index';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface RunCodeInput {
+  source_code: string;
+  language_id: number;
+  problemId: string;
+}
+
+export interface SubmitCodeInput extends RunCodeInput {
+  userId: string;
+}
+
+export interface RunResult {
+  allPassed: boolean;
+  performance: { totalTime: string; totalMemory: string };
+  results: Omit<TestCaseDetail, '_rawTime' | '_rawMemory'>[];
+}
+
+export interface SubmitResult {
+  allPassed: boolean;
+  submission: {
+    language: string;
+    status: string;
+    performance: { totalTime: string; totalMemory: string };
+    testCasesPassed: string;
+  };
+}
+
+// ─── Run (public test cases only) ────────────────────────────────────────────
+
+export async function runCode(input: RunCodeInput): Promise<RunResult> {
+  const { source_code, language_id, problemId } = input;
+
+  const publicTestCases = await db.testCase.findMany({
+    where: { problemId, isPublic: true },
+    orderBy: { id: 'asc' },
+    select: { input: true, expected: true },
+  });
+
+  if (!publicTestCases.length) throw AppError.notFound('No public test cases found');
+
+  const tokens = (
+    await submitBatch(
+      publicTestCases.map(({ input }) => ({ source_code, language_id, stdin: input })),
+    )
+  ).map((r) => r.token);
+
+  const results = await pollBatchResults(tokens);
+  const details = results.map((r, i) =>
+    mapJudge0Result(r, i, publicTestCases[i]?.expected ?? ''),
+  );
+
+  return {
+    allPassed: details.every((d) => d.passed),
+    performance: buildPerformanceSummary(details),
+    results: details.map(({ _rawTime, _rawMemory, ...rest }) => rest),
+  };
+}
+
+// ─── Submit (all test cases) ──────────────────────────────────────────────────
+
+export async function submitCode(input: SubmitCodeInput): Promise<SubmitResult> {
+  const { source_code, language_id, problemId, userId } = input;
+
+  const testCases = await db.testCase.findMany({
+    where: { problemId },
+    orderBy: { isPublic: 'desc' },
+    select: { id: true, input: true, expected: true, isPublic: true },
+  });
+
+  if (!testCases.length) throw AppError.notFound('No test cases found for this problem');
+
+  const tokens = (
+    await submitBatch(
+      testCases.map(({ input }) => ({ source_code, language_id, stdin: input })),
+    )
+  ).map((r) => r.token);
+
+  const results = await pollBatchResults(tokens);
+
+  const details: TestCaseDetail[] = results.map((result, i) => {
+    const tc = testCases[i];
+    const base = mapJudge0Result(result, i, tc?.expected ?? '');
+    return {
+      ...base,
+      testCaseId: tc?.id,
+      isPublic: tc?.isPublic,
+      expected: tc?.isPublic ? base.expected : '', // hide expected for private cases
+    };
+  });
+
+  const allPassed = details.every((d) => d.passed);
+  const language = getLanguageName(language_id);
+
+  // Persist submission — sourceCode is Json in schema
+  const submission = await db.submission.create({
+    data: {
+      userId,
+      problemId,
+      sourceCode: { code: source_code, language },
+      language,
+      stdin: testCases.map((tc) => tc.input).join('\n'),
+      stdout: JSON.stringify(details.map((r) => r.stdout)),
+      stderr: details.some((r) => r.stderr)
+        ? JSON.stringify(details.map((r) => r.stderr))
+        : null,
+      compileOutput: details.some((r) => r.compile_output)
+        ? JSON.stringify(details.map((r) => r.compile_output))
+        : null,
+      status: allPassed ? 'Accepted' : 'Wrong Answer',
+      memory: JSON.stringify(details.map((r) => r.memory)),
+      time: JSON.stringify(details.map((r) => r.time)),
+    },
+  });
+
+  await Promise.all([
+    db.testCaseResult.createMany({
+      data: details.map((d) => ({
+        submissionId: submission.id,
+        testCase: d.testCase,
+        passed: d.passed,
+        stdout: d.stdout ?? '',
+        expected: d.expected ?? '', // non-nullable in schema
+        stderr: d.stderr,
+        compileOutput: d.compile_output,
+        status: d.status,
+        memory: d.memory,
+        time: d.time,
+      })),
+    }),
+    allPassed
+      ? db.problemSolved.upsert({
+          where: { userId_problemId: { userId, problemId } },
+          update: {},
+          create: { userId, problemId },
+        })
+      : Promise.resolve(),
+  ]);
+
+  const passedCount = details.filter((r) => r.passed).length;
+
+  return {
+    allPassed,
+    submission: {
+      language,
+      status: allPassed ? 'Accepted' : 'Wrong Answer',
+      performance: buildPerformanceSummary(details),
+      testCasesPassed: `${passedCount}/${details.length}`,
+    },
+  };
+}
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\services\discussion.service.ts
+==============================
+
+// src/services/discussion.service.ts
+import type { Prisma } from '../generated/prisma/index';
+import { db } from '../libs/db';
+import { AppError } from '../utils/AppError';
+
+// ─── Typed Prisma result shapes ───────────────────────────────────────────────
+
+type AuthorSelect = { id: string; username: string | null; image: string | null };
+type VoteRow = { userId: string; value: number };
+type BookmarkRow = { userId: string };
+
+type CommentWithRelations = {
+  id: string;
+  content: string;
+  discussionId: string;
+  parentId: string | null;
+  authorId: string;
+  isEdited: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  author: AuthorSelect;
+  votes: VoteRow[];
+  replies?: CommentWithRelations[];
+};
+
+type DiscussionWithRelations = {
+  id: string;
+  title: string;
+  content: string;
+  contentType: string;
+  codeContent: string | null;
+  codeLanguage: string | null;
+  category: string;
+  tags: string[];
+  company: string | null;
+  position: string | null;
+  problemId: number | null;
+  problemTitle: string | null;
+  problemDifficulty: string | null;
+  authorId: string;
+  isEdited: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  author: AuthorSelect;
+  votes: VoteRow[];
+  bookmarks: BookmarkRow[];
+  _count?: { comments: number };
+  comments?: CommentWithRelations[];
+};
+
+// ─── Input types ──────────────────────────────────────────────────────────────
+
+export interface CreateDiscussionInput {
+  userId: string;
+  title: string;
+  content: string;
+  category: string;
+  codeContent?: string;
+  codeLanguage?: string;
+  problemId?: string;
+  problemTitle?: string;
+  problemDifficulty?: string;
+  company?: string;
+  position?: string;
+  tags?: string[];
+}
+
+export interface UpdateDiscussionInput {
+  userId: string;
+  discussionId: string;
+  title: string;
+  content: string;
+  category: string;
+  codeContent?: string;
+  codeLanguage?: string;
+  tags?: string[];
+  company?: string;
+  position?: string;
+}
+
+export interface CreateCommentInput {
+  userId: string;
+  discussionId: string;
+  content: string;
+  parentId?: string;
+}
+
+export interface VoteInput {
+  userId: string;
+  entityId: string;
+  value: number;
+  type: 'discussion' | 'comment';
+}
+
+export interface VoteResult {
+  upvotes: number;
+  downvotes: number;
+  userVote: number;
+}
+
+// ─── Prisma include constants ─────────────────────────────────────────────────
+
+export const COMMENT_INCLUDE = {
+  author: { select: { id: true, username: true, image: true } },
+  votes: { select: { userId: true, value: true } },
+  replies: {
+    include: {
+      author: { select: { id: true, username: true, image: true } },
+      votes: { select: { userId: true, value: true } },
+      replies: {
+        include: {
+          author: { select: { id: true, username: true, image: true } },
+          votes: { select: { userId: true, value: true } },
+        },
+      },
+    },
+  },
+} satisfies Prisma.CommentInclude;
+
+export const DISCUSSION_INCLUDE = {
+  author: { select: { id: true, username: true, image: true } },
+  votes: { select: { userId: true, value: true } },
+  bookmarks: { select: { userId: true } },
+  _count: { select: { comments: true } },
+} satisfies Prisma.DiscussionInclude;
+
+// ─── Formatters ───────────────────────────────────────────────────────────────
+
+function computeVotes(votes: VoteRow[], userId: string | null) {
+  return {
+    upvotes: votes.filter((v) => v.value === 1).length,
+    downvotes: votes.filter((v) => v.value === -1).length,
+    userVote: userId ? (votes.find((v) => v.userId === userId)?.value ?? 0) : 0,
+  };
+}
+
+export function formatComment(comment: CommentWithRelations, userId: string | null): object {
+  const { upvotes, downvotes, userVote } = computeVotes(comment.votes, userId);
+  return {
+    id: comment.id,
+    content: comment.content,
+    author: comment.author,
+    discussionId: comment.discussionId,
+    parentId: comment.parentId,
+    isEdited: comment.isEdited,
+    createdAt: comment.createdAt,
+    updatedAt: comment.updatedAt,
+    upvotes,
+    downvotes,
+    userVote,
+    replies: (comment.replies ?? []).map((r) => formatComment(r, userId)),
+  };
+}
+
+export function formatDiscussion(discussion: DiscussionWithRelations, userId: string | null): object {
+  const { upvotes, downvotes, userVote } = computeVotes(discussion.votes, userId);
+  const bookmarked = userId
+    ? discussion.bookmarks.some((b) => b.userId === userId)
+    : false;
+
+  return {
+    id: discussion.id,
+    title: discussion.title,
+    content: discussion.content,
+    contentType: discussion.contentType,
+    codeContent: discussion.codeContent,
+    codeLanguage: discussion.codeLanguage,
+    category: discussion.category,
+    tags: discussion.tags,
+    company: discussion.company,
+    position: discussion.position,
+    problemId: discussion.problemId,
+    problemTitle: discussion.problemTitle,
+    problemDifficulty: discussion.problemDifficulty,
+    authorId: discussion.authorId,
+    author: discussion.author,
+    isEdited: discussion.isEdited,
+    createdAt: discussion.createdAt,
+    updatedAt: discussion.updatedAt,
+    upvotes,
+    downvotes,
+    userVote,
+    bookmarked,
+    commentCount: discussion._count?.comments ?? 0,
+    comments: discussion.comments
+      ? discussion.comments.map((c) => formatComment(c, userId))
+      : undefined,
+  };
+}
+
+// ─── Discussion CRUD ──────────────────────────────────────────────────────────
+
+export async function createDiscussion(input: CreateDiscussionInput) {
+  const {
+    userId, title, content, category,
+    codeContent, codeLanguage, problemId, problemTitle,
+    problemDifficulty, company, position, tags,
+  } = input;
+
+  return db.discussion.create({
+    data: {
+      title: title.trim(),
+      content: content.trim(),
+      contentType: codeContent ? 'code' : 'text',
+      codeContent: codeContent ?? null,
+      codeLanguage: codeLanguage ?? null,
+      category,
+      problemId: problemId ? Number(problemId) : null,
+      problemTitle: problemTitle ?? null,
+      problemDifficulty: problemDifficulty ?? null,
+      company: company ?? null,
+      position: position ?? null,
+      tags: tags ?? [],
+      author: { connect: { id: userId } },
+    },
+    include: DISCUSSION_INCLUDE,
+  });
+}
+
+export async function getAllDiscussions() {
+  return db.discussion.findMany({
+    orderBy: { createdAt: 'desc' },
+    include: DISCUSSION_INCLUDE,
+  });
+}
+
+export async function getDiscussionById(id: string) {
+  const discussion = await db.discussion.findUnique({
+    where: { id },
+    include: {
+      ...DISCUSSION_INCLUDE,
+      comments: {
+        where: { parentId: null },
+        orderBy: { createdAt: 'asc' },
+        include: COMMENT_INCLUDE,
+      },
+    },
+  });
+  if (!discussion) throw AppError.notFound('Discussion not found');
+  return discussion;
+}
+
+export async function updateDiscussion(input: UpdateDiscussionInput) {
+  const { userId, discussionId, title, content, category, codeContent, codeLanguage, tags, company, position } = input;
+
+  const existing = await db.discussion.findUnique({
+    where: { id: discussionId },
+    select: { authorId: true },
+  });
+  if (!existing) throw AppError.notFound('Discussion not found');
+  if (existing.authorId !== userId) throw AppError.forbidden('Unauthorized to update this discussion');
+
+  return db.discussion.update({
+    where: { id: discussionId },
+    data: {
+      title: title.trim(),
+      content: content.trim(),
+      contentType: codeContent ? 'code' : 'text',
+      codeContent: codeContent ?? null,
+      codeLanguage: codeLanguage ?? null,
+      category,
+      tags: tags ?? [],
+      company: company ?? null,
+      position: position ?? null,
+      isEdited: true,
+    },
+    include: DISCUSSION_INCLUDE,
+  });
+}
+
+export async function deleteDiscussion(userId: string, discussionId: string) {
+  const discussion = await db.discussion.findUnique({
+    where: { id: discussionId },
+    select: { authorId: true },
+  });
+  if (!discussion) throw AppError.notFound('Discussion not found');
+  if (discussion.authorId !== userId) throw AppError.forbidden('Unauthorized to delete this discussion');
+  await db.discussion.delete({ where: { id: discussionId } });
+}
+
+// ─── Comment CRUD ─────────────────────────────────────────────────────────────
+
+export async function createComment(input: CreateCommentInput) {
+  const { userId, discussionId, content, parentId } = input;
+
+  const discussion = await db.discussion.findUnique({ where: { id: discussionId } });
+  if (!discussion) throw AppError.notFound('Discussion not found');
+
+  if (parentId) {
+    const parent = await db.comment.findUnique({ where: { id: parentId } });
+    if (!parent) throw AppError.notFound('Parent comment not found');
+    if (parent.discussionId !== discussionId) {
+      throw AppError.badRequest('Parent comment must belong to the same discussion');
+    }
+
+    // Enforce max nesting depth of 3
+    let depth = 1;
+    let currentParentId = parent.parentId;
+    while (currentParentId) {
+      if (depth >= 3) throw AppError.badRequest('Maximum comment nesting depth reached');
+      const ancestor = await db.comment.findUnique({
+        where: { id: currentParentId },
+        select: { parentId: true },
+      });
+      if (!ancestor) break;
+      currentParentId = ancestor.parentId;
+      depth++;
+    }
+  }
+
+  return db.comment.create({
+    data: { content: content.trim(), discussionId, parentId: parentId ?? null, authorId: userId },
+    include: COMMENT_INCLUDE,
+  });
+}
+
+export async function updateComment(userId: string, commentId: string, content: string) {
+  const existing = await db.comment.findUnique({ where: { id: commentId } });
+  if (!existing) throw AppError.notFound('Comment not found');
+  if (existing.authorId !== userId) throw AppError.forbidden('Not the comment author');
+
+  return db.comment.update({
+    where: { id: commentId },
+    data: { content: content.trim(), isEdited: true },
+    include: COMMENT_INCLUDE,
+  });
+}
+
+export async function deleteComment(userId: string, commentId: string) {
+  const existing = await db.comment.findUnique({ where: { id: commentId } });
+  if (!existing) throw AppError.notFound('Comment not found');
+  if (existing.authorId !== userId) throw AppError.forbidden('Not the comment author');
+  await db.comment.delete({ where: { id: commentId } });
+}
+
+// ─── Votes ────────────────────────────────────────────────────────────────────
+
+export async function vote(input: VoteInput): Promise<VoteResult> {
+  const { userId, entityId, value, type } = input;
+  const isDiscussion = type === 'discussion';
+
+  const whereClause = isDiscussion
+    ? { userId_discussionId: { userId, discussionId: entityId } }
+    : { userId_commentId: { userId, commentId: entityId } };
+
+  const createData = isDiscussion
+    ? { userId, discussionId: entityId, value }
+    : { userId, commentId: entityId, value };
+
+  if (value === 0) {
+    await db.vote.deleteMany({
+      where: isDiscussion ? { userId, discussionId: entityId } : { userId, commentId: entityId },
+    });
+  } else {
+    await db.vote.upsert({ where: whereClause, create: createData, update: { value } });
+  }
+
+  const votes = await db.vote.findMany({
+    where: isDiscussion ? { discussionId: entityId } : { commentId: entityId },
+    select: { userId: true, value: true },
+  });
+
+  return {
+    upvotes: votes.filter((v) => v.value === 1).length,
+    downvotes: votes.filter((v) => v.value === -1).length,
+    userVote: votes.find((v) => v.userId === userId)?.value ?? 0,
+  };
+}
+
+// ─── Bookmarks ────────────────────────────────────────────────────────────────
+
+export async function toggleBookmark(
+  userId: string,
+  discussionId: string,
+): Promise<{ bookmarked: boolean }> {
+  const existing = await db.bookmark.findUnique({
+    where: { userId_discussionId: { userId, discussionId } },
+  });
+
+  if (existing) {
+    await db.bookmark.delete({ where: { userId_discussionId: { userId, discussionId } } });
+    return { bookmarked: false };
+  }
+
+  await db.bookmark.create({ data: { userId, discussionId } });
+  return { bookmarked: true };
+}
+
+export async function getBookmarkedDiscussions(userId: string) {
+  const bookmarks = await db.bookmark.findMany({
+    where: { userId },
+    include: { discussion: { include: DISCUSSION_INCLUDE } },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  return bookmarks.map((b) => b.discussion);
+}
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\services\leaderboard.service.ts
+==============================
+
+// src/services/leaderboard.service.ts
+import { format, subDays } from 'date-fns';
+import { db } from '../libs/db';
+import type { LeaderboardEntry } from '../types/index';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface LeaderboardOptions {
+  limit?: number;   // default 50
+  offset?: number;  // default 0
+}
+
+export interface LeaderboardResponse {
+  data: LeaderboardEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function computeStreak(dates: Date[]): number {
+  if (!dates.length) return 0;
+
+  const uniqueDays = [
+    ...new Set(dates.map((d) => format(new Date(d), 'yyyy-MM-dd'))),
+  ].sort((a, b) => b.localeCompare(a));
+
+  const today = format(new Date(), 'yyyy-MM-dd');
+  const yesterday = format(subDays(new Date(), 1), 'yyyy-MM-dd');
+
+  const first = uniqueDays[0];
+  if (first !== today && first !== yesterday) return 0;
+
+  let streak = 1;
+  for (let i = 1; i < uniqueDays.length; i++) {
+    const prev = uniqueDays[i - 1];
+    const curr = uniqueDays[i];
+    if (!prev || !curr) break;
+    const expected = format(subDays(new Date(prev), 1), 'yyyy-MM-dd');
+    if (curr === expected) streak++;
+    else break;
+  }
+  return streak;
+}
+
+// ─── Service Method ───────────────────────────────────────────────────────────
+
+export async function getLeaderboard(options: LeaderboardOptions = {}): Promise<LeaderboardResponse> {
+  const limit = Math.min(options.limit ?? 50, 100); // cap at 100
+  const offset = options.offset ?? 0;
+
+  const allSolved = await db.problemSolved.findMany({
+    select: { userId: true, problemId: true, createdAt: true },
+  });
+
+  // Aggregate per user
+  const userMap = new Map<string, { problems: Set<string>; dates: Date[] }>();
+  for (const { userId, problemId, createdAt } of allSolved) {
+    if (!userMap.has(userId)) userMap.set(userId, { problems: new Set(), dates: [] });
+    const entry = userMap.get(userId)!;
+    entry.problems.add(problemId);
+    entry.dates.push(createdAt);
+  }
+
+  const ranked = Array.from(userMap.entries())
+    .map(([userId, { problems, dates }]) => {
+      const solved = problems.size;
+      const streak = computeStreak(dates);
+      return { userId, solved, streak, score: solved * 50 + streak * 10 };
+    })
+    .sort((a, b) => b.score - a.score || b.solved - a.solved);
+
+  const total = ranked.length;
+  const page = ranked.slice(offset, offset + limit);
+
+  // Batch-fetch only the users we need for this page
+  const userIds = page.map((e) => e.userId);
+  const users = await db.user.findMany({
+    where: { id: { in: userIds } },
+    select: { id: true, username: true, name: true, image: true },
+  });
+
+  const userInfoMap = new Map(
+    users.map((u) => [u.id, {
+      username: u.username ?? u.name ?? 'Unknown',
+      name: u.name ?? u.username ?? 'Unknown',
+      image: u.image ?? null,
+    }]),
+  );
+
+  const data: LeaderboardEntry[] = page.map((entry, i) => ({
+    rank: offset + i + 1,
+    username: userInfoMap.get(entry.userId)?.username ?? 'Unknown',
+    name: userInfoMap.get(entry.userId)?.name ?? 'Unknown',
+    image: userInfoMap.get(entry.userId)?.image ?? null,
+    solved: entry.solved,
+    streak: entry.streak,
+    score: entry.score,
+  }));
+
+  return { data, total, limit, offset };
+}
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\services\problem.service.ts
+==============================
+
+// src/services/problem.service.ts
+import type { Prisma } from '../generated/prisma/index';
+import { db } from '../libs/db';
+import { getJudge0LanguageId, pollBatchResults, submitBatch } from '../libs/judge0.lib';
+import { AppError } from '../utils/AppError';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface CreateProblemInput {
+  problemNumber?: number;
+  problem: {
+    title: string;
+    description: string;
+    difficulty: string;
+    tags?: string[];
+    examples?: unknown;
+    constraints?: string;
+    codeSnippets?: Record<string, string>;
+    referenceSolutions?: Record<string, string>;
+    hints?: string;
+    editorial?: string;
+    companyTags?: string[];
+  };
+  testCases: Array<{ input: string; expected: string; isPublic?: boolean }>;
+  userId: string;
+}
+
+export interface UpdateProblemInput {
+  problemId: string;
+  problemNumber?: number;
+  problem?: Partial<{
+    title: string;
+    description: string;
+    difficulty: string;
+    tags: string[];
+    examples: unknown;
+    constraints: string;
+    codeSnippets: Record<string, unknown>;
+    referenceSolutions: Record<string, unknown>;
+    companyTags: string[];
+  }>;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function decodeCodeString(code: string): string {
+  return code
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
+}
+
+function sanitizeCompanyTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return [];
+  return tags
+    .filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+    .map((t) => t.trim())
+    .slice(0, 20);
+}
+
+// ─── Service Methods ──────────────────────────────────────────────────────────
+
+export async function createProblem(input: CreateProblemInput) {
+  const { problemNumber, problem, testCases, userId } = input;
+  const {
+    title,
+    description,
+    difficulty,
+    tags = [],
+    examples = {},
+    constraints = '',
+    codeSnippets = {},
+    referenceSolutions = {},
+    hints = '',
+    editorial = '',
+    companyTags = [],
+  } = problem;
+
+  const existingProblem = await db.problem.findFirst({
+    where: { OR: [{ title }, ...(problemNumber ? [{ problemNumber }] : [])] },
+  });
+  if (existingProblem) {
+    throw AppError.conflict('Problem with this title or number already exists');
+  }
+
+  // Validate every reference solution against all test cases via Judge0
+  for (const [language, solutionCodeRaw] of Object.entries(referenceSolutions)) {
+    const solutionCode = decodeCodeString(solutionCodeRaw as string);
+    const languageId = getJudge0LanguageId(language);
+    if (!languageId) throw AppError.badRequest(`Language ${language} is not supported`);
+
+    const judgeSubmissions = testCases.map(({ input, expected }) => ({
+      source_code: solutionCode,
+      language_id: languageId,
+      stdin: input,
+      expected_output: expected,
+    }));
+
+    const submitResponse = await submitBatch(judgeSubmissions);
+    const tokens = submitResponse.map((r) => r.token);
+    const results = await pollBatchResults(tokens);
+
+    for (let i = 0; i < results.length; i++) {
+      if (results[i]?.status.id !== 3) {
+        throw AppError.badRequest(
+          `Reference solution failed on test case #${i + 1} for language ${language}`,
+        );
+      }
+    }
+  }
+
+  return db.$transaction(async (tx: Parameters<Parameters<typeof db.$transaction>[0]>[0]) => {
+    const created = await tx.problem.create({
+      data: {
+        problemNumber,
+        title,
+        description,
+        difficulty: difficulty as 'EASY' | 'MEDIUM' | 'HARD',
+        tags,
+        examples: examples as Prisma.InputJsonValue,
+        constraints,
+        codeSnippets,
+        referenceSolutions,
+        userId,
+        hints,
+        editorial,
+        companyTags: sanitizeCompanyTags(companyTags),
+      },
+    });
+
+    if (testCases.length > 0) {
+      await tx.testCase.createMany({
+        data: testCases.map((tc) => ({
+          input: tc.input,
+          expected: tc.expected,
+          isPublic: Boolean(tc.isPublic),
+          problemId: created.id,
+        })),
+      });
+    }
+
+    return created;
+  });
+}
+
+export async function getAllProblems(userId: string | null) {
+  const problems = await db.problem.findMany({
+    orderBy: { problemNumber: 'asc' },
+    include: { solvedBy: { select: { userId: true } } },
+  });
+
+  if (!problems.length) throw AppError.notFound('No problems found');
+
+  return problems.map((problem: (typeof problems)[number]) => ({
+    id: problem.id,
+    isSolved: userId
+      ? problem.solvedBy.some((entry: { userId: string }) => entry.userId === userId)
+      : false,
+    problemNumber: problem.problemNumber,
+    tags: problem.tags,
+    title: problem.title,
+    updatedAt: problem.updatedAt,
+    createdAt: problem.createdAt,
+    userId: problem.userId,
+    description: problem.description,
+    difficulty: problem.difficulty,
+    companyTags: problem.companyTags,
+  }));
+}
+
+export async function getProblemById(id: string) {
+  const problem = await db.problem.findUnique({
+    where: { id },
+    include: {
+      testCases: {
+        where: { isPublic: true },
+        select: { input: true, expected: true },
+      },
+    },
+  });
+  if (!problem) throw AppError.notFound('Problem not found');
+  return problem;
+}
+
+export async function updateProblem(input: UpdateProblemInput) {
+  const { problemId, problemNumber, problem } = input;
+
+  const existing = await db.problem.findUnique({ where: { id: problemId } });
+  if (!existing) throw AppError.notFound('Problem not found');
+
+  const updateData: Record<string, unknown> = {};
+  if (problem) {
+    if (problem.title !== undefined) updateData.title = problem.title;
+    if (problem.description !== undefined) updateData.description = problem.description;
+    if (problem.difficulty !== undefined) updateData.difficulty = problem.difficulty;
+    if (problem.tags !== undefined) updateData.tags = problem.tags;
+    if (problem.examples !== undefined) updateData.examples = problem.examples;
+    if (problem.constraints !== undefined) updateData.constraints = problem.constraints;
+    if (problem.codeSnippets !== undefined) updateData.codeSnippets = problem.codeSnippets;
+    if (problem.referenceSolutions !== undefined)
+      updateData.referenceSolutions = problem.referenceSolutions;
+    if (problem.companyTags !== undefined)
+      updateData.companyTags = sanitizeCompanyTags(problem.companyTags);
+  }
+  if (problemNumber !== undefined) updateData.problemNumber = problemNumber;
+
+  return db.problem.update({
+    where: { id: problemId },
+    data: updateData as Prisma.ProblemUpdateInput,
+  });
+}
+
+export async function deleteProblem(id: string) {
+  const problem = await db.problem.findUnique({ where: { id } });
+  if (!problem) throw AppError.notFound('Problem not found');
+  await db.problem.delete({ where: { id } });
+}
+
+export async function getSolvedProblemsByUser(userId: string) {
+  return db.problem.findMany({
+    where: { solvedBy: { some: { userId } } },
+    include: {
+      solvedBy: { where: { userId }, select: { createdAt: true } },
+    },
+    orderBy: { updatedAt: 'desc' },
+  });
+}
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\services\roadmap.service.ts
+==============================
+
+// src/services/roadmap.service.ts
+import type { Roadmap, Prisma } from '../generated/prisma/index';
+import { db } from '../libs/db';
+import { AppError } from '../utils/AppError';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface CreateRoadmapInput {
+  name: string;
+  slug: string;
+  description?: string;
+  icon?: string;
+  color?: string;
+  isPublished?: boolean;
+  sections?: unknown[];
+  order?: number;
+}
+
+export interface UpdateRoadmapInput extends Partial<CreateRoadmapInput> {
+  id: string;
+}
+
+export interface FormattedRoadmap {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  icon: string;
+  color: string;
+  isPublished: boolean;
+  sections: unknown;
+  order: number;
+  completedTopicIds: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function formatRoadmap(roadmap: Roadmap, completedTopicIds: string[] = []): FormattedRoadmap {
+  return {
+    id: roadmap.id,
+    name: roadmap.name,
+    slug: roadmap.slug,
+    description: roadmap.description,
+    icon: roadmap.icon,
+    color: roadmap.color,
+    isPublished: roadmap.isPublished,
+    sections: roadmap.sections,
+    order: roadmap.order,
+    completedTopicIds,
+    createdAt: roadmap.createdAt,
+    updatedAt: roadmap.updatedAt,
+  };
+}
+
+// ─── Service Methods ──────────────────────────────────────────────────────────
+
+export async function getAllPublishedRoadmaps(userId?: string): Promise<FormattedRoadmap[]> {
+  const roadmaps = await db.roadmap.findMany({
+    where: { isPublished: true },
+    orderBy: { order: 'asc' },
+  });
+
+  let progressMap: Record<string, string[]> = {};
+  if (userId) {
+    const progresses = await db.roadmapProgress.findMany({
+      where: { userId },
+      select: { roadmapId: true, completedTopicIds: true },
+    });
+    progressMap = Object.fromEntries(progresses.map((p) => [p.roadmapId, p.completedTopicIds]));
+  }
+
+  return roadmaps.map((r) => formatRoadmap(r, progressMap[r.id] ?? []));
+}
+
+export async function getRoadmapBySlug(slug: string, userId?: string): Promise<FormattedRoadmap> {
+  const roadmap = await db.roadmap.findUnique({ where: { slug } });
+  if (!roadmap || !roadmap.isPublished) throw AppError.notFound('Roadmap not found');
+
+  let completedTopicIds: string[] = [];
+  if (userId) {
+    const progress = await db.roadmapProgress.findUnique({
+      where: { userId_roadmapId: { userId, roadmapId: roadmap.id } },
+      select: { completedTopicIds: true },
+    });
+    completedTopicIds = progress?.completedTopicIds ?? [];
+  }
+
+  return formatRoadmap(roadmap, completedTopicIds);
+}
+
+export async function saveRoadmapProgress(
+  userId: string,
+  roadmapId: string,
+  completedTopicIds: string[],
+): Promise<{ completedTopicIds: string[] }> {
+  const roadmap = await db.roadmap.findUnique({ where: { id: roadmapId }, select: { id: true } });
+  if (!roadmap) throw AppError.notFound('Roadmap not found');
+
+  const progress = await db.roadmapProgress.upsert({
+    where: { userId_roadmapId: { userId, roadmapId } },
+    update: { completedTopicIds },
+    create: { userId, roadmapId, completedTopicIds },
+  });
+
+  return { completedTopicIds: progress.completedTopicIds };
+}
+
+export async function resetRoadmapProgress(userId: string, roadmapId: string): Promise<void> {
+  await db.roadmapProgress.deleteMany({ where: { userId, roadmapId } });
+}
+
+// ─── Admin Methods ────────────────────────────────────────────────────────────
+
+export async function getAllRoadmapsAdmin(): Promise<FormattedRoadmap[]> {
+  const roadmaps = await db.roadmap.findMany({ orderBy: { order: 'asc' } });
+  return roadmaps.map((r) => formatRoadmap(r));
+}
+
+export async function getRoadmapByIdAdmin(id: string): Promise<FormattedRoadmap> {
+  const roadmap = await db.roadmap.findUnique({ where: { id } });
+  if (!roadmap) throw AppError.notFound('Roadmap not found');
+  return formatRoadmap(roadmap);
+}
+
+export async function createRoadmap(input: CreateRoadmapInput): Promise<FormattedRoadmap> {
+  const { name, slug, description, icon, color, isPublished, sections, order } = input;
+
+  const existing = await db.roadmap.findUnique({ where: { slug } });
+  if (existing) throw AppError.conflict('A roadmap with this slug already exists');
+
+  const roadmap = await db.roadmap.create({
+    data: {
+      name: name.trim(),
+      slug: slug.trim(),
+      description: description?.trim() ?? '',
+      icon: icon ?? 'Binary',
+      color: color ?? 'emerald',
+      isPublished: isPublished ?? false,
+      sections: (sections ?? []) as Prisma.InputJsonValue,
+      order: order ?? 0,
+    },
+  });
+
+  return formatRoadmap(roadmap);
+}
+
+export async function updateRoadmap(input: UpdateRoadmapInput): Promise<FormattedRoadmap> {
+  const { id, name, slug, description, icon, color, isPublished, sections, order } = input;
+
+  const existing = await db.roadmap.findUnique({ where: { id } });
+  if (!existing) throw AppError.notFound('Roadmap not found');
+
+  if (slug && slug !== existing.slug) {
+    const conflict = await db.roadmap.findUnique({ where: { slug } });
+    if (conflict) throw AppError.conflict('A roadmap with this slug already exists');
+  }
+
+  const roadmap = await db.roadmap.update({
+    where: { id },
+    data: {
+      ...(name !== undefined && { name: name.trim() }),
+      ...(slug !== undefined && { slug: slug.trim() }),
+      ...(description !== undefined && { description: description.trim() }),
+      ...(icon !== undefined && { icon }),
+      ...(color !== undefined && { color }),
+      ...(isPublished !== undefined && { isPublished }),
+      ...(sections !== undefined && { sections: sections as Prisma.InputJsonValue }),
+      ...(order !== undefined && { order }),
+    },
+  });
+
+  return formatRoadmap(roadmap);
+}
+
+export async function deleteRoadmap(id: string): Promise<void> {
+  const existing = await db.roadmap.findUnique({ where: { id } });
+  if (!existing) throw AppError.notFound('Roadmap not found');
+  await db.roadmap.delete({ where: { id } });
+}
+
+export async function toggleRoadmapPublish(id: string): Promise<FormattedRoadmap> {
+  const existing = await db.roadmap.findUnique({ where: { id } });
+  if (!existing) throw AppError.notFound('Roadmap not found');
+
+  const roadmap = await db.roadmap.update({
+    where: { id },
+    data: { isPublished: !existing.isPublished },
+  });
+
+  return formatRoadmap(roadmap);
+}
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\services\sheet.service.ts
+==============================
+
+// src/services/sheet.service.ts
+import { db } from '../libs/db';
+import { AppError } from '../utils/AppError';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface CreateSheetInput {
+  userId: string;
+  name: string;
+  description?: string;
+  topics: Array<{ problemIds: string[] }>;
+}
+
+export interface UpdateSheetInput {
+  sheetId: string;
+  name: string;
+  description?: string;
+  topics: Array<{ problemIds: string[] }>;
+}
+
+// ─── Shared include ───────────────────────────────────────────────────────────
+
+const SHEET_INCLUDE = {
+  user: { select: { id: true, name: true, username: true, image: true } },
+  problems: {
+    include: {
+      problem: {
+        select: {
+          id: true, title: true, problemNumber: true,
+          difficulty: true, tags: true, companyTags: true,
+        },
+      },
+    },
+  },
+} as const;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function extractProblemIds(topics: Array<{ problemIds: string[] }>): string[] {
+  return [...new Set(topics.flatMap((t) => t.problemIds))];
+}
+
+function enrichSheet(sheet: Awaited<ReturnType<typeof db.sheet.findUnique>> & {
+  problems: Array<{ problem: { tags: string[]; difficulty: string }; problemId?: string }>;
+}) {
+  if (!sheet) return null;
+  return {
+    ...sheet,
+    totalProblems: sheet.problems.length,
+    allTags: [...new Set(sheet.problems.flatMap((p) => p.problem.tags ?? []))],
+    allDifficulties: [...new Set(sheet.problems.map((p) => p.problem.difficulty))],
+  };
+}
+
+// ─── Service Methods ──────────────────────────────────────────────────────────
+
+export async function createSheet(input: CreateSheetInput) {
+  const { userId, name, description, topics } = input;
+  const allProblemIds = extractProblemIds(topics);
+
+  return db.$transaction(async (tx) => {
+    const created = await tx.sheet.create({ data: { name, description, userId } });
+
+    if (allProblemIds.length > 0) {
+      await tx.problemInSheet.createMany({
+        data: allProblemIds.map((problemId) => ({ sheetId: created.id, problemId })),
+        skipDuplicates: true,
+      });
+    }
+
+    return tx.sheet.findUnique({ where: { id: created.id }, include: SHEET_INCLUDE });
+  });
+}
+
+export async function getAllSheets() {
+  const sheets = await db.sheet.findMany({ include: SHEET_INCLUDE });
+  return sheets.map((sheet) => ({
+    ...sheet,
+    totalProblems: sheet.problems.length,
+    allTags: [...new Set(sheet.problems.flatMap((p) => p.problem.tags ?? []))],
+    allDifficulties: [...new Set(sheet.problems.map((p) => p.problem.difficulty))],
+  }));
+}
+
+export async function getSheetById(sheetId: string, userId: string | null) {
+  const sheet = await db.sheet.findFirst({
+    where: { id: sheetId },
+    include: {
+      user: { select: { id: true, name: true, username: true, image: true } },
+      problems: {
+        include: {
+          problem: {
+            select: {
+              id: true, title: true, problemNumber: true, difficulty: true, tags: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!sheet) throw AppError.notFound('Sheet not found');
+
+  const problemIds = sheet.problems.map((p) => p.problemId);
+
+  const solvedSet = new Set(
+    userId && problemIds.length
+      ? (
+          await db.problemSolved.findMany({
+            where: { userId, problemId: { in: problemIds } },
+            select: { problemId: true },
+          })
+        ).map((r) => r.problemId)
+      : [],
+  );
+
+  return {
+    ...sheet,
+    totalProblems: sheet.problems.length,
+    allTags: [...new Set(sheet.problems.flatMap((p) => p.problem.tags ?? []))],
+    allDifficulties: [...new Set(sheet.problems.map((p) => p.problem.difficulty))],
+    problems: sheet.problems.map((p) => ({
+      ...p,
+      problem: { ...p.problem, isSolved: solvedSet.has(p.problemId) },
+    })),
+  };
+}
+
+export async function addProblemsToSheet(sheetId: string, problemIds: string[]) {
+  if (!Array.isArray(problemIds) || problemIds.length === 0) {
+    throw AppError.badRequest('Invalid or missing problemIds');
+  }
+  return db.problemInSheet.createMany({
+    data: problemIds.map((problemId) => ({ sheetId, problemId })),
+    skipDuplicates: true,
+  });
+}
+
+export async function deleteSheet(sheetId: string) {
+  const sheet = await db.sheet.findUnique({ where: { id: sheetId } });
+  if (!sheet) throw AppError.notFound('Sheet not found');
+  await db.sheet.delete({ where: { id: sheetId } });
+}
+
+export async function removeProblemsFromSheet(sheetId: string, problemIds: string[]) {
+  if (!Array.isArray(problemIds) || problemIds.length === 0) {
+    throw AppError.badRequest('Invalid or missing problemIds');
+  }
+  return db.problemInSheet.deleteMany({
+    where: { sheetId, problemId: { in: problemIds } },
+  });
+}
+
+export async function replaceProblemsInSheet(sheetId: string, problemIds: string[]) {
+  if (!Array.isArray(problemIds)) throw AppError.badRequest('problemIds must be an array');
+
+  await db.problemInSheet.deleteMany({ where: { sheetId } });
+
+  if (problemIds.length === 0) return [];
+
+  return db.problemInSheet.createMany({
+    data: problemIds.map((problemId) => ({ sheetId, problemId })),
+  });
+}
+
+export async function updateSheet(input: UpdateSheetInput) {
+  const { sheetId, name, description, topics } = input;
+  const allProblemIds = extractProblemIds(topics);
+
+  return db.$transaction(async (tx) => {
+    const updated = await tx.sheet.update({
+      where: { id: sheetId },
+      data: { name, description },
+    });
+
+    await tx.problemInSheet.deleteMany({ where: { sheetId } });
+
+    if (allProblemIds.length > 0) {
+      await tx.problemInSheet.createMany({
+        data: allProblemIds.map((problemId) => ({ sheetId: updated.id, problemId })),
+        skipDuplicates: true,
+      });
+    }
+
+    return tx.sheet.findUnique({ where: { id: sheetId }, include: SHEET_INCLUDE });
+  });
+}
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\services\submission.service.ts
+==============================
+
+// src/services/submission.service.ts
+import { format } from 'date-fns';
+import { db } from '../libs/db';
+import { formatMemory } from '../libs/formatMemory';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface FormattedSubmission {
+  id: string;
+  problemName: string;
+  problemId: string;
+  problemDifficulty: string;
+  tags: string[];
+  status: string;
+  language: string;
+  runtime: string;
+  memory: string;
+  date: string;
+}
+
+export interface SubmissionsResponse {
+  submissions: FormattedSubmission[];
+  stats: {
+    totalProblemsAvailable: number;
+    solvedProblemCount: number;
+  };
+}
+
+export interface ProblemSubmissionsResponse {
+  problemId: string;
+  problemTitle: string;
+  total: number;
+  submissions: Omit<
+    FormattedSubmission,
+    'problemName' | 'problemId' | 'problemDifficulty' | 'tags'
+  >[];
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function convertToKB(memStr: string | number | null | undefined): number {
+  if (typeof memStr === 'number') return memStr;
+  if (!memStr) return 0;
+  const match = String(memStr).match(/([\d.]+)\s*(KB|MB|GB)?/i);
+  if (!match) return 0;
+  const value = parseFloat(match[1] ?? '0');
+  const unit = (match[2] ?? 'KB').toUpperCase();
+  if (unit === 'MB') return value * 1024;
+  if (unit === 'GB') return value * 1024 * 1024;
+  return value;
+}
+
+// ─── Service Methods ──────────────────────────────────────────────────────────
+
+export async function getUserSubmissions(userId: string): Promise<SubmissionsResponse> {
+  const [submissions, totalProblems, solvedProblems] = await Promise.all([
+    db.submission.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        problemId: true,
+        status: true,
+        language: true,
+        createdAt: true,
+        problem: { select: { title: true, difficulty: true, tags: true } },
+        testCases: { select: { time: true, memory: true } },
+      },
+    }),
+    db.problem.count(),
+    db.problemSolved.findMany({
+      where: { userId },
+      select: { problemId: true },
+      distinct: ['problemId'],
+    }),
+  ]);
+
+  if (!submissions.length) {
+    return {
+      submissions: [],
+      stats: { totalProblemsAvailable: totalProblems, solvedProblemCount: 0 },
+    };
+  }
+
+  const formatted: FormattedSubmission[] = submissions.map((s) => {
+    const totalTime = s.testCases.reduce((acc, tc) => acc + (parseFloat(tc.time ?? '0') || 0), 0);
+    const totalMemoryKB = s.testCases.reduce((acc, tc) => acc + convertToKB(tc.memory), 0);
+
+    return {
+      id: s.id,
+      problemName: s.problem.title,
+      problemId: s.problemId,
+      problemDifficulty: s.problem.difficulty,
+      tags: s.problem.tags,
+      status: s.status,
+      language: s.language,
+      runtime: `${totalTime.toFixed(2)}ms`,
+      memory: formatMemory(totalMemoryKB) ?? '—',
+      date: format(new Date(s.createdAt), 'MMM d, yyyy'),
+    };
+  });
+
+  return {
+    submissions: formatted,
+    stats: {
+      totalProblemsAvailable: totalProblems,
+      solvedProblemCount: solvedProblems.length,
+    },
+  };
+}
+
+export async function getUserSubmissionsForProblem(
+  userId: string,
+  problemId: string,
+): Promise<ProblemSubmissionsResponse> {
+  const [submissions, problem] = await Promise.all([
+    db.submission.findMany({
+      where: { userId, problemId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        status: true,
+        language: true,
+        createdAt: true,
+        problem: { select: { title: true } },
+        testCases: { select: { time: true, memory: true } },
+      },
+    }),
+    db.problem.findUnique({ where: { id: problemId }, select: { title: true } }),
+  ]);
+
+  const problemTitle = problem?.title ?? '';
+
+  const formatted = submissions.map((s) => {
+    const totalTime = s.testCases.reduce((acc, tc) => acc + (parseFloat(tc.time ?? '0') || 0), 0);
+    const totalMemoryKB = s.testCases.reduce((acc, tc) => acc + convertToKB(tc.memory), 0);
+
+    return {
+      id: s.id,
+      status: s.status,
+      language: s.language,
+      runtime: `${totalTime.toFixed(2)}ms`,
+      memory: formatMemory(totalMemoryKB) ?? '—',
+      date: format(new Date(s.createdAt), 'MMM d, yyyy'),
+    };
+  });
+
+  return { problemId, problemTitle, total: submissions.length, submissions: formatted };
+}
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\services\userStats.service.ts
+==============================
+
+// src/services/userStats.service.ts
+import { subDays, format, startOfDay, endOfDay } from 'date-fns';
+import { db } from '../libs/db';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface HeatmapDay {
+  date: string;
+  count: number;
+}
+
+export interface WeeklyDay {
+  date: string;
+  day: string;
+  problems: number;
+}
+
+export interface MonthlyEntry {
+  month: string;
+  solved: number;
+  submissions: number;
+}
+
+export interface LanguageStat {
+  language: string;
+  count: number;
+  percentage: number;
+}
+
+export interface RecentSubmission {
+  problem: string;
+  problemId: string;
+  difficulty: string;
+  status: string;
+  language: string;
+  time: string;
+  memory: string;
+  date: string;
+}
+
+export interface ProgressData {
+  weeklyData: WeeklyDay[];
+  monthlyTrend: MonthlyEntry[];
+  languageStats: LanguageStat[];
+  recentSubmissions: RecentSubmission[];
+}
+
+export interface SolvedStats {
+  difficultyStats: Record<string, number>;
+  tagStats: Record<string, number>;
+  totalDifficultyCounts: Record<string, number>;
+  totalTagCounts: Record<string, number>;
+  currentStreak: number;
+  maxStreak: number;
+  totalSubmissions: number;
+  acceptanceRate: number;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function formatTimeAgo(date: Date): string {
+  const diffHrs = Math.floor((Date.now() - new Date(date).getTime()) / (1000 * 60 * 60));
+  if (diffHrs < 1) return 'Just now';
+  if (diffHrs < 24) return `${diffHrs}h ago`;
+  const diffDays = Math.floor(diffHrs / 24);
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return format(new Date(date), 'MMM d');
+}
+
+function parseAvg(raw: string | null, unit: string): string {
+  if (!raw) return '-';
+  try {
+    const parsed = JSON.parse(raw);
+    const arr = Array.isArray(parsed) ? parsed : [parsed];
+    const nums = arr.map((s: unknown) => parseFloat(String(s))).filter((n) => !isNaN(n));
+    if (!nums.length) return '-';
+    const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
+    return `${avg.toFixed(3)}${unit}`;
+  } catch {
+    const num = parseFloat(String(raw));
+    return isNaN(num) ? '-' : `${num.toFixed(3)}${unit}`;
+  }
+}
+
+function computeStreaks(uniqueDates: string[]): { current: number; max: number } {
+  if (!uniqueDates.length) return { current: 0, max: 0 };
+
+  const today = format(new Date(), 'yyyy-MM-dd');
+  const yesterday = format(subDays(new Date(), 1), 'yyyy-MM-dd');
+
+  let current = 0;
+  if (uniqueDates[0]! === today || uniqueDates[0]! === yesterday) {
+    current = 1;
+    for (let i = 1; i < uniqueDates.length; i++) {
+      const expected = format(subDays(new Date(uniqueDates[i - 1]!), 1), 'yyyy-MM-dd');
+      if (uniqueDates[i]! === expected) current++;
+      else break;
+    }
+  }
+
+  let max = uniqueDates.length > 0 ? 1 : 0;
+  let temp = 1;
+  for (let i = 1; i < uniqueDates.length; i++) {
+    const expected = format(subDays(new Date(uniqueDates[i - 1]!), 1), 'yyyy-MM-dd');
+    if (uniqueDates[i]! === expected) {
+      temp++;
+      max = Math.max(max, temp);
+    } else {
+      temp = 1;
+    }
+  }
+
+  return { current, max };
+}
+
+// ─── Service Methods ──────────────────────────────────────────────────────────
+
+export async function getHeatmap(userId: string): Promise<HeatmapDay[]> {
+  const startDate = subDays(new Date(), 364);
+
+  const submissions = await db.submission.findMany({
+    where: { userId, createdAt: { gte: startDate } },
+    select: { createdAt: true },
+  });
+
+  const countByDate: Record<string, number> = {};
+  submissions.forEach((s) => {
+    const key = format(new Date(s.createdAt), 'yyyy-MM-dd');
+    countByDate[key] = (countByDate[key] ?? 0) + 1;
+  });
+
+  const today = new Date();
+  return Array.from({ length: 365 }, (_, i) => {
+    const date = subDays(today, i);
+    const formatted = format(date, 'yyyy-MM-dd');
+    return { date: formatted, count: countByDate[formatted] ?? 0 };
+  }).reverse();
+}
+
+export async function getProgressData(userId: string): Promise<ProgressData> {
+  const end = endOfDay(new Date());
+  const weekStart = startOfDay(subDays(new Date(), 6));
+
+  // Build month boundaries for last 6 months
+  const monthRanges = Array.from({ length: 6 }, (_, i) => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - (5 - i));
+    return {
+      label: format(d, 'MMM'),
+      start: new Date(d.getFullYear(), d.getMonth(), 1),
+      end: new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59),
+    };
+  });
+
+  // Fire all DB queries in a single Promise.all — no sequential awaits
+  const [recentSubmissions, allSubmissions, latestSubmissions, ...monthCounts] = await Promise.all([
+    db.submission.findMany({
+      where: { userId, createdAt: { gte: weekStart, lte: end } },
+      select: { createdAt: true },
+    }),
+    db.submission.findMany({
+      where: { userId },
+      select: { language: true },
+    }),
+    db.submission.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      select: {
+        status: true,
+        language: true,
+        memory: true,
+        time: true,
+        createdAt: true,
+        problem: { select: { title: true, difficulty: true, id: true } },
+      },
+    }),
+    // 6 × 2 count queries run in parallel
+    ...monthRanges.flatMap(({ start, end: mEnd }) => [
+      db.submission.count({ where: { userId, createdAt: { gte: start, lte: mEnd } } }),
+      db.problemSolved.count({ where: { userId, createdAt: { gte: start, lte: mEnd } } }),
+    ]),
+  ]);
+
+  // Weekly activity
+  const submissionsByDate: Record<string, number> = {};
+  recentSubmissions.forEach((item) => {
+    const key = format(item.createdAt, 'yyyy-MM-dd');
+    submissionsByDate[key] = (submissionsByDate[key] ?? 0) + 1;
+  });
+
+  const weeklyData: WeeklyDay[] = Array.from({ length: 7 }, (_, i) => {
+    const date = subDays(new Date(), 6 - i);
+    const key = format(date, 'yyyy-MM-dd');
+    return { date: key, day: format(date, 'EEE'), problems: submissionsByDate[key] ?? 0 };
+  });
+
+  // Monthly trend — unpack pairs from flat monthCounts array
+  const monthlyTrend: MonthlyEntry[] = monthRanges.map(({ label }, i) => ({
+    month: label,
+    submissions: (monthCounts[i * 2] as number) ?? 0,
+    solved: (monthCounts[i * 2 + 1] as number) ?? 0,
+  }));
+
+  // Language breakdown
+  const languageCounts: Record<string, number> = {};
+  allSubmissions.forEach((s) => {
+    languageCounts[s.language] = (languageCounts[s.language] ?? 0) + 1;
+  });
+
+  const totalLangCount = Object.values(languageCounts).reduce((a, b) => a + b, 0);
+  const languageStats: LanguageStat[] = Object.entries(languageCounts)
+    .map(([language, count]) => ({
+      language,
+      count,
+      percentage: totalLangCount > 0 ? Math.round((count / totalLangCount) * 100) : 0,
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  const formattedRecent: RecentSubmission[] = latestSubmissions.map((s) => ({
+    problem: s.problem.title,
+    problemId: s.problem.id,
+    difficulty: s.problem.difficulty.charAt(0) + s.problem.difficulty.slice(1).toLowerCase(),
+    status: s.status,
+    language: s.language,
+    time: parseAvg(s.time, 's'),
+    memory: parseAvg(s.memory, ' MB'),
+    date: formatTimeAgo(s.createdAt),
+  }));
+
+  return {
+    weeklyData,
+    monthlyTrend,
+    languageStats,
+    recentSubmissions: formattedRecent,
+  };
+}
+
+export async function getSolvedStats(userId: string): Promise<SolvedStats> {
+  const solvedProblems = await db.problemSolved.findMany({
+    where: { userId },
+    select: { problemId: true },
+    distinct: ['problemId'],
+  });
+
+  const solvedProblemIds = solvedProblems.map((item) => item.problemId);
+
+  const [solvedDetails, allProblems] = await Promise.all([
+    solvedProblemIds.length > 0
+      ? db.problem.findMany({
+          where: { id: { in: solvedProblemIds } },
+          select: { difficulty: true, tags: true },
+        })
+      : Promise.resolve([]),
+    db.problem.findMany({ select: { difficulty: true, tags: true } }),
+  ]);
+
+  const difficultyStats: Record<string, number> = { EASY: 0, MEDIUM: 0, HARD: 0 };
+  const tagStats: Record<string, number> = {};
+  for (const p of solvedDetails) {
+    difficultyStats[p.difficulty] = (difficultyStats[p.difficulty] ?? 0) + 1;
+    for (const tag of p.tags) tagStats[tag] = (tagStats[tag] ?? 0) + 1;
+  }
+
+  const totalDifficultyCounts: Record<string, number> = { EASY: 0, MEDIUM: 0, HARD: 0 };
+  const totalTagCounts: Record<string, number> = {};
+  for (const p of allProblems) {
+    totalDifficultyCounts[p.difficulty] = (totalDifficultyCounts[p.difficulty] ?? 0) + 1;
+    for (const tag of p.tags) totalTagCounts[tag] = (totalTagCounts[tag] ?? 0) + 1;
+  }
+
+  // Streak
+  const allSolvedDates = await db.problemSolved.findMany({
+    where: { userId },
+    select: { createdAt: true },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  const uniqueDates: string[] = Array.from<string>(
+    new Set<string>(allSolvedDates.map((s) => format(new Date(s.createdAt), 'yyyy-MM-dd'))),
+  ).sort((a, b) => b.localeCompare(a));
+
+  const { current: currentStreak, max: maxStreak } = computeStreaks(uniqueDates);
+
+  const [totalSubmissions, acceptedSubmissions] = await Promise.all([
+    db.submission.count({ where: { userId } }),
+    db.submission.count({ where: { userId, status: 'Accepted' } }),
+  ]);
+
+  const acceptanceRate =
+    totalSubmissions > 0 ? Math.round((acceptedSubmissions / totalSubmissions) * 100) : 0;
+
+  return {
+    difficultyStats,
+    tagStats,
+    totalDifficultyCounts,
+    totalTagCounts,
+    currentStreak,
+    maxStreak,
+    totalSubmissions,
+    acceptanceRate,
+  };
+}
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\types\express.d.ts
+==============================
+
+// src/types/express.d.ts
+import type { AuthUser } from './index.js';
+
+declare global {
+  namespace Express {
+    // eslint-disable-next-line @typescript-eslint/no-empty-object-type
+    interface User extends AuthUser {}
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\types\index.ts
+==============================
+
+// src/types/index.ts
+import type { UserRole } from '../generated/prisma';
+
+// ─── Authenticated User ───────────────────────────────────────────────────────
+
+export interface AuthUser {
+  id: string;
+  name: string | null;
+  username: string | null;   // String? @unique in your schema
+  email: string;
+  role: UserRole;
+  image: string | null;
+}
+
+// ─── Judge0 ───────────────────────────────────────────────────────────────────
+
+export interface Judge0Submission {
+  source_code: string;
+  language_id: number;
+  stdin: string;
+  expected_output?: string;
+}
+
+export interface Judge0Status {
+  id: number;
+  description: string;
+}
+
+export interface Judge0Result {
+  token: string;
+  stdout: string | null;
+  stderr: string | null;
+  compile_output: string | null;
+  status: Judge0Status;
+  memory: number | null;
+  time: string | null;
+}
+
+// ─── Leaderboard ──────────────────────────────────────────────────────────────
+
+export interface LeaderboardEntry {
+  rank: number;
+  username: string;
+  name: string;
+  image: string | null;
+  solved: number;
+  streak: number;
+  score: number;
+}
+
+// ─── Formatted Results ────────────────────────────────────────────────────────
+
+export interface TestCaseDetail {
+  testCase: number;
+  passed: boolean;
+  stdout: string;
+  expected: string;
+  stderr: string | null;
+  compile_output: string | null;
+  status: string;
+  memory?: string;
+  time?: string;
+  isPublic?: boolean;
+  testCaseId?: string;
+  _rawTime: number | null;
+  _rawMemory: number | null;
+}
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\utils\ApiResponse.ts
+==============================
+
+// src/utils/ApiResponse.ts
+import type { Request, Response } from 'express';
+
+interface SuccessPayload<T> {
+  success: true;
+  statusCode: number;
+  message: string;
+  timestamp: string;
+  data: T | null;
+}
+
+interface ErrorPayload {
+  success: false;
+  statusCode: number;
+  message: string;
+  timestamp: string;
+  path: string;
+  data: null;
+  errors: unknown | null;
+}
+
+export class ApiResponse {
+  // ─── Success ────────────────────────────────────────────────────────────────
+
+  static success<T>(res: Response, message: string, data?: T, statusCode = 200): Response {
+    const payload: SuccessPayload<T> = {
+      success: true,
+      statusCode,
+      message,
+      timestamp: new Date().toISOString(),
+      data: data ?? null,
+    };
+    return res.status(statusCode).json(payload);
+  }
+
+  static created<T>(res: Response, message: string, data?: T): Response {
+    return ApiResponse.success(res, message, data, 201);
+  }
+
+  // ─── Error ──────────────────────────────────────────────────────────────────
+
+  static error(
+    res: Response,
+    req: Request,
+    message: string,
+    statusCode = 500,
+    errors?: unknown,
+  ): Response {
+    const payload: ErrorPayload = {
+      success: false,
+      statusCode,
+      message,
+      timestamp: new Date().toISOString(),
+      path: req.originalUrl,
+      data: null,
+      errors: errors ?? null,
+    };
+    return res.status(statusCode).json(payload);
+  }
+
+  static badRequest(res: Response, req: Request, message: string, errors?: unknown): Response {
+    return ApiResponse.error(res, req, message, 400, errors);
+  }
+
+  static unauthorized(res: Response, req: Request, message = 'Unauthorized'): Response {
+    return ApiResponse.error(res, req, message, 401);
+  }
+
+  static forbidden(res: Response, req: Request, message = 'Forbidden'): Response {
+    return ApiResponse.error(res, req, message, 403);
+  }
+
+  static notFound(res: Response, req: Request, message = 'Not found'): Response {
+    return ApiResponse.error(res, req, message, 404);
+  }
+
+  static conflict(res: Response, req: Request, message: string): Response {
+    return ApiResponse.error(res, req, message, 409);
+  }
+
+  static serverError(res: Response, req: Request, message = 'Internal server error'): Response {
+    return ApiResponse.error(res, req, message, 500);
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\utils\AppError.ts
+==============================
+
+// src/utils/AppError.ts
+
+export class AppError extends Error {
+  public readonly statusCode: number;
+  public readonly isOperational: boolean;
+
+  constructor(message: string, statusCode: number, isOperational = true) {
+    super(message);
+    this.statusCode = statusCode;
+    this.isOperational = isOperational;
+    Object.setPrototypeOf(this, new.target.prototype);
+    Error.captureStackTrace(this, this.constructor);
+  }
+
+  static badRequest(message: string): AppError {
+    return new AppError(message, 400);
+  }
+
+  static unauthorized(message = 'Unauthorized'): AppError {
+    return new AppError(message, 401);
+  }
+
+  static forbidden(message = 'Forbidden'): AppError {
+    return new AppError(message, 403);
+  }
+
+  static notFound(message = 'Not found'): AppError {
+    return new AppError(message, 404);
+  }
+
+  static conflict(message: string): AppError {
+    return new AppError(message, 409);
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\utils\asyncHandler.ts
+==============================
+
+// src/utils/asyncHandler.ts
+import type { Request, Response, NextFunction, RequestHandler } from 'express';
+
+type AsyncFn = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => Promise<unknown>;
+
+/**
+ * Wraps an async route handler so any rejected promise is forwarded
+ * to Express's global error handler via next(err).
+ */
+export const asyncHandler =
+  (fn: AsyncFn): RequestHandler =>
+  (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\utils\logger.ts
+==============================
+
+// src/utils/logger.ts
+import winston from 'winston';
+
+const { combine, timestamp, printf, colorize, errors } = winston.format;
+
+const logFormat = printf(({ level, message, timestamp: ts, stack }) => {
+  return `${ts} [${level}]: ${stack || message}`;
+});
+
+export const logger = winston.createLogger({
+  level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
+  format: combine(
+    colorize(),
+    timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+    errors({ stack: true }),
+    logFormat,
+  ),
+  transports: [new winston.transports.Console()],
+});
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\utils\schemas.ts
+==============================
+
+// src/utils/schemas.ts
+import { z } from 'zod';
+
+export const registerSchema = z.object({
+  email: z.string().email('Invalid email address'),
+  password: z.string().min(6, 'Password must be at least 6 characters'),
+  name: z.string().min(1, 'Name is required').max(100),
+});
+
+export const loginSchema = z.object({
+  email: z.string().email('Invalid email address'),
+  password: z.string().min(1, 'Password is required'),
+});
+
+export const updateProfileSchema = z.object({
+  name: z.string().max(100).optional(),
+  bio: z.string().max(500).optional(),
+  location: z.string().max(100).optional(),
+  githubUrl: z.string().url('Invalid URL').optional().or(z.literal('')),
+  twitterUrl: z.string().url('Invalid URL').optional().or(z.literal('')),
+  website: z.string().url('Invalid URL').optional().or(z.literal('')),
+});
+
+export const createDiscussionSchema = z.object({
+  title: z.string().min(1).max(120, 'Title must be 120 characters or less'),
+  content: z.string().min(1).max(5000, 'Content must be 5000 characters or less'),
+  category: z.string().min(1, 'Category is required'),
+  codeContent: z.string().max(8000).optional(),
+  codeLanguage: z.string().optional(),
+  problemId: z.string().optional(),
+  problemTitle: z.string().optional(),
+  problemDifficulty: z.string().optional(),
+  company: z.string().optional(),
+  position: z.string().optional(),
+  tags: z
+    .array(z.string().max(20, 'Each tag must be 20 characters or less'))
+    .max(5, 'Maximum 5 tags')
+    .optional(),
+});
+
+export const createCommentSchema = z.object({
+  discussionId: z.string().min(1, 'Discussion ID required'),
+  content: z.string().min(1).max(3000, 'Comment must be 3000 characters or less'),
+  parentId: z.string().optional(),
+});
+
+export const voteSchema = z.object({
+  value: z.union([z.literal(1), z.literal(-1), z.literal(0)]),
+});
+
+export const runCodeSchema = z.object({
+  source_code: z.string().min(1, 'source_code is required'),
+  language_id: z.number().int().positive('language_id is required'),
+  problemId: z.string().min(1, 'problemId is required'),
+});
+
+export const roadmapProgressSchema = z.object({
+  completedTopicIds: z.array(z.string()),
+});
+
+export const createRoadmapSchema = z.object({
+  name: z.string().min(1).max(100),
+  slug: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/, 'Slug must be lowercase letters, numbers, and hyphens only'),
+  description: z.string().optional(),
+  icon: z.string().optional(),
+  color: z.string().optional(),
+  isPublished: z.boolean().optional(),
+  sections: z.array(z.unknown()).optional(),
+  order: z.number().int().optional(),
+});
