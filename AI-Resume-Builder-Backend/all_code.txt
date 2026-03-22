@@ -1,0 +1,1300 @@
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\app.js
+==============================
+
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import connectDB from './config/db.js';
+import authRouter from './routes/auth.routes.js';
+import cookieParser from 'cookie-parser';
+import { globalErrorHandler } from './middlewares/error.middleware.js';
+import apiRouter from './routes/apiRoutes.js';
+
+const app = express();
+const PORT = process.env.PORT || 8080;
+
+dotenv.config();
+
+// Database connection
+await connectDB();
+
+const allowedOrigins = process.env.CLIENT_URL?.split(',') || [];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (Postman, curl, mobile apps)
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true, // IMPORTANT if using cookies / auth
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
+
+app.options('/{*wildcard}', cors());
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true })); 
+app.use(cookieParser());
+
+app.get('/', (req, res) => {
+  res.send('Welcome to AI Resume Builder API');
+});
+
+app.use('/api', apiRouter);
+
+app.use(globalErrorHandler);
+
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\config\ai.js
+==============================
+
+import OpenAI from "openai";
+
+const ai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+    baseURL: process.env.OPENAI_BASE_URL,
+});
+
+export default ai;
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\config\db.js
+==============================
+
+import mongoose from 'mongoose';
+
+const connectDB = async () => {
+  try {
+    mongoose.connection.on('connected', () => {
+      console.log('Database connected successfully');
+    });
+
+    let mongodbURI = process.env.MONGODB_URI;
+
+    if (!mongodbURI) {
+      throw new Error('MONGODB_URI environment variable not set');
+    }
+
+    // ✅ SAFE database name
+    const projectName = 'resume_builder';
+
+    if (mongodbURI.endsWith('/')) {
+      mongodbURI = mongodbURI.slice(0, -1);
+    }
+
+    await mongoose.connect(`${mongodbURI}/${projectName}`);
+  } catch (error) {
+    console.error('Error connecting to MongoDB:', error);
+    process.exit(1);
+  }
+};
+
+export default connectDB;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\config\imageKit.js
+==============================
+
+import ImageKit from '@imagekit/nodejs';
+import dotenv from 'dotenv';
+dotenv.config();
+
+const imagekit = new ImageKit({
+  privateKey: process.env.IMAGEKIT_PRIVATE_KEY,
+});
+
+export default imagekit;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\config\multer.js
+==============================
+
+import multer from 'multer';
+
+const storage = multer.diskStorage({});
+
+const upload = multer({ storage });
+
+export default upload;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\controllers\ai.controller.js
+==============================
+
+import ai from '../config/ai.js';
+import Resume from '../models/resume.model.js';
+
+
+import { ApiError } from '../utils/api-error.js';
+import { ApiResponse } from '../utils/api-response.js';
+import { asyncHandler } from '../utils/async-handler.js';
+
+// POST: /api/ai/enhance-pro-sum
+export const enhanceProfessionalSummary = asyncHandler(async (req, res) => {
+  const { userContent } = req.body;
+
+  // 1️⃣ Validate input
+  if (!userContent) {
+    throw new ApiError(400, 'Missing required fields');
+  }
+
+  // 2️⃣ Call AI
+  const response = await ai.chat.completions.create({
+    model: process.env.OPENAI_MODEL,
+    messages: [
+      {
+        role: 'system',
+        content:
+          'You are an expert in resume writing. Your task is to enhance the professional summary of a resume. The summary should be 1-2 sentences also highlighting key skills, experience, and career objectives. Make it compelling and ATS-friendly. and only return text no options or anything else.',
+      },
+      { role: 'user', content: userContent },
+    ],
+  });
+
+  // 3️⃣ Extract & return result
+  const enhancedContent = response.choices[0].message.content;
+  return new ApiResponse(
+    200,
+    { enhancedContent },
+    'Professional summary enhanced successfully'
+  ).send(res);
+});
+
+// POST: /api/ai/enhance-job-desc
+export const enhanceJobDescription = asyncHandler(async (req, res) => {
+  const { userContent } = req.body;
+
+  // 1️⃣ Validate input
+  if (!userContent) {
+    throw new ApiError(400, 'Missing required fields');
+  }
+
+  // 2️⃣ Call AI
+  const response = await ai.chat.completions.create({
+    model: process.env.OPENAI_MODEL,
+    messages: [
+      {
+        role: 'system',
+        content:
+          'You are an expert in resume writing. Your task is to enhance the job description of a resume. The job description should be only in 1-2 sentence also highlighting key responsibilities and achievements. Use action verbs and quantifiable results where possible. Make it ATS-friendly. and only return text no options or anything else.',
+      },
+      { role: 'user', content: userContent },
+    ],
+  });
+
+  // 3️⃣ Extract & return result
+  const enhancedContent = response.choices[0].message.content;
+  return new ApiResponse(
+    200,
+    { enhancedContent },
+    'Job description enhanced successfully'
+  ).send(res);
+});
+
+// POST: /api/ai/upload-resume
+// POST: /api/ai/upload-resume
+export const uploadResume = asyncHandler(async (req, res) => {
+  const { resumeText, title } = req.body;
+  const userId = req.userId;
+
+  if (!resumeText || !title) {
+    throw new ApiError(400, 'Missing required fields');
+  }
+
+  const systemPrompt =
+    'You are an expert AI Agent to extract data from resume. Always respond with valid JSON only, no markdown, no explanation.';
+
+  const userPrompt = `Extract data from this resume: ${resumeText}
+  
+  Return ONLY a valid JSON object in this exact structure:
+  {
+    "professional_summary": "",
+    "skills": [],
+    "personal_info": {
+      "image": "",
+      "full_name": "",
+      "profession": "",
+      "email": "",
+      "phone": "",
+      "location": "",
+      "linkedin": "",
+      "website": ""
+    },
+    "experience": [
+      {
+        "company": "",
+        "position": "",
+        "start_date": "",
+        "end_date": "",
+        "description": "",
+        "is_current": false
+      }
+    ],
+    "project": [
+      {
+        "name": "",
+        "type": "",
+        "description": ""
+      }
+    ],
+    "education": [
+      {
+        "institution": "",
+        "degree": "",
+        "field": "",
+        "graduation_date": "",
+        "gpa": ""
+      }
+    ]
+  }`;
+
+  const response = await ai.chat.completions.create({
+    model: process.env.OPENAI_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    // ✅ Standard OpenAI-compat JSON mode — works with Gemini's compat endpoint
+    response_format: { type: 'json_object' },
+  });
+
+  const extractedData = response.choices[0].message.content;
+
+  // Strip markdown fences if present (safety net)
+  const clean = extractedData.replace(/```json\n?|```/g, '').trim();
+  const parsedData = JSON.parse(clean);
+
+  const newResume = await Resume.create({ userId, title, ...parsedData });
+
+  return new ApiResponse(
+    201,
+    { resumeId: newResume._id },
+    'Resume uploaded successfully'
+  ).send(res);
+});
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\controllers\auth.controller.js
+==============================
+
+
+import User from "../models/user.model.js";
+import { ApiError } from "../utils/api-error.js";
+import { ApiResponse } from "../utils/api-response.js";
+import { asyncHandler } from "../utils/async-handler.js";
+import { setAuthCookie } from "../utils/cookies.js";
+import { generateToken } from "../utils/generateToken.js";
+import { validateSignUpData } from "../utils/validation.js";
+import bcrypt from 'bcryptjs';
+
+export const signupUser = asyncHandler(async (req, res) => {
+  // 1️⃣ Validate request body
+  // validateSignUpData(req);
+
+  const { firstName, lastName, emailId, password } = req.body;
+
+  // 2️⃣ Check if user already exists
+  const existingUser = await User.findOne({ emailId });
+  if (existingUser) {
+    throw new ApiError(409, 'User already exists with this email');
+  }
+
+  // 3️⃣ Hash password
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  // 4️⃣ Create user
+  const user = await User.create({
+    firstName,
+    lastName,
+    emailId,
+    password: hashedPassword,
+  });
+
+  // 5️⃣ Generate token & set cookie
+  const token = generateToken(user._id);
+  setAuthCookie(res, token);
+
+  // 6️⃣ Remove sensitive fields
+  user.password = undefined;
+
+  // 7️⃣ Send response
+  return new ApiResponse(201, { user }, 'User registered successfully').send(
+    res
+  );
+});
+
+
+export const loginUser = asyncHandler(async (req, res) => {
+  const { emailId, password } = req.body;
+
+  // 1️⃣ Validate input
+  if (!emailId || !password) {
+    throw new ApiError(400, 'Email and password are required');
+  }
+
+  // 2️⃣ Check if user exists
+  const user = await User.findOne({ emailId });
+  if (!user) {
+    throw new ApiError(401, 'Invalid email or password');
+  }
+
+  // 3️⃣ Verify password
+  const isPasswordValid = user.comparePassword(password);
+  if (!isPasswordValid) {
+    throw new ApiError(401, 'Invalid email or password');
+  }
+
+  // 4️⃣ Generate token & set cookie
+  const token = generateToken(user._id);
+  setAuthCookie(res, token);
+
+  // 5️⃣ Remove sensitive data
+  user.password = undefined;
+
+  // 6️⃣ Send response
+  return new ApiResponse(200, { user }, 'Login successful').send(res);
+});
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\controllers\resume.controller.js
+==============================
+
+import puppeteer from 'puppeteer';
+import imagekit from '../config/imageKit.js';
+import Resume from '../models/resume.model.js';
+import { ApiError } from '../utils/api-error.js';
+import { ApiResponse } from '../utils/api-response.js';
+import { asyncHandler } from '../utils/async-handler.js';
+import fs from 'fs';
+import { generateAndSendPDFFromData, generateAndSendPDFFromUrl } from '../utils/generateAndSendPdf.js';
+
+
+
+export const createResume = asyncHandler(async (req, res) => {
+  const userId = req.userId;
+  const { title } = req.body;
+
+  if (!userId) {
+    throw new ApiError(401, 'Unauthorized request');
+  }
+
+  if (!title || !title.trim()) {
+    throw new ApiError(400, 'Resume title is required');
+  }
+
+  const resume = await Resume.create({
+    userId,
+    title: title.trim(),
+  });
+
+  return new ApiResponse(201, { resume }, 'Resume created successfully').send(
+    res
+  );
+});
+
+export const updateResume = asyncHandler(async (req, res) => {
+  const userId = req.userId;
+  const { resumeId, resumeData, removeBackground } = req.body;
+  const image = req.file;
+
+  // 1️⃣ Validate resumeId
+  if (!resumeId) {
+    throw new ApiError(400, 'Resume ID is required');
+  }
+
+  // 2️⃣ Validate and parse resumeData safely
+  if (!resumeData) {
+    throw new ApiError(400, 'Resume data is required');
+  }
+
+  let parsed;
+  try {
+    parsed =
+      typeof resumeData === 'string' ? JSON.parse(resumeData) : resumeData;
+  } catch {
+    throw new ApiError(400, 'Invalid resume data format');
+  }
+
+  // 3️⃣ Whitelist only allowed fields (prevents _id / userId injection)
+  const allowedUpdate = {
+    title: parsed.title,
+    personal_info: parsed.personal_info ?? {},
+    professional_summary: parsed.professional_summary ?? '',
+    experience: parsed.experience ?? [],
+    education: parsed.education ?? [],
+    project: parsed.project ?? [],
+    skills: parsed.skills ?? [],
+    template: parsed.template ?? 'classic',
+    accent_color: parsed.accent_color ?? '#3B82F6',
+    // Frontend uses "public", MongoDB model uses "isPublic" — map it here
+    ...(typeof parsed.public === 'boolean' && { isPublic: parsed.public }),
+  };
+
+  // 4️⃣ Handle image upload (optional)
+  if (image) {
+    // Coerce removeBackground to a real boolean (FormData sends it as a string)
+    const shouldRemoveBg =
+      removeBackground === true || removeBackground === 'true';
+
+    try {
+      const imageBufferData = fs.createReadStream(image.path);
+
+      const response = await imagekit.files.upload({
+        file: imageBufferData,
+        fileName: `resume-${resumeId}.png`,
+        folder: 'user-resumes',
+        transformation: {
+          pre: `w-300,h-300,fo-face,z-0.75${
+            shouldRemoveBg ? ',e-bgremove' : ''
+          }`,
+        },
+      });
+
+      allowedUpdate.personal_info = {
+        ...allowedUpdate.personal_info,
+        image: response.url,
+      };
+    } finally {
+      // ✅ Always clean up temp file — even if ImageKit upload fails
+      if (fs.existsSync(image.path)) {
+        fs.unlinkSync(image.path);
+      }
+    }
+  }
+
+  // 5️⃣ Update with ownership check
+  const resume = await Resume.findOneAndUpdate(
+    { _id: resumeId, userId },
+    allowedUpdate,
+    { new: true }
+  );
+
+  if (!resume) {
+    throw new ApiError(404, 'Resume not found or access denied');
+  }
+
+  return new ApiResponse(200, { resume }, 'Resume saved successfully').send(
+    res
+  );
+});
+
+// PATCH /resumes/:id/title
+export const updateResumeTitle = asyncHandler(async (req, res) => {
+  const userId = req.userId;
+  const { id } = req.params;
+  const { title } = req.body;
+
+  if (!title?.trim()) {
+    throw new ApiError(400, 'Title is required');
+  }
+
+  const resume = await Resume.findOneAndUpdate(
+    { _id: id, userId },
+    { title: title.trim() },
+    { new: true }
+  );
+
+  if (!resume) {
+    throw new ApiError(404, 'Resume not found');
+  }
+
+  return new ApiResponse(200, { resume }, 'Title updated').send(res);
+});
+
+// PATCH /resumes/:id/visibility
+export const toggleResumeVisibility = asyncHandler(async (req, res) => {
+  const userId = req.userId;
+  const { id } = req.params;
+
+  const existing = await Resume.findOne({ _id: id, userId });
+
+  if (!existing) {
+    throw new ApiError(404, 'Resume not found');
+  }
+
+  existing.isPublic = !existing.isPublic;
+  await existing.save();
+
+  return new ApiResponse(
+    200,
+    { resume: existing },
+    `Resume is now ${existing.isPublic ? 'public' : 'private'}`
+  ).send(res);
+});
+
+// POST /resumes/import
+export const importResume = asyncHandler(async (req, res) => {
+  const userId = req.userId;
+  const { title } = req.body;
+
+  const resume = await Resume.create({
+    userId,
+    title,
+    source: 'pdf',
+  });
+
+  return new ApiResponse(201, { resume }, 'Resume imported').send(res);
+});
+
+export const getResumeById = asyncHandler(async (req, res) => {
+  const userId = req.userId;
+  const { resumeId } = req.params;
+
+  if (!userId) {
+    throw new ApiError(401, 'Unauthorized request');
+  }
+
+  if (!resumeId) {
+    throw new ApiError(400, 'Resume ID is required');
+  }
+
+  const resume = await Resume.findOne(
+    { _id: resumeId, userId },
+    { __v: 0, createdAt: 0, updatedAt: 0 }
+  );
+
+  if (!resume) {
+    throw new ApiError(404, 'Resume not found');
+  }
+
+  return new ApiResponse(200, { resume }, 'Resume fetched successfully').send(
+    res
+  );
+});
+
+export const getPublicResumeById = asyncHandler(async (req, res) => {
+  const { resumeId } = req.params;
+
+  if (!resumeId) {
+    throw new ApiError(400, 'Resume ID is required');
+  }
+
+  const resume = await Resume.findOne(
+    { _id: resumeId, isPublic: true },
+    { __v: 0, createdAt: 0, updatedAt: 0 }
+  );
+
+  if (!resume) {
+    throw new ApiError(404, 'Resume not found or not public');
+  }
+
+  return new ApiResponse(
+    200,
+    { resume },
+    'Public resume fetched successfully'
+  ).send(res);
+});
+
+export const deleteResume = asyncHandler(async (req, res) => {
+  const userId = req.userId;
+  const { resumeId } = req.params;
+
+  if (!userId) {
+    throw new ApiError(401, 'Unauthorized request');
+  }
+
+  if (!resumeId) {
+    throw new ApiError(400, 'Resume ID is required');
+  }
+
+  const deletedResume = await Resume.findOneAndDelete({
+    _id: resumeId,
+    userId,
+  });
+
+  if (!deletedResume) {
+    throw new ApiError(404, 'Resume not found or access denied');
+  }
+
+  return new ApiResponse(200, null, 'Resume deleted successfully').send(res);
+});
+
+// ─── Export PDF (owner) ────────────────────────────────────────────────────────
+// Called from the builder. Auth required. Owner can download private or public.
+// Accepts current resumeData from the request body so unsaved changes are
+// always reflected in the PDF — never reads stale data from the DB.
+export const exportResumePDF = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const userId = req.userId;
+
+  // Verify ownership — but don't use DB data for rendering
+  const resume = await Resume.findOne({ _id: id, userId });
+  if (!resume) {
+    throw new ApiError(404, 'Resume not found or access denied');
+  }
+
+  // resumeData is the current frontend state (including unsaved changes)
+  let resumeData;
+  try {
+    resumeData = typeof req.body.resumeData === 'string'
+      ? JSON.parse(req.body.resumeData)
+      : req.body.resumeData;
+  } catch {
+    throw new ApiError(400, 'Invalid resume data');
+  }
+
+  if (!resumeData) {
+    throw new ApiError(400, 'Resume data is required');
+  }
+
+  await generateAndSendPDFFromData(resumeData, res);
+});
+
+// ─── Export PDF (public) ───────────────────────────────────────────────────────
+// Called from shared public preview page. No auth. Only works for public resumes.
+// Renders from the live public URL — data always comes from DB (as expected for
+// public sharing, where the viewer sees the last saved version).
+export const exportResumePDFPublic = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const resume = await Resume.findOne({ _id: id, isPublic: true });
+  if (!resume) {
+    throw new ApiError(404, 'Resume not found or is not public');
+  }
+
+  await generateAndSendPDFFromUrl(resume, res);
+});
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\controllers\user.controller.js
+==============================
+
+import mongoose from "mongoose";
+import Resume from "../models/resume.model.js";
+import User from "../models/user.model.js";
+import { ApiError } from "../utils/api-error.js";
+import { ApiResponse } from "../utils/api-response.js";
+import { asyncHandler } from "../utils/async-handler.js";
+
+export const getUserById = asyncHandler(async (req, res) => {
+  const userId = req.userId;
+
+  // 1️⃣ Validate userId presence (auth middleware responsibility)
+  if (!userId) {
+    throw new ApiError(401, 'Unauthorized request');
+  }
+
+  // 2️⃣ Find user
+  const user = await User.findById(userId).select('-password');
+  if (!user) {
+    throw new ApiError(404, 'User not found');
+  }
+
+  // 3️⃣ Send response
+  return new ApiResponse(200, { user }, 'User fetched successfully').send(res);
+});
+
+
+export const getUserResumes = asyncHandler(async (req, res) => {
+  const userId = req.userId;
+
+  // console.log('userId', userId);
+
+  // 1️⃣ Ensure user is authenticated
+  if (!userId) {
+    throw new ApiError(401, 'Unauthorized request');
+  }
+
+  // 2️⃣ Fetch resumes belonging to the user
+  const resumes = await Resume.find({
+    userId: new mongoose.Types.ObjectId(req.userId),
+  }).sort({ title: 1 }); // 1 = A→Z
+
+  // console.log("resumes", resumes)
+
+  // 3️⃣ Send response
+  return new ApiResponse(
+    200,
+    { resumes },
+    'User resumes fetched successfully'
+  ).send(res);
+});
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\middlewares\authMiddleware.js
+==============================
+
+import jwt from 'jsonwebtoken';
+import User from '../models/user.model.js';
+import { asyncHandler } from '../utils/async-handler.js';
+import { ApiError } from '../utils/api-error.js';
+
+
+/**
+ * Middleware to authenticate user using JWT token stored in cookies
+ */
+export const authMiddleware = asyncHandler(async (req, res, next) => {
+  // 1️⃣ Get token from cookies
+  const token = req.cookies?.token;
+
+  if (!token) {
+    throw new ApiError(401, 'Please login first');
+  }
+
+  // 2️⃣ Verify token
+  let decoded;
+  try {
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
+  } catch (error) {
+    throw new ApiError(401, 'Invalid or expired token');
+  }
+
+  // 3️⃣ Check if user still exists
+  const user = await User.findById(decoded.userId).select('_id');
+  if (!user) {
+    throw new ApiError(401, 'User no longer exists');
+  }
+
+  // 4️⃣ Attach userId to request (IMPORTANT)
+  req.userId = user._id;
+
+  next();
+});
+
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\middlewares\error.middleware.js
+==============================
+
+import { ApiError } from '../utils/api-error.js';
+
+export const globalErrorHandler = (err, req, res, next) => {
+  if (err instanceof ApiError) {
+    return res.status(err.statusCode).json({
+      success: false,
+      statusCode: err.statusCode,
+      message: err.message,
+      data: err.data || null,
+    });
+  }
+
+  console.log('Unexpected Error: ', err);
+
+  return res.status(500).json({
+    success: false,
+    message: 'Internal Server Error',
+    statusCode: 500,
+    errors: err.errors || [],
+    data: null,
+  });
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\models\resume.model.js
+==============================
+
+import mongoose from 'mongoose';
+
+const ResumeSchema = new mongoose.Schema(
+  {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    title: { type: String, default: 'Untitled Resume' },
+    isPublic: { type: Boolean, default: false },
+    template: { type: String, default: 'classic' },
+    accent_color: { type: String, default: '#3B82F6' },
+    professional_summary: { type: String, default: '' },
+    skills: [{ type: String }],
+    personal_info: {
+      image: { type: String, default: '' },
+      full_name: { type: String, default: '' },
+      profession: { type: String, default: '' },
+      email: { type: String, default: '' },
+      phone: { type: String, default: '' },
+      location: { type: String, default: '' },
+      linkedin: { type: String, default: '' },
+      website: { type: String, default: '' },
+    },
+    experience: [
+      {
+        company: { type: String },
+        position: { type: String },
+        start_date: { type: String },
+        end_date: { type: String },
+        description: { type: String },
+        is_current: { type: Boolean },
+      },
+    ],
+    project: [
+      {
+        name: { type: String },
+        type: { type: String },
+        description: { type: String },
+      },
+    ],
+    education: [
+      {
+        institution: { type: String },
+        degree: { type: String },
+        field: { type: String },
+        graduation_date: { type: String },
+        gpa: { type: String },
+      },
+    ],
+  },
+  { timestamps: true, minimize: false }
+);
+
+const Resume = mongoose.model('Resume', ResumeSchema);
+
+export default Resume;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\models\user.model.js
+==============================
+
+import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
+
+const UserSchema = new mongoose.Schema(
+  {
+    firstName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    lastName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    emailId: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+    },
+
+    password: {
+      type: String,
+      required: true,
+    },
+  },
+  { timestamps: true }
+);
+
+/**
+ * Compare plain password with hashed password
+ */
+UserSchema.methods.comparePassword = function (password) {
+  return bcrypt.compareSync(password, this.password);
+};
+
+const User = mongoose.model('User', UserSchema);
+
+export default User;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\routes\ai.routes.js
+==============================
+
+import express from 'express';
+import {
+  enhanceProfessionalSummary,
+  enhanceJobDescription,
+  uploadResume,
+} from '../controllers/ai.controller.js';
+import { authMiddleware } from '../middlewares/authMiddleware.js';
+
+
+const aiRouter = express.Router();
+
+aiRouter.use(authMiddleware);
+
+aiRouter.post('/enhance-pro-sum', enhanceProfessionalSummary);
+aiRouter.post('/enhance-job-desc', enhanceJobDescription);
+aiRouter.post('/upload-resume', uploadResume);
+
+export default aiRouter;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\routes\apiRoutes.js
+==============================
+
+import express from "express";
+import authRouter from "./auth.routes.js";
+import userRouter from "./user.routes.js";
+import resumeRouter from "./resume.routes.js";
+import aiRouter from "./ai.routes.js";
+
+const apiRouter = express.Router();
+
+apiRouter.use('/ping', (req, res) => {
+  res.json({ message: 'pong', status: 200 });
+});
+
+apiRouter.use("/auth", authRouter);
+
+apiRouter.use("/user", userRouter);
+
+apiRouter.use("/resume", resumeRouter);
+
+apiRouter.use('/ai', aiRouter);
+
+
+
+export default apiRouter;
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\routes\auth.routes.js
+==============================
+
+import express from 'express';
+import { loginUser, signupUser } from '../controllers/auth.controller.js';
+
+
+const authRouter = express.Router();
+
+authRouter.post('/signup', signupUser);
+authRouter.post('/signin', loginUser);
+
+export default authRouter;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\routes\resume.routes.js
+==============================
+
+import express from "express";
+import { authMiddleware } from "../middlewares/authMiddleware.js";
+import { createResume, deleteResume, getPublicResumeById, getResumeById, toggleResumeVisibility, updateResume, updateResumeTitle, exportResumePDF, exportResumePDFPublic } from "../controllers/resume.controller.js";
+import upload from "../config/multer.js";
+
+const resumeRouter = express.Router();
+
+resumeRouter.get('/public/:resumeId', getPublicResumeById);
+resumeRouter.get('/:id/export-pdf/public', exportResumePDFPublic);
+
+resumeRouter.use(authMiddleware);
+
+resumeRouter.post('/create', createResume);
+resumeRouter.patch('/update', upload.single('image'), updateResume);
+resumeRouter.patch('/:id/title', updateResumeTitle);
+resumeRouter.patch('/:id/visibility', toggleResumeVisibility);
+resumeRouter.post('/:id/export-pdf', exportResumePDF);
+resumeRouter.get('/:resumeId', getResumeById);
+
+resumeRouter.delete('/:resumeId', deleteResume);
+
+
+
+
+
+
+export default resumeRouter;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\routes\user.routes.js
+==============================
+
+import express from 'express';
+
+import { getUserById, getUserResumes } from '../controllers/user.controller.js';
+import { authMiddleware } from '../middlewares/authMiddleware.js';
+
+const userRouter = express.Router();
+
+userRouter.use(authMiddleware);
+
+userRouter.get('/profile', getUserById);
+userRouter.get('/resumes', getUserResumes);
+
+export default userRouter;
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\utils\api-error.js
+==============================
+
+class ApiError extends Error {
+  constructor(
+    statusCode,
+    message = 'Something went wrong',
+    errors = [],
+    stack = ''
+  ) {
+    super(message);
+    this.statusCode = statusCode;
+    this.data = null;
+    this.name = this.constructor.name;
+    this.message = message;
+    this.success = false;
+    this.errors = errors;
+
+    if (stack) {
+      this.stack = stack;
+    } else {
+      Error.captureStackTrace(this, this.constructor); // Error.captureStackTrace(this, this.constructor) is called to generate a stack trace automatically.
+    }
+  }
+}
+
+export { ApiError };
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\utils\api-response.js
+==============================
+
+class ApiResponse {
+  constructor(statusCode, data, message = 'Success') {
+    this.statusCode = statusCode;
+    this.data = data;
+    this.message = message;
+    this.success = statusCode >= 200 && statusCode < 300; // success is true for status codes in the range of 200-299
+  }
+
+  send(res) {
+    return res.status(this.statusCode).json({
+      success: this.success,
+      statusCode: this.statusCode,
+      message: this.message,
+      data: this.data,
+    });
+  }
+}
+
+export { ApiResponse };
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\utils\async-handler.js
+==============================
+
+const asyncHandler = (requestHandler) => {
+  return (req, res, next) => {
+    Promise.resolve(requestHandler(req, res, next)).catch((error) =>
+      next(error)
+    );
+  };
+};
+
+export { asyncHandler };
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\utils\cookies.js
+==============================
+
+export const setAuthCookie = (res, token) => {
+  res.cookie('token', token, {
+    httpOnly: true,
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+};
+
+export const clearAuthCookie = (res) => {
+  res.cookie('token', null, {
+    httpOnly: true,
+    maxAge: 0,
+  });
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\utils\generateAndSendPdf.js
+==============================
+
+import puppeteer from 'puppeteer';
+
+// CLIENT_URL may be comma-separated (prod,dev). Puppeteer needs a single URL —
+// pick the first entry which is the primary/production URL.
+const CLIENT_URL = process.env.CLIENT_URL?.split(',')[0].trim();
+
+const LAUNCH_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+];
+
+// ─── generateAndSendPDFFromUrl ─────────────────────────────────────────────────
+// Public export — navigates to the live preview page, data comes from DB.
+export const generateAndSendPDFFromUrl = async (resume, res) => {
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: LAUNCH_ARGS,
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 816, height: 1056 });
+
+    await page.goto(`${CLIENT_URL}/preview/${resume._id}`, {
+      waitUntil: 'networkidle0',
+      timeout: 30000,
+    });
+
+    await page
+      .waitForSelector('[data-resume-ready]', { timeout: 10000 })
+      .catch(() => {});
+
+    await page.evaluate(() => {
+      document.querySelectorAll('[data-hide-on-export]').forEach((el) => {
+        el.style.display = 'none';
+      });
+      document.body.style.background = 'white';
+      document.documentElement.style.background = 'white';
+    });
+
+    const pdf = await page.pdf({
+      format: 'Letter',
+      printBackground: true,
+      margin: { top: '0', right: '0', bottom: '0', left: '0' },
+    });
+
+    const filename = `${
+      resume.personal_info?.full_name ?? 'Resume'
+    }_Resume.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', pdf.length);
+    res.send(pdf);
+  } finally {
+    await browser.close();
+  }
+};
+
+// ─── generateAndSendPDFFromData ────────────────────────────────────────────────
+// Owner export — injects current frontend state before page load so unsaved
+// changes are always reflected. Never reads from DB.
+export const generateAndSendPDFFromData = async (resumeData, res) => {
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: LAUNCH_ARGS,
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 816, height: 1056 });
+
+    // Step 1: Inject resume data into the window object before the page loads.
+    // page.evaluateOnNewDocument runs before any script on the page executes.
+    await page.evaluateOnNewDocument((data) => {
+      window.__RESUME_DATA__ = data;
+    }, resumeData);
+    // Step 2: Navigate to the dedicated render route
+    await page.goto(`${CLIENT_URL}/render`, {
+      waitUntil: 'networkidle0',
+      timeout: 30000,
+    });
+
+    // Step 3: Wait for React to finish rendering the resume
+    await page
+      .waitForSelector('[data-resume-ready]', { timeout: 10000 })
+      .catch(() => {});
+
+    await page.evaluate(() => {
+      document.body.style.background = 'white';
+      document.documentElement.style.background = 'white';
+    });
+
+    const pdf = await page.pdf({
+      format: 'Letter',
+      printBackground: true,
+      margin: { top: '0', right: '0', bottom: '0', left: '0' },
+    });
+
+    const filename = `${
+      resumeData.personal_info?.full_name ?? 'Resume'
+    }_Resume.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', pdf.length);
+    res.send(pdf);
+  } finally {
+    await browser.close();
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\utils\generateToken.js
+==============================
+
+import jwt from 'jsonwebtoken';
+
+export const generateToken = (userId) => {
+  const token = jwt.sign({ userId }, process.env.JWT_SECRET, {
+    expiresIn: '7d',
+  });
+  return token;
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\utils\validation.js
+==============================
+
+import validator from 'validator';
+
+/**
+ * Validate signup request body
+ * @param {Object} req - Express request object
+ */
+export const validateSignUpData = (req) => {
+  const { firstName, lastName, emailId, password } = req.body;
+
+  if (!firstName?.trim() || !lastName?.trim()) {
+    throw new Error('❌ Name is not valid!');
+  }
+
+  if (!validator.isEmail(emailId || '')) {
+    throw new Error('❌ Email is not valid!');
+  }
+
+//   if (!validator.isStrongPassword(password || '')) {
+//     throw new Error(
+//       '❌ Please enter a strong password (min 8 chars, mix of uppercase, lowercase, number, and symbol).'
+//     );
+//   }
+};
+
+/**
+ * Validate fields allowed for editing profile
+ * @param {Object} req - Express request object
+ * @returns {boolean} - true if valid, false otherwise
+ */
+export const validateEditProfileData = (req) => {
+  const allowedEditFields = [
+    'firstName',
+    'lastName',
+    'emailId',
+    'photoUrl',
+    'gender',
+    'age',
+    'about',
+    'skills',
+  ];
+
+  return Object.keys(req.body).every((field) =>
+    allowedEditFields.includes(field)
+  );
+};
