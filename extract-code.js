@@ -18,11 +18,13 @@ const path = require("path");
 // const TARGET_FOLDER = String.raw`E:\My Projects\Slack Clone\Slack-Backend\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\Slack Clone\Slack-Frontend-New\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\AI-Resume-Builder\aI-resume-builder-frontend\src`;
+const TARGET_FOLDER = String.raw`E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\devflow\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src`;
 // const TARGET_FOLDER = String.raw`e:\My Projects\URL-Shortner-NextJS\src`;
-const TARGET_FOLDER = String.raw`E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src`;
+// const TARGET_FOLDER = String.raw`E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src`;
+// const TARGET_FOLDER = String.raw`E:\My Projects\AI-Interview-Coach\aI-interview-coach-frontend\src`;
 
 
 
