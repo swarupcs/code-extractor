@@ -27,6 +27,7 @@ import userStatsRoutes from './routes/userStats.routes';
 import discussionsRoutes from './routes/discussions.routes';
 import leaderboardRoutes from './routes/leaderboard.routes';
 import roadmapRoutes from './routes/roadmaps.routes';
+import adminRoutes from './routes/admin.routes';
 
 dotenv.config();
 
@@ -112,6 +113,7 @@ app.use('/api/v1/user-stats', userStatsRoutes);
 app.use('/api/v1/discussions', discussionsRoutes);
 app.use('/api/v1/leaderboard', leaderboardRoutes);
 app.use('/api/v1/roadmaps', roadmapRoutes);
+app.use('/api/v1/admin', adminRoutes);
 
 // ─── Error handling ───────────────────────────────────────────────────────────
 app.use(notFoundHandler);
@@ -238,6 +240,112 @@ passport.deserializeUser((id: string, done) => {
 
 export default passport;
 
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\controllers\admin.controller.ts
+==============================
+
+// src/controllers/admin.controller.ts
+import type { Request, Response, RequestHandler } from 'express';
+import { ApiResponse } from '../utils/ApiResponse';
+import { asyncHandler } from '../utils/asyncHandler';
+import { AppError } from '../utils/AppError';
+import { getAdminDashboard, getAdminUserDetail, getAdminUsers, updateAdminUserRole } from '../services/admin.service';
+
+/**
+ * GET /api/v1/admin/dashboard?from=2025-01-01&to=2025-01-31
+ */
+export const getAdminDashboardHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const fromParam = req.query['from'] as string | undefined;
+    const toParam = req.query['to'] as string | undefined;
+
+    let from: Date;
+    let to: Date;
+
+    if (fromParam) {
+      from = new Date(fromParam);
+      if (isNaN(from.getTime())) throw AppError.badRequest('Invalid "from" date');
+    } else {
+      from = new Date(today);
+      from.setDate(from.getDate() - 29);
+    }
+
+    if (toParam) {
+      to = new Date(toParam);
+      if (isNaN(to.getTime())) throw AppError.badRequest('Invalid "to" date');
+    } else {
+      to = today;
+    }
+
+    if (from > to) throw AppError.badRequest('"from" must be before or equal to "to"');
+
+    const diffDays = Math.round((to.getTime() - from.getTime()) / 86_400_000);
+    if (diffDays > 365) throw AppError.badRequest('Date range cannot exceed 365 days');
+
+    const data = await getAdminDashboard(from, to);
+    return ApiResponse.success(res, 'Admin dashboard data fetched successfully', data);
+  },
+);
+
+/**
+ * GET /api/v1/admin/users
+ *
+ * Returns all platform users with aggregated stats:
+ *   totalSolved, currentStreak, acceptanceRate, rank, lastActive
+ */
+export const getAdminUsersHandler: RequestHandler = asyncHandler(
+  async (_req: Request, res: Response) => {
+    const data = await getAdminUsers();
+    return ApiResponse.success(res, 'Users fetched successfully', data);
+  },
+);
+
+
+/**
+ * GET /api/v1/admin/users/:userId
+ *
+ * Returns full profile + stats for one user.
+ */
+export const getAdminUserDetailHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const userId = String(req.params['userId']);
+    const data = await getAdminUserDetail(userId);
+    return ApiResponse.success(res, 'User detail fetched successfully', data);
+  },
+);
+
+/**
+ * PATCH /api/v1/admin/users/:userId/role
+ * Body: { role: "ADMIN" | "USER" }
+ *
+ * Promotes or demotes a user's role.
+ */
+export const updateUserRoleHandler: RequestHandler = asyncHandler(
+  async (req: Request, res: Response) => {
+    const userId = String(req.params['userId']);
+    const { role } = req.body as { role: 'ADMIN' | 'USER' };
+ 
+    if (role !== 'ADMIN' && role !== 'USER') {
+      throw AppError.badRequest('role must be "ADMIN" or "USER"');
+    }
+    // Prevent self-demotion
+    if (userId === req.user!.id && role === 'USER') {
+      throw AppError.badRequest('You cannot remove your own admin role');
+    }
+ 
+    const data = await updateAdminUserRole(userId, role);
+    return ApiResponse.success(
+      res,
+      role === 'ADMIN' ? 'User promoted to admin' : 'Admin role removed',
+      data,
+    );
+  },
+);
+ 
 
 ==============================
 FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\controllers\auth.controller.ts
@@ -1311,6 +1419,46 @@ export const validate =
 
 
 ==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\routes\admin.routes.ts
+==============================
+
+// src/routes/admin.routes.ts
+import { Router } from 'express';
+import { authMiddleware, checkAdmin } from '../middleware/auth.middleware';
+import { getAdminDashboardHandler, getAdminUserDetailHandler, getAdminUsersHandler, updateUserRoleHandler } from '../controllers/admin.controller';
+
+const adminRoutes: Router = Router();
+
+// All admin routes require auth + ADMIN role
+adminRoutes.use(authMiddleware, checkAdmin);
+
+/**
+ * GET /api/v1/admin/dashboard?from=YYYY-MM-DD&to=YYYY-MM-DD
+ */
+adminRoutes.get('/dashboard', getAdminDashboardHandler);
+
+/**
+ * GET /api/v1/admin/users
+ *
+ * Response shape (data field):
+ * {
+ *   users: AdminUserEntry[];
+ *   stats: { total: number; totalSolved: number }
+ * }
+ */
+adminRoutes.get('/users', getAdminUsersHandler);
+
+// GET  /api/v1/admin/users/:userId         – single user full detail
+adminRoutes.get('/users/:userId', getAdminUserDetailHandler);
+ 
+// PATCH /api/v1/admin/users/:userId/role   – promote / demote
+// Body: { role: "ADMIN" | "USER" }
+adminRoutes.patch('/users/:userId/role', updateUserRoleHandler);
+
+export default adminRoutes;
+
+
+==============================
 FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\routes\auth.routes.ts
 ==============================
 
@@ -1647,6 +1795,516 @@ userStatsRoutes.get('/progress', authMiddleware, getProgressHandler);
 userStatsRoutes.get('/solved', authMiddleware, getSolvedStatsHandler);
 
 export default userStatsRoutes;
+
+
+==============================
+FILE: E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src\services\admin.service.ts
+==============================
+
+// src/services/admin.service.ts  ← REPLACE your entire existing file with this
+import { format, subDays, eachDayOfInterval, startOfDay, endOfDay } from 'date-fns';
+import { db } from '../libs/db';
+import { AppError } from '../utils/AppError';
+import type { UserRole } from '../generated/prisma';
+
+// ════════════════════════════════════════════════════════════════
+//  TYPES
+// ════════════════════════════════════════════════════════════════
+
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+
+export interface DailyAnalyticsEntry {
+  date: string;
+  signups: number;
+  active: number;
+  accepted: number;
+  rejected: number;
+}
+
+export interface AnalyticsSummary {
+  days: number;
+  totalUsers: number;
+  newUsersInRange: number;
+  userGrowthPct: number;
+  avgDailyActive: number;
+  totalSubmissions: number;
+}
+
+export interface ProblemStats {
+  total: number;
+  easy: number;
+  medium: number;
+  hard: number;
+}
+
+export interface SheetItem {
+  id: string;
+  name: string;
+  description: string | null;
+  totalProblems: number;
+}
+
+export interface AdminDashboardData {
+  analytics: DailyAnalyticsEntry[];
+  summary: AnalyticsSummary;
+  problemStats: ProblemStats;
+  sheets: SheetItem[];
+}
+
+// ─── Users list ───────────────────────────────────────────────────────────────
+
+export interface AdminUserEntry {
+  id: string;
+  displayName: string;
+  username: string;
+  email: string;
+  initials: string;
+  role: 'ADMIN' | 'USER';
+  image: string | null;
+  totalSolved: number;
+  currentStreak: number; // always a plain number
+  acceptanceRate: number;
+  rank: number;
+  lastActive: string | null;
+}
+
+export interface AdminUsersData {
+  users: AdminUserEntry[];
+  stats: { total: number; totalSolved: number };
+}
+
+// ─── User detail ──────────────────────────────────────────────────────────────
+
+export interface AdminUserDetail {
+  id: string;
+  displayName: string;
+  username: string;
+  email: string;
+  initials: string;
+  image: string | null;
+  role: 'ADMIN' | 'USER';
+  joinDate: string;
+  lastActive: string | null;
+  totalSolved: number;
+  easySolved: number;
+  mediumSolved: number;
+  hardSolved: number;
+  totalSubmissions: number;
+  acceptanceRate: number;
+  currentStreak: number;
+  maxStreak: number;
+  rank: number;
+  difficultyTotals: { easy: number; medium: number; hard: number };
+  topTopics: Array<{ topic: string; solved: number; total: number }>;
+  recentSubmissions: Array<{
+    problem: string;
+    problemId: string;
+    status: string;
+    language: string;
+    runtime: string;
+    date: string;
+  }>;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SHARED HELPERS
+// ════════════════════════════════════════════════════════════════
+
+function makeInitials(name: string | null, username: string | null): string {
+  const source = name ?? username ?? '?';
+  return source
+    .split(' ')
+    .map((w) => w[0] ?? '')
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
+}
+
+/**
+ * Returns BOTH current and max streak from an array of dates.
+ * Used by getAdminUserDetail (needs both) and getAdminUsers (needs current only).
+ */
+function computeStreaks(dates: Date[]): { current: number; max: number } {
+  if (!dates.length) return { current: 0, max: 0 };
+
+  const unique = [...new Set(dates.map((d) => format(d, 'yyyy-MM-dd')))].sort((a, b) =>
+    b.localeCompare(a),
+  );
+
+  const today = format(new Date(), 'yyyy-MM-dd');
+  const yesterday = format(subDays(new Date(), 1), 'yyyy-MM-dd');
+
+  // Current streak
+  let current = 0;
+  if (unique[0] === today || unique[0] === yesterday) {
+    current = 1;
+    for (let i = 1; i < unique.length; i++) {
+      const expected = format(subDays(new Date(unique[i - 1]!), 1), 'yyyy-MM-dd');
+      if (unique[i] === expected) current++;
+      else break;
+    }
+  }
+
+  // Max streak
+  let max = unique.length > 0 ? 1 : 0;
+  let temp = 1;
+  for (let i = 1; i < unique.length; i++) {
+    const expected = format(subDays(new Date(unique[i - 1]!), 1), 'yyyy-MM-dd');
+    if (unique[i] === expected) {
+      temp++;
+      max = Math.max(max, temp);
+    } else temp = 1;
+  }
+
+  return { current, max };
+}
+
+function buildDayMap(from: Date, to: Date): Map<string, DailyAnalyticsEntry> {
+  const map = new Map<string, DailyAnalyticsEntry>();
+  for (const day of eachDayOfInterval({ start: from, end: to })) {
+    const key = format(day, 'yyyy-MM-dd');
+    map.set(key, { date: format(day, 'MMM d'), signups: 0, active: 0, accepted: 0, rejected: 0 });
+  }
+  return map;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SERVICE: Dashboard
+// ════════════════════════════════════════════════════════════════
+
+export async function getAdminDashboard(from: Date, to: Date): Promise<AdminDashboardData> {
+  const rangeStart = startOfDay(from);
+  const rangeEnd = endOfDay(to);
+  const days = Math.round((rangeEnd.getTime() - rangeStart.getTime()) / 86_400_000) + 1;
+
+  const priorEnd = subDays(rangeStart, 1);
+  const priorStart = subDays(priorEnd, days - 1);
+
+  const [
+    signupRows,
+    submissionRows,
+    totalUsers,
+    newUsersInRange,
+    newUsersInPrior,
+    problemCounts,
+    sheetRows,
+  ] = await Promise.all([
+    db.user.findMany({
+      where: { createdAt: { gte: rangeStart, lte: rangeEnd } },
+      select: { createdAt: true },
+    }),
+    db.submission.findMany({
+      where: { createdAt: { gte: rangeStart, lte: rangeEnd } },
+      select: { createdAt: true, status: true, userId: true },
+    }),
+    db.user.count(),
+    db.user.count({ where: { createdAt: { gte: rangeStart, lte: rangeEnd } } }),
+    db.user.count({
+      where: { createdAt: { gte: startOfDay(priorStart), lte: endOfDay(priorEnd) } },
+    }),
+    db.$transaction([
+      db.problem.count(),
+      db.problem.count({ where: { difficulty: 'EASY' } }),
+      db.problem.count({ where: { difficulty: 'MEDIUM' } }),
+      db.problem.count({ where: { difficulty: 'HARD' } }),
+    ]),
+    db.sheet.findMany({
+      select: { id: true, name: true, description: true, _count: { select: { problems: true } } },
+      orderBy: { createdAt: 'desc' },
+    }),
+  ]);
+
+  const dayMap = buildDayMap(rangeStart, rangeEnd);
+
+  for (const { createdAt } of signupRows) {
+    const entry = dayMap.get(format(new Date(createdAt), 'yyyy-MM-dd'));
+    if (entry) entry.signups += 1;
+  }
+
+  const activeSets = new Map<string, Set<string>>();
+  for (const { createdAt, status, userId } of submissionRows) {
+    const key = format(new Date(createdAt), 'yyyy-MM-dd');
+    const entry = dayMap.get(key);
+    if (!entry) continue;
+    if (status === 'Accepted') entry.accepted += 1;
+    else entry.rejected += 1;
+    if (!activeSets.has(key)) activeSets.set(key, new Set());
+    activeSets.get(key)!.add(userId);
+  }
+  for (const [key, set] of activeSets) {
+    const entry = dayMap.get(key);
+    if (entry) entry.active = set.size;
+  }
+
+  const analytics = Array.from(dayMap.values());
+  const totalSubmissions = submissionRows.length;
+  const totalActive = analytics.reduce((s, d) => s + d.active, 0);
+  const avgDailyActive = days > 0 ? Math.round(totalActive / days) : 0;
+  const userGrowthPct =
+    newUsersInPrior > 0
+      ? Math.round(((newUsersInRange - newUsersInPrior) / newUsersInPrior) * 100)
+      : newUsersInRange > 0
+        ? 100
+        : 0;
+
+  const [total, easy, medium, hard] = problemCounts as [number, number, number, number];
+
+  return {
+    analytics,
+    summary: { days, totalUsers, newUsersInRange, userGrowthPct, avgDailyActive, totalSubmissions },
+    problemStats: { total, easy, medium, hard },
+    sheets: sheetRows.map((s) => ({
+      id: s.id,
+      name: s.name,
+      description: s.description,
+      totalProblems: s._count.problems,
+    })),
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SERVICE: Users list
+// ════════════════════════════════════════════════════════════════
+
+export async function getAdminUsers(): Promise<AdminUsersData> {
+  const [users, allSolved, submissionDates, allSubmissions] = await Promise.all([
+    db.user.findMany({
+      select: { id: true, name: true, username: true, email: true, role: true, image: true },
+      orderBy: { createdAt: 'desc' },
+    }),
+    db.problemSolved.findMany({
+      select: { userId: true, problemId: true, createdAt: true },
+    }),
+    db.submission.findMany({
+      select: { userId: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+    }),
+    db.submission.findMany({
+      select: { userId: true, status: true },
+    }),
+  ]);
+
+  // Solved map
+  const solvedMap = new Map<string, { problems: Set<string>; dates: Date[] }>();
+  for (const { userId, problemId, createdAt } of allSolved) {
+    if (!solvedMap.has(userId)) solvedMap.set(userId, { problems: new Set(), dates: [] });
+    const e = solvedMap.get(userId)!;
+    e.problems.add(problemId);
+    e.dates.push(createdAt);
+  }
+
+  // Last active map
+  const lastActiveMap = new Map<string, Date>();
+  for (const { userId, createdAt } of submissionDates) {
+    if (!lastActiveMap.has(userId)) lastActiveMap.set(userId, createdAt);
+  }
+
+  // Submission counts
+  const totalSubMap = new Map<string, number>();
+  const acceptedSubMap = new Map<string, number>();
+  for (const { userId, status } of allSubmissions) {
+    totalSubMap.set(userId, (totalSubMap.get(userId) ?? 0) + 1);
+    if (status === 'Accepted') acceptedSubMap.set(userId, (acceptedSubMap.get(userId) ?? 0) + 1);
+  }
+
+  // Global rank
+  const ranked = [...solvedMap.entries()]
+    .map(([userId, { problems }]) => ({ userId, count: problems.size }))
+    .sort((a, b) => b.count - a.count);
+  const rankMap = new Map<string, number>();
+  ranked.forEach(({ userId }, i) => rankMap.set(userId, i + 1));
+
+  let totalSolvedSum = 0;
+
+  const result: AdminUserEntry[] = users.map((u) => {
+    const solved = solvedMap.get(u.id);
+    const totalSolved = solved?.problems.size ?? 0;
+    totalSolvedSum += totalSolved;
+
+    // ✅ Destructure .current — never assign the object itself
+    const { current: currentStreak } = solved ? computeStreaks(solved.dates) : { current: 0 };
+
+    const total = totalSubMap.get(u.id) ?? 0;
+    const accepted = acceptedSubMap.get(u.id) ?? 0;
+    const acceptanceRate = total > 0 ? Math.round((accepted / total) * 100) : 0;
+
+    const lastActiveDate = lastActiveMap.get(u.id);
+    const lastActive = lastActiveDate ? format(lastActiveDate, 'MMM d, yyyy') : null;
+
+    return {
+      id: u.id,
+      displayName: u.name ?? u.username ?? u.email,
+      username: u.username ?? u.email.split('@')[0]!,
+      email: u.email,
+      initials: makeInitials(u.name, u.username),
+      role: u.role as 'ADMIN' | 'USER',
+      image: u.image,
+      totalSolved,
+      currentStreak, // ← plain number, not an object
+      acceptanceRate,
+      rank: rankMap.get(u.id) ?? users.length,
+      lastActive,
+    };
+  });
+
+  return { users: result, stats: { total: users.length, totalSolved: totalSolvedSum } };
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SERVICE: User detail
+// ════════════════════════════════════════════════════════════════
+
+export async function getAdminUserDetail(userId: string): Promise<AdminUserDetail> {
+  const [user, solvedRecords, allSubmissions, latestSubmission, diffTotals, allTags] =
+    await Promise.all([
+      db.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          name: true,
+          username: true,
+          email: true,
+          role: true,
+          image: true,
+          createdAt: true,
+        },
+      }),
+      db.problemSolved.findMany({
+        where: { userId },
+        select: { createdAt: true, problem: { select: { difficulty: true, tags: true } } },
+      }),
+      db.submission.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          status: true,
+          language: true,
+          createdAt: true,
+          problem: { select: { id: true, title: true } },
+          testCases: { select: { time: true } },
+        },
+      }),
+      db.submission.findFirst({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        select: { createdAt: true },
+      }),
+      db.$transaction([
+        db.problem.count({ where: { difficulty: 'EASY' } }),
+        db.problem.count({ where: { difficulty: 'MEDIUM' } }),
+        db.problem.count({ where: { difficulty: 'HARD' } }),
+      ]),
+      db.problem.findMany({ select: { tags: true } }),
+    ]);
+
+  if (!user) throw AppError.notFound('User not found');
+
+  // Difficulty breakdown
+  let easySolved = 0,
+    mediumSolved = 0,
+    hardSolved = 0;
+  const solvedByTag = new Map<string, number>();
+  const solvedDates: Date[] = [];
+
+  for (const record of solvedRecords) {
+    const diff = record.problem.difficulty;
+    if (diff === 'EASY') easySolved++;
+    else if (diff === 'MEDIUM') mediumSolved++;
+    else if (diff === 'HARD') hardSolved++;
+    for (const tag of record.problem.tags) {
+      solvedByTag.set(tag, (solvedByTag.get(tag) ?? 0) + 1);
+    }
+    solvedDates.push(record.createdAt);
+  }
+
+  const totalSolved = solvedRecords.length;
+  const totalSubmissions = allSubmissions.length;
+  const acceptedCount = allSubmissions.filter((s) => s.status === 'Accepted').length;
+  const acceptanceRate =
+    totalSubmissions > 0 ? Math.round((acceptedCount / totalSubmissions) * 100) : 0;
+
+  // ✅ Destructure both values cleanly
+  const { current: currentStreak, max: maxStreak } = computeStreaks(solvedDates);
+
+  // Global rank
+  const usersAhead = await db.problemSolved.groupBy({
+    by: ['userId'],
+    _count: { problemId: true },
+    having: { problemId: { _count: { gt: totalSolved } } },
+  });
+  const rank = usersAhead.length + 1;
+
+  // Platform tag totals
+  const platformTagCounts = new Map<string, number>();
+  for (const { tags } of allTags) {
+    for (const tag of tags) platformTagCounts.set(tag, (platformTagCounts.get(tag) ?? 0) + 1);
+  }
+
+  const topTopics = [...solvedByTag.entries()]
+    .map(([topic, solved]) => ({ topic, solved, total: platformTagCounts.get(topic) ?? solved }))
+    .sort((a, b) => b.solved - a.solved)
+    .slice(0, 10);
+
+  const recentSubmissions = allSubmissions.slice(0, 10).map((s) => {
+    const totalTime = s.testCases.reduce((acc, tc) => acc + (parseFloat(tc.time ?? '0') || 0), 0);
+    return {
+      problem: s.problem.title,
+      problemId: s.problem.id,
+      status: s.status,
+      language: s.language,
+      runtime: `${totalTime.toFixed(2)}ms`,
+      date: format(s.createdAt, 'MMM d, yyyy'),
+    };
+  });
+
+  return {
+    id: user.id,
+    displayName: user.name ?? user.username ?? user.email,
+    username: user.username ?? user.email.split('@')[0]!,
+    email: user.email,
+    initials: makeInitials(user.name, user.username),
+    image: user.image,
+    role: user.role as 'ADMIN' | 'USER',
+    joinDate: format(user.createdAt, 'MMM yyyy'),
+    lastActive: latestSubmission ? format(latestSubmission.createdAt, 'MMM d, yyyy') : null,
+    totalSolved,
+    easySolved,
+    mediumSolved,
+    hardSolved,
+    totalSubmissions,
+    acceptanceRate,
+    currentStreak,
+    maxStreak,
+    rank,
+    difficultyTotals: {
+      easy: (diffTotals as [number, number, number])[0],
+      medium: (diffTotals as [number, number, number])[1],
+      hard: (diffTotals as [number, number, number])[2],
+    },
+    topTopics,
+    recentSubmissions,
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SERVICE: Update user role
+// ════════════════════════════════════════════════════════════════
+
+export async function updateAdminUserRole(
+  userId: string,
+  role: 'ADMIN' | 'USER',
+): Promise<{ id: string; role: string }> {
+  const user = await db.user.findUnique({ where: { id: userId }, select: { id: true } });
+  if (!user) throw AppError.notFound('User not found');
+
+  const updated = await db.user.update({
+    where: { id: userId },
+    data: { role: role as UserRole },
+    select: { id: true, role: true },
+  });
+  return { id: updated.id, role: updated.role };
+}
 
 
 ==============================

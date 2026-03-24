@@ -5960,6 +5960,68 @@ export class InterviewController {
     }
   }
 
+  async getUserSessions(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        } as APIResponse);
+        return;
+      }
+
+      const page = req.query.page ? parseInt(req.query.page as string) : 1;
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 20;
+      const status = req.query.status as string | undefined;
+
+      const where: any = { userId: req.user.userId };
+      if (status) where.status = status;
+
+      const [total, sessions] = await Promise.all([
+        prisma.interviewSession.count({ where }),
+        prisma.interviewSession.findMany({
+          where,
+          orderBy: { startTime: 'desc' },
+          skip: (page - 1) * limit,
+          take: limit,
+          select: {
+            id: true,
+            type: true,
+            status: true,
+            difficulty: true,
+            score: true,
+            totalQuestions: true,
+            currentQuestionIndex: true,
+            startTime: true,
+            endTime: true,
+            duration: true,
+            feedback: true,
+          },
+        }),
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          sessions,
+          pagination: {
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit),
+          },
+        },
+        metadata: { timestamp: new Date() },
+      } as APIResponse);
+    } catch (error) {
+      console.error('Get user sessions error:', error);
+      res.status(500).json({
+        success: false,
+        error: { code: 'FETCH_ERROR', message: 'Failed to fetch sessions' },
+      } as APIResponse);
+    }
+  }
+
   // ── Private helpers ────────────────────────────────────────────────────────
 
   private formatTime(seconds: number): string {
@@ -7996,7 +8058,7 @@ import { Request } from 'express';
 
 export const globalRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 200,
   message: {
     success: false,
     error: {
@@ -10244,6 +10306,8 @@ export function createInterviewRoutes(controller: InterviewController): Router {
   router.get('/questions/:questionId/ratings', (req, res) =>
     controller.getQuestionRatings(req, res),
   );
+
+  router.get('/sessions', (req, res) => controller.getUserSessions(req, res));
 
   // ── Parameterised routes LAST ────────────────────────────────────────────
 
@@ -14224,6 +14288,116 @@ export class InterviewSessionManager {
     private vectorDb?: IVectorDatabase,
   ) {}
 
+  private normalizeCategory(raw: string): string {
+    // Map any human-readable string to a valid QuestionCategory enum value.
+    // Prisma will reject anything not in the enum — this is the safety net.
+    const map: Record<string, string> = {
+      // Generic catch-alls first
+      'data structures and algorithms': 'ARRAYS',
+      'data structures': 'ARRAYS',
+      algorithms: 'ARRAYS',
+
+      // Arrays / Strings
+      arrays: 'ARRAYS',
+      array: 'ARRAYS',
+      strings: 'STRINGS',
+      string: 'STRINGS',
+      'string manipulation': 'STRINGS',
+
+      // Linked Lists
+      'linked lists': 'LINKED_LISTS',
+      'linked list': 'LINKED_LISTS',
+
+      // Trees
+      trees: 'TREES',
+      tree: 'TREES',
+      'binary tree': 'TREES',
+      'binary trees': 'TREES',
+      'tree traversal': 'TREES',
+      'binary search tree': 'TREES',
+      bst: 'TREES',
+
+      // Graphs
+      graphs: 'GRAPHS',
+      graph: 'GRAPHS',
+      'graph traversal': 'GRAPHS',
+
+      // Sorting / Searching
+      sorting: 'SORTING',
+      searching: 'SEARCHING',
+      'binary search': 'SEARCHING',
+
+      // Hash / Stacks / Queues
+      'hash tables': 'HASH_TABLES',
+      'hash table': 'HASH_TABLES',
+      'hash map': 'HASH_TABLES',
+      stacks: 'STACKS_QUEUES',
+      queues: 'STACKS_QUEUES',
+      'stacks and queues': 'STACKS_QUEUES',
+      stack: 'STACKS_QUEUES',
+      queue: 'STACKS_QUEUES',
+
+      // DP / Recursion / Backtracking / Greedy
+      'dynamic programming': 'DYNAMIC_PROGRAMMING',
+      dp: 'DYNAMIC_PROGRAMMING',
+      recursion: 'RECURSION',
+      backtracking: 'BACKTRACKING',
+      greedy: 'GREEDY',
+      'greedy algorithms': 'GREEDY',
+
+      // Bit / Math
+      'bit manipulation': 'BIT_MANIPULATION',
+      math: 'MATH',
+      mathematics: 'MATH',
+      'number theory': 'MATH',
+
+      // Two pointers / Sliding window
+      'two pointers': 'TWO_POINTERS',
+      'two pointer': 'TWO_POINTERS',
+      'sliding window': 'SLIDING_WINDOW',
+
+      // Heap / Trie
+      heap: 'HEAPS',
+      heaps: 'HEAPS',
+      'priority queue': 'HEAPS',
+      trie: 'TRIES',
+      tries: 'TRIES',
+
+      // System Design
+      'system design': 'SCALABILITY',
+      scalability: 'SCALABILITY',
+      'distributed systems': 'DISTRIBUTED_SYSTEMS',
+      caching: 'CACHING',
+      'database design': 'DATABASE_DESIGN',
+      'load balancing': 'LOAD_BALANCING',
+
+      // Behavioral
+      leadership: 'LEADERSHIP',
+      teamwork: 'TEAMWORK',
+      communication: 'COMMUNICATION',
+      'conflict resolution': 'CONFLICT_RESOLUTION',
+    };
+
+    const normalized = map[raw.toLowerCase().trim()];
+    if (normalized) return normalized;
+
+    // If it's already an uppercase enum value (e.g. "TREES"), return as-is
+    if (/^[A-Z_]+$/.test(raw.trim())) return raw.trim();
+
+    // Last resort — convert to uppercase snake_case
+    const snaked = raw
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, '_')
+      .replace(/[^A-Z_]/g, '');
+    console.warn(
+      `[InterviewSessionManager] Unknown category "${raw}" → "${snaked}"`,
+    );
+
+    // Final fallback to a safe default that always exists in the enum
+    return snaked || 'ARRAYS';
+  }
+
   // ── Public API ───────────────────────────────────────────────────────────
 
   async startSession(
@@ -14421,7 +14595,7 @@ export class InterviewSessionManager {
               question: q.question,
               difficulty: (this.difficultyMap[q.difficulty] ?? 'MEDIUM') as any,
               // TYPE FIX 3: LLM returns a plain string; cast to satisfy Prisma enum
-              category: q.category as any,
+              category: this.normalizeCategory(q.category) as any,
               hints: q.hints ?? [],
               expectedAnswer: q.expectedAnswer ?? null,
               hintsUsed: 0,
@@ -14501,9 +14675,6 @@ export class InterviewSessionManager {
     }
   }
 
-  // BUG-1 FIX: wrap score-compute + DB-write + counter-increment in a
-  // single transaction. An idempotency check prevents the second concurrent
-  // call from overwriting the first one's result.
   private async completeSession(sessionId: string): Promise<void> {
     const session = this.sessionCache.get(sessionId);
     if (!session) return;
@@ -14516,12 +14687,50 @@ export class InterviewSessionManager {
 
     const feedback = await this.generateSessionFeedback(session);
 
+    // FIX: Check idempotency BEFORE the transaction — early return inside
+    // prisma.$transaction silently commits an empty transaction on some
+    // Prisma versions instead of rolling back, causing the question upserts
+    // to never execute on the second call.
+    const existing = await prisma.interviewSession.findUnique({
+      where: { id: sessionId },
+      select: { status: true },
+    });
+    if (existing?.status === 'COMPLETED') return;
+
     await prisma.$transaction(async (tx) => {
-      const existing = await tx.interviewSession.findUnique({
-        where: { id: sessionId },
-        select: { status: true },
-      });
-      if (existing?.status === 'COMPLETED') return;
+      // Flush all question rows atomically so GET /results always
+      // returns userAnswer + score + feedback immediately after completion.
+      await Promise.all(
+        session.questions.map((q, idx) =>
+          tx.interviewQuestion.upsert({
+            where: { id: q.id },
+            update: {
+              userAnswer: q.userAnswer ?? null,
+              score: q.score ?? null,
+              feedback: q.feedback ?? null,
+              timeSpent: q.timeSpent ?? null,
+              hintsUsed: q.hintsUsed ?? 0,
+              answeredAt: q.userAnswer ? new Date() : null,
+            },
+            create: {
+              id: q.id,
+              sessionId: session.id,
+              questionIndex: idx,
+              question: q.question,
+              difficulty: (this.difficultyMap[q.difficulty] ?? 'MEDIUM') as any,
+              category: this.normalizeCategory(q.category) as any,
+              hints: q.hints ?? [],
+              expectedAnswer: q.expectedAnswer ?? null,
+              hintsUsed: q.hintsUsed ?? 0,
+              userAnswer: q.userAnswer ?? null,
+              score: q.score ?? null,
+              feedback: q.feedback ?? null,
+              timeSpent: q.timeSpent ?? null,
+              answeredAt: q.userAnswer ? new Date() : null,
+            },
+          }),
+        ),
+      );
 
       await tx.interviewSession.update({
         where: { id: sessionId },

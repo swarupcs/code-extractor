@@ -1,0 +1,1191 @@
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\app.js
+==============================
+
+import express from 'express';
+import dotenv from 'dotenv';
+import morgan from 'morgan';
+import helmet from 'helmet';
+import mongoSanitize from 'express-mongo-sanitize';
+import cookieParser from 'cookie-parser';
+import compression from 'compression';
+import fileUpload from 'express-fileupload';
+import cors from 'cors';
+import createHttpError from 'http-errors';
+import routes from './routes/index.js';
+
+//dotEnv config
+dotenv.config();
+
+//create express app
+const app = express();
+
+//morgan
+if (process.env.NODE_ENV !== "production") {
+  app.use(morgan("dev"));
+}
+
+//helmet
+app.use(helmet());
+
+//parse json request url
+app.use(express.json());
+
+//parse json request body
+app.use(express.urlencoded({ extended: true }));
+
+//sanitize request data
+app.use(mongoSanitize());
+
+//enable cookie parser
+app.use(cookieParser());
+
+//gzip compression
+app.use(compression());
+
+//file upload
+app.use(
+  fileUpload({
+    useTempFiles: true,
+  })
+);
+
+//cors
+app.use(cors());
+
+app.use("/test", (req, res) => {
+  res.send("Server is up and running...");
+});
+
+// app.post('/test', (req, res) => {
+//   // res.send(req.body);
+//   throw createHttpError.BadRequest('this route has an error');
+// });
+
+//api v1 routes
+app.use("/api/v1", routes);
+
+app.use(async (req, res, next) => {
+  next(createHttpError.NotFound('This route does not exist.'));
+});
+
+//error handling
+app.use(async (err, req, res, next) => {
+  res.status(err.status || 500);
+  res.send({
+    error: {
+      status: err.status || 500,
+      message: err.message,
+    },
+  });
+});
+
+export default app;
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\configs\logger.config.js
+==============================
+
+import winston from 'winston';
+
+const enumerateErrorFormat = winston.format((info) => {
+  if (info instanceof Error) {
+    Object.assign(info, { message: info.stack });
+  }
+  return info;
+});
+
+const logger = winston.createLogger({
+  level: process.env.NODE_ENV === 'development' ? 'debug' : 'info',
+  format: winston.format.combine(
+    enumerateErrorFormat(),
+    process.env.NODE_ENV === 'development'
+      ? winston.format.colorize()
+      : winston.format.uncolorize(),
+    winston.format.splat(),
+    winston.format.printf(({ level, message }) => `${level}: ${message}`)
+  ),
+  transports: [
+    new winston.transports.Console({
+      stderrLevels: ['error'],
+    }),
+  ],
+});
+
+export default logger;
+
+// To be used as logger.info(message) or logger.error(error)
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\controllers\auth.controller.js
+==============================
+
+import createHttpError from 'http-errors';
+import { createUser, signUser } from '../services/auth.service.js';
+import { generateToken, verifyToken } from '../services/token.service.js';
+import { findUser } from '../services/user.service.js';
+
+export const register = async (req, res, next) => {
+  try {
+    const { name, email, picture, status, password } = req.body;
+    const newUser = await createUser({
+      name,
+      email,
+      picture,
+      status,
+      password,
+    });
+
+    const access_token = await generateToken(
+      { userId: newUser._id },
+      '1d',
+      process.env.ACCESS_TOKEN_SECRET
+    );
+    const refresh_token = await generateToken(
+      { userId: newUser._id },
+      '30d',
+      process.env.REFRESH_TOKEN_SECRET
+    );
+
+    res.cookie('refreshtoken', refresh_token, {
+      httpOnly: true,
+      path: '/api/v1/auth/refreshtoken',
+      maxAge: 30 * 24 * 60 * 60 * 1000, //30 days
+    });
+
+    res.json({
+      message: 'register success.',
+      user: {
+        _id: newUser._id,
+        name: newUser.name,
+        email: newUser.email,
+        picture: newUser.picture,
+        status: newUser.status,
+        token: access_token,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+export const login = async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+    const user = await signUser(email, password);
+    const access_token = await generateToken(
+      { userId: user._id },
+      '1d',
+      process.env.ACCESS_TOKEN_SECRET
+    );
+    const refresh_token = await generateToken(
+      { userId: user._id },
+      '30d',
+      process.env.REFRESH_TOKEN_SECRET
+    );
+
+    res.cookie('refreshtoken', refresh_token, {
+      httpOnly: true,
+      path: '/api/v1/auth/refreshtoken',
+      maxAge: 30 * 24 * 60 * 60 * 1000, //30 days
+    });
+
+    res.json({
+      message: 'register success.',
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        picture: user.picture,
+        status: user.status,
+        token: access_token,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+export const logout = async (req, res, next) => {
+  try {
+    res.clearCookie('refreshtoken', { path: '/api/v1/auth/refreshtoken' });
+    res.json({
+      message: 'logged out !',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+export const refreshToken = async (req, res, next) => {
+  try {
+    const refresh_token = req.cookies.refreshtoken;
+    if (!refresh_token) throw createHttpError.Unauthorized('Please login.');
+    const check = await verifyToken(
+      refresh_token,
+      process.env.REFRESH_TOKEN_SECRET
+    );
+    const user = await findUser(check.userId);
+    const access_token = await generateToken(
+      { userId: user._id },
+      '1d',
+      process.env.ACCESS_TOKEN_SECRET
+    );
+    res.json({
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        picture: user.picture,
+        status: user.status,
+        token: access_token,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\controllers\conversation.controller.js
+==============================
+
+import createHttpError from 'http-errors';
+import logger from '../configs/logger.config.js';
+import {
+  createConversation,
+  doesConversationExist,
+  getUserConversations,
+  populateConversation,
+} from '../services/conversation.service.js';
+
+export const create_open_conversation = async (req, res, next) => {
+  console.log(req.body);
+  try {
+    const sender_id = req.user.userId;
+    const { receiver_id, isGroup } = req.body;
+    if (isGroup == false) {
+      //check if receiver_id is provided
+      if (!receiver_id) {
+        logger.error(
+          'please provide the user id you wanna start a conversation with !'
+        );
+        throw createHttpError.BadGateway('Oops...Something went wrong !');
+      }
+      //check if chat exists
+      const existed_conversation = await doesConversationExist(
+        sender_id,
+        receiver_id,
+        false
+      );
+      if (existed_conversation) {
+        res.json(existed_conversation);
+      } else {
+        // let receiver_user = await findUser(receiver_id);
+        let convoData = {
+          name: 'conversation name',
+          picture: 'conversation picture',
+          isGroup: false,
+          users: [sender_id, receiver_id],
+        };
+        const newConvo = await createConversation(convoData);
+        const populatedConvo = await populateConversation(
+          newConvo._id,
+          'users',
+          '-password'
+        );
+        res.status(200).json(populatedConvo);
+      }
+    } else {
+      console.log('hnaaaaaaaaaa');
+      //it's a group chat
+      //check if group chat exists
+      const existed_group_conversation = await doesConversationExist(
+        '',
+        '',
+        isGroup
+      );
+      res.status(200).json(existed_group_conversation);
+    }
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getConversations = async (req, res, next) => {
+  try {
+    const user_id = req.user.userId;
+    const conversations = await getUserConversations(user_id);
+    res.status(200).json(conversations);
+  } catch (error) {
+    next(error);
+  }
+};
+export const createGroup = async (req, res, next) => {
+  const { name, users } = req.body;
+  //add current user to users
+  users.push(req.user.userId);
+  if (!name || !users) {
+    throw createHttpError.BadRequest('Please fill all fields.');
+  }
+  if (users.length < 2) {
+    throw createHttpError.BadRequest(
+      'Atleast 2 users are required to start a group chat.'
+    );
+  }
+  let convoData = {
+    name,
+    users,
+    isGroup: true,
+    admin: req.user.userId,
+    picture: process.env.DEFAULT_GROUP_PICTURE,
+  };
+  try {
+    const newConvo = await createConversation(convoData);
+    const populatedConvo = await populateConversation(
+      newConvo._id,
+      'users admin',
+      '-password'
+    );
+    res.status(200).json(populatedConvo);
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\controllers\message.controller.js
+==============================
+
+import logger from '../configs/logger.config.js';
+import { updateLatestMessage } from '../services/conversation.service.js';
+import {
+  createMessage,
+  getConvoMessages,
+  populateMessage,
+} from '../services/message.service.js';
+
+export const sendMessage = async (req, res, next) => {
+  try {
+    const user_id = req.user.userId;
+    const { message, convo_id, files } = req.body;
+    if (!convo_id || (!message && !files)) {
+      logger.error('Please provider a conversation id and a message body');
+      return res.sendStatus(400);
+    }
+    const msgData = {
+      sender: user_id,
+      message,
+      conversation: convo_id,
+      files: files || [],
+    };
+    let newMessage = await createMessage(msgData);
+    let populatedMessage = await populateMessage(newMessage._id);
+    await updateLatestMessage(convo_id, newMessage);
+    res.json(populatedMessage);
+  } catch (error) {
+    next(error);
+  }
+};
+export const getMessages = async (req, res, next) => {
+  try {
+    const convo_id = req.params.convo_id;
+    if (!convo_id) {
+      logger.error('Please add a conversation id in params.');
+      res.sendStatus(400);
+    }
+    const messages = await getConvoMessages(convo_id);
+    res.json(messages);
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\controllers\user.controller.js
+==============================
+
+import createHttpError from 'http-errors';
+import logger from '../configs/logger.config.js';
+import { searchUsers as searchUsersService } from '../services/user.service.js';
+export const searchUsers = async (req, res, next) => {
+  try {
+    const keyword = req.query.search;
+    if (!keyword) {
+      logger.error('Please add a search query first');
+      throw createHttpError.BadRequest('Oops...Something went wrong !');
+    }
+    const users = await searchUsersService(keyword, req.user.userId);
+    res.status(200).json(users);
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\index.js
+==============================
+
+import mongoose from 'mongoose';
+import { Server } from 'socket.io';
+import app from './app.js';
+import logger from './configs/logger.config.js';
+import SocketServer from './SocketServer.js';
+
+//env variables
+const { DATABASE_URL } = process.env;
+const PORT = process.env.PORT || 8000;
+
+//exit on mognodb error
+mongoose.connection.on('error', (err) => {
+  logger.error(`Mongodb connection error : ${err}`);
+  process.exit(1);
+});
+
+//mongodb debug mode
+if (process.env.NODE_ENV !== 'production') {
+  mongoose.set('debug', true);
+}
+
+//mongodb connection
+mongoose
+  .connect(DATABASE_URL, {
+    // useNewUrlParser: true,
+    // useUnifiedTopology: true,
+  })
+  .then(() => {
+    logger.info('Connected to Mongodb.');
+  });
+
+let server;
+
+server = app.listen(PORT, () => {
+  logger.info(`Server is listening at ${PORT}.`);
+});
+
+//socket io
+const io = new Server(server, {
+  pingTimeout: 60000,
+  cors: {
+    origin: process.env.CLIENT_ENDPOINT,
+  },
+});
+io.on('connection', (socket) => {
+  logger.info('socket io connected successfully.');
+  SocketServer(socket, io);
+});
+
+const exitHandler = () => {
+  if (server) {
+    logger.info('Server closed.');
+    process.exit(1);
+  } else {
+    process.exit(1);
+  }
+};
+
+const unexpectedErrorHandler = (error) => {
+  logger.error(error);
+  exitHandler();
+};
+process.on('uncaughtException', unexpectedErrorHandler);
+process.on('unhandledRejection', unexpectedErrorHandler);
+
+//SIGTERM
+process.on('SIGTERM', () => {
+  if (server) {
+    logger.info('Server closed.');
+    process.exit(1);
+  }
+});
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\middlewares\authMiddleware.js
+==============================
+
+import createHttpError from 'http-errors';
+import jwt from 'jsonwebtoken';
+export default async function (req, res, next) {
+  if (!req.headers['authorization'])
+    return next(createHttpError.Unauthorized());
+  const bearerToken = req.headers['authorization'];
+  const token = bearerToken.split(' ')[1];
+
+  // console.log({ bearerToken, token });
+
+  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, payload) => {
+    if (err) {
+      // console.log({err, payload})
+      return next(createHttpError.Unauthorized());
+    }
+    req.user = payload;
+    next();
+  });
+}
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\models\conversationModel.js
+==============================
+
+import mongoose from 'mongoose';
+const { ObjectId } = mongoose.Schema.Types;
+const conversationSchema = mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: [true, 'Conversations name is required.'],
+      trim: true,
+    },
+    picture: {
+      type: String,
+      required: true,
+    },
+    isGroup: {
+      type: Boolean,
+      required: true,
+      default: false,
+    },
+    users: [
+      {
+        type: ObjectId,
+        ref: 'UserModel',
+      },
+    ],
+    latestMessage: {
+      type: ObjectId,
+      ref: 'MessageModel',
+    },
+    admin: {
+      type: ObjectId,
+      ref: 'UserModel',
+    },
+  },
+  {
+    collection: 'conversations',
+    timestamps: true,
+  }
+);
+
+const ConversationModel =
+  mongoose.models.ConversationModel ||
+  mongoose.model('ConversationModel', conversationSchema);
+
+export default ConversationModel;
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\models\index.js
+==============================
+
+import UserModel from './userModel.js';
+import ConversationModel from './conversationModel.js';
+import MessageModel from './messageModel.js';
+
+
+export { UserModel, ConversationModel, MessageModel };
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\models\messageModel.js
+==============================
+
+import mongoose from 'mongoose';
+
+const { ObjectId } = mongoose.Schema.Types;
+
+const messageSchema = mongoose.Schema(
+  {
+    sender: {
+      type: ObjectId,
+      ref: 'UserModel',
+    },
+    message: {
+      type: String,
+      trim: true,
+    },
+    conversation: {
+      type: ObjectId,
+      ref: 'ConversationModel',
+    },
+    files: [],
+  },
+  {
+    collection: 'messages',
+    timestamps: true,
+  }
+);
+
+const MessageModel =
+  mongoose.models.MessageModel || mongoose.model('MessageModel', messageSchema);
+
+export default MessageModel;
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\models\userModel.js
+==============================
+
+import mongoose from 'mongoose';
+import validator from 'validator';
+import bcrypt from 'bcryptjs';
+
+const userSchema = mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: [true, 'Please provide your name'],
+    },
+    email: {
+      type: String,
+      required: [true, 'Please provide tour email address'],
+      unqiue: [true, 'This email address already exist'],
+      lowercase: true,
+      validate: [validator.isEmail, 'Please provide a valid email address'],
+    },
+    picture: {
+      type: String,
+      default:
+        'https://res.cloudinary.com/dkd5jblv5/image/upload/v1675976806/Default_ProfilePicture_gjngnb.png',
+    },
+    status: {
+      type: String,
+      default: 'Hey there ! I am using whatsapp',
+    },
+    password: {
+      type: String,
+      required: [true, 'Please provide your password'],
+      minLength: [
+        6,
+        'Plase make sure your password is atleast 6 characters long',
+      ],
+      maxLength: [
+        128,
+        'Plase make sure your password is less than 128 characters long',
+      ],
+    },
+  },
+  {
+    collection: 'users',
+    timestamps: true,
+  }
+);
+
+userSchema.pre('save', async function (next) {
+  try {
+    if (this.isNew) {
+      const salt = await bcrypt.genSalt(12);
+      const hashedPassword = await bcrypt.hash(this.password, salt);
+      this.password = hashedPassword;
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+const UserModel =
+  mongoose.models.UserModel || mongoose.model('UserModel', userSchema);
+
+export default UserModel;
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\routes\auth.route.js
+==============================
+
+import express from 'express';
+import trimRequest from 'trim-request';
+import {
+  login,
+  logout,
+  refreshToken,
+  register,
+} from '../controllers/auth.controller.js';
+
+const router = express.Router();
+
+router.route('/register').post(trimRequest.all, register);
+router.route('/login').post(trimRequest.all, login);
+router.route('/logout').post(trimRequest.all, logout);
+router.route('/refreshtoken').post(trimRequest.all, refreshToken);
+
+export default router;
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\routes\conversation.route.js
+==============================
+
+import express from 'express';
+import trimRequest from 'trim-request';
+import authMiddleware from '../middlewares/authMiddleware.js';
+import {
+  createGroup,
+  create_open_conversation,
+  getConversations,
+} from '../controllers/conversation.controller.js';
+const router = express.Router();
+
+router
+  .route('/')
+  .post(trimRequest.all, authMiddleware, create_open_conversation);
+
+router.route('/').get(trimRequest.all, authMiddleware, getConversations);
+router.route('/group').post(trimRequest.all, authMiddleware, createGroup);
+
+export default router;
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\routes\index.js
+==============================
+
+import express from 'express';
+import authRoutes from './auth.route.js';
+import ConversationRoutes from './conversation.route.js';
+import MessageRoutes from './message.route.js';
+import userROutes from './user.route.js';
+
+const router = express.Router();
+
+router.use('/auth', authRoutes);
+router.use('/conversation', ConversationRoutes);
+router.use('/message', MessageRoutes);
+router.use('/user', userROutes);
+
+
+export default router;
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\routes\message.route.js
+==============================
+
+import express from 'express';
+import trimRequest from 'trim-request';
+import authMiddleware from '../middlewares/authMiddleware.js';
+import { sendMessage, getMessages } from '../controllers/message.controller.js';
+const router = express.Router();
+
+router.route('/').post(trimRequest.all, authMiddleware, sendMessage);
+router.route('/:convo_id').get(trimRequest.all, authMiddleware, getMessages);
+export default router;
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\routes\user.route.js
+==============================
+
+import express from 'express';
+import trimRequest from 'trim-request';
+import { searchUsers } from '../controllers/user.controller.js';
+import authMiddleware from '../middlewares/authMiddleware.js';
+const router = express.Router();
+
+router.route('/').get(trimRequest.all, authMiddleware, searchUsers);
+export default router;
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\services\auth.service.js
+==============================
+
+import createHttpError from 'http-errors';
+import validator from 'validator';
+import { UserModel } from '../models/index.js';
+import bcrypt from 'bcryptjs';
+
+//env variables
+const { DEFAULT_PICTURE, DEFAULT_STATUS } = process.env;
+
+export const createUser = async (userData) => {
+  const { name, email, picture, status, password } = userData;
+
+  //check if fields are empty
+  if (!name || !email || !password) {
+    throw createHttpError.BadRequest('Please fill all fields.');
+  }
+
+  //check name length
+  if (
+    !validator.isLength(name, {
+      min: 2,
+      max: 25,
+    })
+  ) {
+    throw createHttpError.BadRequest(
+      'Plase make sure your name is between 2 and 16 characters.'
+    );
+  }
+
+  //Check status length
+  if (status && status.length > 64) {
+    throw createHttpError.BadRequest(
+      'Please make sure your status is less than 64 characters.'
+    );
+  }
+
+  //check if email address is valid
+  if (!validator.isEmail(email)) {
+    throw createHttpError.BadRequest(
+      'Please make sure to provide a valid email address.'
+    );
+  }
+
+  //check if user already exist
+  const checkDb = await UserModel.findOne({ email });
+  if (checkDb) {
+    throw createHttpError.Conflict(
+      'Please try again with a different email address, this email already exist.'
+    );
+  }
+
+  //check password length
+  if (
+    !validator.isLength(password, {
+      min: 6,
+      max: 128,
+    })
+  ) {
+    throw createHttpError.BadRequest(
+      'Please make sure your password is between 6 and 128 characters.'
+    );
+  }
+
+  //hash password--->to be done in the user model
+
+  //adding user to databse
+  const user = await new UserModel({
+    name,
+    email,
+    picture: picture || DEFAULT_PICTURE,
+    status: status || DEFAULT_STATUS,
+    password,
+  }).save();
+
+  return user;
+};
+
+
+export const signUser = async (email, password) => {
+  const user = await UserModel.findOne({ email: email.toLowerCase() }).lean();
+
+  //check if user exist
+  if (!user) throw createHttpError.NotFound('Invalid credentials.');
+
+  //compare passwords
+  let passwordMatches = await bcrypt.compare(password, user.password);
+
+  if (!passwordMatches) throw createHttpError.NotFound('Invalid credentials.');
+
+  return user;
+};
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\services\conversation.service.js
+==============================
+
+import createHttpError from 'http-errors';
+import { ConversationModel, UserModel } from '../models/index.js';
+
+export const doesConversationExist = async (
+  sender_id,
+  receiver_id,
+  isGroup
+) => {
+  if (isGroup === false) {
+    let convos = await ConversationModel.find({
+      isGroup: false,
+      $and: [
+        { users: { $elemMatch: { $eq: sender_id } } },
+        { users: { $elemMatch: { $eq: receiver_id } } },
+      ],
+    })
+      .populate('users', '-password')
+      .populate('latestMessage');
+
+    if (!convos)
+      throw createHttpError.BadRequest('Oops...Something went wrong !');
+
+    //populate message model
+    convos = await UserModel.populate(convos, {
+      path: 'latestMessage.sender',
+      select: 'name email picture status',
+    });
+
+    return convos[0];
+  } else {
+    //it's a group chat
+    let convo = await ConversationModel.findById(isGroup)
+      .populate('users admin', '-password')
+      .populate('latestMessage');
+
+    if (!convo)
+      throw createHttpError.BadRequest('Oops...Something went wrong !');
+    //populate message model
+    convo = await UserModel.populate(convo, {
+      path: 'latestMessage.sender',
+      select: 'name email picture status',
+    });
+
+    return convo;
+  }
+};
+
+export const createConversation = async (data) => {
+  const newConvo = await ConversationModel.create(data);
+  if (!newConvo)
+    throw createHttpError.BadRequest('Oops...Something went wrong !');
+  return newConvo;
+};
+
+export const populateConversation = async (
+  id,
+  fieldToPopulate,
+  fieldsToRemove
+) => {
+  const populatedConvo = await ConversationModel.findOne({ _id: id }).populate(
+    fieldToPopulate,
+    fieldsToRemove
+  );
+  if (!populatedConvo)
+    throw createHttpError.BadRequest('Oops...Something went wrong !');
+  return populatedConvo;
+};
+export const getUserConversations = async (user_id) => {
+  let conversations;
+  await ConversationModel.find({
+    users: { $elemMatch: { $eq: user_id } },
+  })
+    .populate('users', '-password')
+    .populate('admin', '-password')
+    .populate('latestMessage')
+    .sort({ updatedAt: -1 })
+    .then(async (results) => {
+      results = await UserModel.populate(results, {
+        path: 'latestMessage.sender',
+        select: 'name email picture status',
+      });
+      conversations = results;
+    })
+    .catch((err) => {
+      throw createHttpError.BadRequest('Oops...Something went wrong !');
+    });
+  return conversations;
+};
+
+export const updateLatestMessage = async (convo_id, msg) => {
+  const updatedConvo = await ConversationModel.findByIdAndUpdate(convo_id, {
+    latestMessage: msg,
+  });
+  if (!updatedConvo)
+    throw createHttpError.BadRequest('Oops...Something went wrong !');
+
+  return updatedConvo;
+};
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\services\message.service.js
+==============================
+
+import createHttpError from 'http-errors';
+import { MessageModel } from '../models/index.js';
+export const createMessage = async (data) => {
+  let newMessage = await MessageModel.create(data);
+  if (!newMessage)
+    throw createHttpError.BadRequest('Oops...Something went wrong !');
+  return newMessage;
+};
+
+export const populateMessage = async (id) => {
+  let msg = await MessageModel.findById(id)
+    .populate({
+      path: 'sender',
+      select: 'name picture',
+      model: 'UserModel',
+    })
+    .populate({
+      path: 'conversation',
+      select: 'name isGroup users',
+      model: 'ConversationModel',
+      populate: {
+        path: 'users',
+        select: 'name picture isGroup users',
+        model: 'UserModel',
+      },
+    });
+  if (!msg) throw createHttpError.BadRequest('Oops...Something went wrong !');
+  return msg;
+};
+
+export const getConvoMessages = async (convo_id) => {
+  const messages = await MessageModel.find({ conversation: convo_id })
+    .populate('sender', 'name picture email status')
+    .populate('conversation');
+  if (!messages) {
+    throw createHttpError.BadRequest('Oops...Something went wrong !');
+  }
+  return messages;
+};
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\services\token.service.js
+==============================
+
+import { sign, verify } from '../utils/token.util.js';
+
+export const generateToken = async (payload, expiresIn, secret) => {
+  let token = await sign(payload, expiresIn, secret);
+  return token;
+};
+
+
+export const verifyToken = async (token, secret) => {
+  let check = await verify(token, secret);
+  return check;
+};
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\services\user.service.js
+==============================
+
+import createHttpError from 'http-errors';
+import { UserModel } from '../models/index.js';
+export const findUser = async (userId) => {
+  const user = await UserModel.findById(userId);
+  if (!user) throw createHttpError.BadRequest('Please fill all fields.');
+  return user;
+};
+
+export const searchUsers = async (keyword, userId) => {
+  const users = await UserModel.find({
+    $or: [
+      { name: { $regex: keyword, $options: 'i' } },
+      { email: { $regex: keyword, $options: 'i' } },
+    ],
+  }).find({
+    _id: { $ne: userId },
+  });
+  return users;
+};
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\SocketServer.js
+==============================
+
+let onlineUsers = [];
+export default function (socket, io) {
+  //user joins or opens the application
+  socket.on('join', (user) => {
+    socket.join(user);
+    //add joined user to online users
+    if (!onlineUsers.some((u) => u.userId === user)) {
+      onlineUsers.push({ userId: user, socketId: socket.id });
+    }
+    //send online users to frontend
+    io.emit('get-online-users', onlineUsers);
+    //send socket id
+    io.emit('setup socket', socket.id);
+  });
+
+  //socket disconnect
+  socket.on('disconnect', () => {
+    onlineUsers = onlineUsers.filter((user) => user.socketId !== socket.id);
+    io.emit('get-online-users', onlineUsers);
+  });
+
+  //join a conversation room
+  socket.on('join conversation', (conversation) => {
+    socket.join(conversation);
+  });
+
+  //send and receive message
+  socket.on('send message', (message) => {
+    let conversation = message.conversation;
+    if (!conversation.users) return;
+    conversation.users.forEach((user) => {
+      if (user._id === message.sender._id) return;
+      socket.in(user._id).emit('receive message', message);
+    });
+  });
+
+  //typing
+  socket.on('typing', (conversation) => {
+    socket.in(conversation).emit('typing', conversation);
+  });
+  socket.on('stop typing', (conversation) => {
+    socket.in(conversation).emit('stop typing');
+  });
+
+  //call
+  //---call user
+  socket.on('call user', (data) => {
+    let userId = data.userToCall;
+    let userSocketId = onlineUsers.find((user) => user.userId == userId);
+    io.to(userSocketId.socketId).emit('call user', {
+      signal: data.signal,
+      from: data.from,
+      name: data.name,
+      picture: data.picture,
+    });
+  });
+  //---answer call
+  socket.on('answer call', (data) => {
+    io.to(data.to).emit('call accepted', data.signal);
+  });
+
+  //---end call
+  socket.on('end call', (id) => {
+    io.to(id).emit('end call');
+  });
+}
+
+
+==============================
+FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\utils\token.util.js
+==============================
+
+import jwt from 'jsonwebtoken';
+import logger from '../configs/logger.config.js';
+export const sign = async (payload, expiresIn, secret) => {
+  return new Promise((resolve, reject) => {
+    jwt.sign(
+      payload,
+      secret,
+      {
+        expiresIn: expiresIn,
+      },
+      (error, token) => {
+        if (error) {
+          logger.error(error);
+          reject(error);
+        } else {
+          resolve(token);
+        }
+      }
+    );
+  });
+};
+
+
+export const verify = async (token, secret) => {
+  return new Promise((resolve, reject) => {
+    jwt.verify(token, secret, (error, payload) => {
+      if (error) {
+        logger.error(error);
+        resolve(null);
+      } else {
+        resolve(payload);
+      }
+    });
+  });
+};

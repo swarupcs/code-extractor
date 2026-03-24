@@ -4,38 +4,40 @@
 FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\app.js
 ==============================
 
+import dotenv from 'dotenv';
+
+// ── MUST be first — loads .env before anything else reads process.env ────────
+dotenv.config();
+
+// Now safe to import modules that read process.env at initialisation time
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import connectDB from './config/db.js';
-import authRouter from './routes/auth.routes.js';
 import cookieParser from 'cookie-parser';
 import { globalErrorHandler } from './middlewares/error.middleware.js';
 import apiRouter from './routes/apiRoutes.js';
+import { initializePassport } from './config/passport.js';
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-dotenv.config();
-
-// Database connection
 await connectDB();
 
-const allowedOrigins = process.env.CLIENT_URL?.split(',') || [];
+// ── Initialize Passport Google strategy AFTER dotenv has loaded ──────────────
+// This must happen before the auth router is mounted, so that
+// passport.authenticate('google') works correctly on the /auth/google route.
+initializePassport();
+
+const allowedOrigins = process.env.CLIENT_URL?.split(',').map((o) => o.trim()) || [];
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (Postman, curl, mobile apps)
       if (!origin) return callback(null, true);
-
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
+      if (allowedOrigins.includes(origin)) return callback(null, true);
       return callback(new Error('Not allowed by CORS'));
     },
-    credentials: true, // IMPORTANT if using cookies / auth
+    credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   })
@@ -44,10 +46,10 @@ app.use(
 app.options('/{*wildcard}', cors());
 
 app.use(express.json());
-app.use(express.urlencoded({ extended: true })); 
+app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-app.get('/', (req, res) => {
+app.get('/', (_req, res) => {
   res.send('Welcome to AI Resume Builder API');
 });
 
@@ -137,27 +139,115 @@ export default upload;
 
 
 ==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\config\passport.js
+==============================
+
+import passport from 'passport';
+import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
+import User from '../models/user.model.js';
+
+// Strategy is registered inside initializePassport() — NOT at module load time.
+//
+// Root cause of the original error:
+//   ES module imports are hoisted and executed before any code in the importing
+//   file runs. So when app.js does `import './config/passport.js'`, the module
+//   executes immediately — before dotenv.config() has a chance to populate
+//   process.env. Result: process.env.GOOGLE_CLIENT_ID is undefined, and
+//   passport-google-oauth20 throws "OAuth2Strategy requires a clientID option".
+//
+// Fix: export an initializePassport() function. app.js calls dotenv.config()
+// first, then calls initializePassport() — by that point all env vars are set.
+
+export const initializePassport = () => {
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+    console.warn(
+      '[Passport] GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set — ' +
+      'Google OAuth will not be available.'
+    );
+    return;
+  }
+
+  passport.use(
+    new GoogleStrategy(
+      {
+        clientID:     process.env.GOOGLE_CLIENT_ID,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+        callbackURL:  process.env.GOOGLE_CALLBACK_URL,
+      },
+      async (_accessToken, _refreshToken, profile, done) => {
+        try {
+          const email     = profile.emails?.[0]?.value?.toLowerCase();
+          const firstName = profile.name?.givenName  || profile.displayName || 'User';
+          const lastName  = profile.name?.familyName || '';
+
+          if (!email) {
+            return done(new Error('No email returned from Google'), null);
+          }
+
+          // 1. Returning user — find by googleId
+          let user = await User.findOne({ googleId: profile.id });
+
+          if (!user) {
+            // 2. Existing email/password account — link it
+            user = await User.findOne({ emailId: email });
+
+            if (user) {
+              user.googleId   = profile.id;
+              user.isVerified = true;
+              await user.save();
+            } else {
+              // 3. Brand new user — create account
+              user = await User.create({
+                firstName,
+                lastName,
+                emailId:    email,
+                googleId:   profile.id,
+                isVerified: true,
+                password:   null,
+              });
+            }
+          }
+
+          return done(null, user);
+        } catch (error) {
+          return done(error, null);
+        }
+      }
+    )
+  );
+
+  // No sessions — JWTs handle auth state
+  passport.serializeUser((user, done) => done(null, user._id));
+  passport.deserializeUser(async (id, done) => {
+    try {
+      const user = await User.findById(id).select('-password -refreshToken');
+      done(null, user);
+    } catch (err) {
+      done(err, null);
+    }
+  });
+
+  console.log('[Passport] Google OAuth strategy registered.');
+};
+
+export default passport;
+
+
+==============================
 FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\controllers\ai.controller.js
 ==============================
 
 import ai from '../config/ai.js';
 import Resume from '../models/resume.model.js';
-
-
 import { ApiError } from '../utils/api-error.js';
 import { ApiResponse } from '../utils/api-response.js';
 import { asyncHandler } from '../utils/async-handler.js';
 
-// POST: /api/ai/enhance-pro-sum
+
 export const enhanceProfessionalSummary = asyncHandler(async (req, res) => {
   const { userContent } = req.body;
+  if (!userContent) throw new ApiError(400, 'Missing required fields');
 
-  // 1️⃣ Validate input
-  if (!userContent) {
-    throw new ApiError(400, 'Missing required fields');
-  }
-
-  // 2️⃣ Call AI
   const response = await ai.chat.completions.create({
     model: process.env.OPENAI_MODEL,
     messages: [
@@ -170,55 +260,37 @@ export const enhanceProfessionalSummary = asyncHandler(async (req, res) => {
     ],
   });
 
-  // 3️⃣ Extract & return result
   const enhancedContent = response.choices[0].message.content;
-  return new ApiResponse(
-    200,
-    { enhancedContent },
-    'Professional summary enhanced successfully'
-  ).send(res);
+  return new ApiResponse(200, { enhancedContent }, 'Professional summary enhanced successfully').send(res);
 });
 
-// POST: /api/ai/enhance-job-desc
+
 export const enhanceJobDescription = asyncHandler(async (req, res) => {
   const { userContent } = req.body;
+  if (!userContent) throw new ApiError(400, 'Missing required fields');
 
-  // 1️⃣ Validate input
-  if (!userContent) {
-    throw new ApiError(400, 'Missing required fields');
-  }
-
-  // 2️⃣ Call AI
   const response = await ai.chat.completions.create({
     model: process.env.OPENAI_MODEL,
     messages: [
       {
         role: 'system',
         content:
-          'You are an expert in resume writing. Your task is to enhance the job description of a resume. The job description should be only in 1-2 sentence also highlighting key responsibilities and achievements. Use action verbs and quantifiable results where possible. Make it ATS-friendly. and only return text no options or anything else.',
+          'You are an expert in resume writing. Your task is to enhance or generate the job description of a resume. The job description should be only in 1-2 sentences also highlighting key responsibilities and achievements. Use action verbs and quantifiable results where possible. Make it ATS-friendly. and only return text no options or anything else.',
       },
       { role: 'user', content: userContent },
     ],
   });
 
-  // 3️⃣ Extract & return result
   const enhancedContent = response.choices[0].message.content;
-  return new ApiResponse(
-    200,
-    { enhancedContent },
-    'Job description enhanced successfully'
-  ).send(res);
+  return new ApiResponse(200, { enhancedContent }, 'Job description enhanced successfully').send(res);
 });
 
-// POST: /api/ai/upload-resume
-// POST: /api/ai/upload-resume
+
 export const uploadResume = asyncHandler(async (req, res) => {
   const { resumeText, title } = req.body;
   const userId = req.userId;
 
-  if (!resumeText || !title) {
-    throw new ApiError(400, 'Missing required fields');
-  }
+  if (!resumeText || !title) throw new ApiError(400, 'Missing required fields');
 
   const systemPrompt =
     'You are an expert AI Agent to extract data from resume. Always respond with valid JSON only, no markdown, no explanation.';
@@ -230,149 +302,577 @@ export const uploadResume = asyncHandler(async (req, res) => {
     "professional_summary": "",
     "skills": [],
     "personal_info": {
-      "image": "",
-      "full_name": "",
-      "profession": "",
-      "email": "",
-      "phone": "",
-      "location": "",
-      "linkedin": "",
-      "website": ""
+      "image": "", "full_name": "", "profession": "",
+      "email": "", "phone": "", "location": "", "linkedin": "", "website": ""
     },
-    "experience": [
-      {
-        "company": "",
-        "position": "",
-        "start_date": "",
-        "end_date": "",
-        "description": "",
-        "is_current": false
-      }
-    ],
-    "project": [
-      {
-        "name": "",
-        "type": "",
-        "description": ""
-      }
-    ],
-    "education": [
-      {
-        "institution": "",
-        "degree": "",
-        "field": "",
-        "graduation_date": "",
-        "gpa": ""
-      }
-    ]
+    "experience": [{ "company": "", "position": "", "start_date": "", "end_date": "", "description": "", "is_current": false }],
+    "project": [{ "name": "", "type": "", "description": "" }],
+    "education": [{ "institution": "", "degree": "", "field": "", "graduation_date": "", "gpa": "" }]
   }`;
 
   const response = await ai.chat.completions.create({
     model: process.env.OPENAI_MODEL,
     messages: [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
+      { role: 'user',   content: userPrompt },
     ],
-    // ✅ Standard OpenAI-compat JSON mode — works with Gemini's compat endpoint
     response_format: { type: 'json_object' },
   });
 
   const extractedData = response.choices[0].message.content;
+  const clean         = extractedData.replace(/```json\n?|```/g, '').trim();
+  const parsedData    = JSON.parse(clean);
+  const newResume     = await Resume.create({ userId, title, ...parsedData });
 
-  // Strip markdown fences if present (safety net)
-  const clean = extractedData.replace(/```json\n?|```/g, '').trim();
-  const parsedData = JSON.parse(clean);
-
-  const newResume = await Resume.create({ userId, title, ...parsedData });
-
-  return new ApiResponse(
-    201,
-    { resumeId: newResume._id },
-    'Resume uploaded successfully'
-  ).send(res);
+  return new ApiResponse(201, { resumeId: newResume._id }, 'Resume uploaded successfully').send(res);
 });
+
+
+export const importFromLinkedIn = asyncHandler(async (req, res) => {
+  const { linkedInText, title } = req.body;
+  const userId = req.userId;
+
+  if (!linkedInText || !title) throw new ApiError(400, 'Missing required fields');
+  if (linkedInText.trim().length < 50) {
+    throw new ApiError(400, 'Please paste more of your LinkedIn profile for accurate extraction');
+  }
+
+  const systemPrompt =
+    'You are an expert at parsing LinkedIn profile text into structured resume data. Always respond with valid JSON only, no markdown, no explanation.';
+
+  const userPrompt = `Parse this LinkedIn profile text into a resume:
+
+${linkedInText}
+
+Return ONLY a valid JSON object in this exact structure:
+{
+  "professional_summary": "",
+  "skills": [],
+  "personal_info": { "image": "", "full_name": "", "profession": "", "email": "", "phone": "", "location": "", "linkedin": "", "website": "" },
+  "experience": [{ "company": "", "position": "", "start_date": "", "end_date": "", "description": "", "is_current": false }],
+  "project": [{ "name": "", "type": "", "description": "" }],
+  "education": [{ "institution": "", "degree": "", "field": "", "graduation_date": "", "gpa": "" }]
+}`;
+
+  const response = await ai.chat.completions.create({
+    model: process.env.OPENAI_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user',   content: userPrompt },
+    ],
+    response_format: { type: 'json_object' },
+  });
+
+  const extractedData = response.choices[0].message.content;
+  const clean         = extractedData.replace(/```json\n?|```/g, '').trim();
+  const parsedData    = JSON.parse(clean);
+  const newResume     = await Resume.create({ userId, title, ...parsedData });
+
+  return new ApiResponse(201, { resumeId: newResume._id }, 'LinkedIn profile imported successfully').send(res);
+});
+
+
+export const generateCoverLetter = asyncHandler(async (req, res) => {
+  const { resumeId, jobDescription } = req.body;
+  const userId = req.userId;
+
+  if (!resumeId || !jobDescription) throw new ApiError(400, 'Missing required fields');
+  if (jobDescription.trim().length < 30) {
+    throw new ApiError(400, 'Please provide a more detailed job description');
+  }
+
+  const resume = await Resume.findOne({ _id: resumeId, userId });
+  if (!resume) throw new ApiError(404, 'Resume not found or access denied');
+
+  const resumeSummary = `
+Name: ${resume.personal_info?.full_name ?? ''}
+Profession: ${resume.personal_info?.profession ?? ''}
+Summary: ${resume.professional_summary ?? ''}
+Skills: ${(resume.skills ?? []).join(', ')}
+Experience: ${(resume.experience ?? []).map((e) => `${e.position} at ${e.company}`).join('; ')}
+  `.trim();
+
+  const response = await ai.chat.completions.create({
+    model: process.env.OPENAI_MODEL,
+    messages: [
+      {
+        role: 'system',
+        content:
+          "You are an expert cover letter writer. Write professional, compelling cover letters tailored to the specific job. Keep it to 3-4 paragraphs. Use a professional but warm tone. Return only the cover letter text — no subject line, no metadata.",
+      },
+      {
+        role: 'user',
+        content: `Write a cover letter for this candidate applying for this job.\n\nCandidate:\n${resumeSummary}\n\nJob Description:\n${jobDescription}`,
+      },
+    ],
+  });
+
+  const coverLetter = response.choices[0].message.content;
+  return new ApiResponse(200, { coverLetter }, 'Cover letter generated successfully').send(res);
+});
+
+
+// ── ATS Keyword Analysis ──────────────────────────────────────────────────────
+//
+// Compares the current resume (frontend state, not DB — includes unsaved changes)
+// against a pasted job description and returns:
+//   score           — 0-100 ATS compatibility score
+//   summary         — one-line assessment
+//   matchedKeywords — keywords present in both (green)
+//   missingKeywords — important JD keywords absent from resume (red)
+//   suggestions     — 3-5 specific, actionable improvements
+//
+// Resume text is built server-side from structured fields to prevent
+// prompt injection through resume content fields.
+
+export const analyzeATS = asyncHandler(async (req, res) => {
+  const { resumeData, jobDescription } = req.body;
+
+  if (!resumeData || !jobDescription) {
+    throw new ApiError(400, 'Both resume data and job description are required');
+  }
+  if (jobDescription.trim().length < 50) {
+    throw new ApiError(400, 'Please paste the full job description (at least 50 characters)');
+  }
+
+  // Parse resumeData if sent as string
+  let parsed;
+  try {
+    parsed = typeof resumeData === 'string' ? JSON.parse(resumeData) : resumeData;
+  } catch {
+    throw new ApiError(400, 'Invalid resume data format');
+  }
+
+  const resumeText = buildResumeText(parsed);
+
+  const systemPrompt = `You are an expert ATS (Applicant Tracking System) analyst and resume coach.
+Compare a resume against a job description and return a structured JSON analysis.
+Always respond with valid JSON only — no markdown, no explanation outside the JSON.`;
+
+  const userPrompt = `Analyse this resume against the job description and return a JSON object.
+
+RESUME:
+${resumeText}
+
+JOB DESCRIPTION:
+${jobDescription}
+
+Return ONLY this exact JSON structure:
+{
+  "score": <integer 0-100>,
+  "summary": "<one sentence overall assessment>",
+  "matchedKeywords": ["<keyword>"],
+  "missingKeywords": ["<keyword>"],
+  "suggestions": [
+    "<specific actionable suggestion 1>",
+    "<specific actionable suggestion 2>",
+    "<specific actionable suggestion 3>"
+  ]
+}
+
+Scoring guide:
+- 80-100: Excellent — most keywords present, strong alignment
+- 60-79:  Good — some important keywords missing
+- 40-59:  Moderate — significant gaps
+- 0-39:   Poor — major gaps or wrong field
+
+Rules:
+- matchedKeywords: skills, tools, qualifications found in BOTH resume and JD
+- missingKeywords: the most important JD keywords completely absent from the resume (max 15)
+- suggestions: be specific — name exact skills or sections, not generic advice. Under 20 words each.
+- Return 3 to 5 suggestions`;
+
+  const response = await ai.chat.completions.create({
+    model: process.env.OPENAI_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user',   content: userPrompt },
+    ],
+    response_format: { type: 'json_object' },
+  });
+
+  const raw    = response.choices[0].message.content;
+  const clean  = raw.replace(/```json\n?|```/g, '').trim();
+  const result = JSON.parse(clean);
+
+  // Sanitise the response to guarantee shape
+  const analysis = {
+    score:           Math.min(100, Math.max(0, parseInt(result.score, 10) || 0)),
+    summary:         String(result.summary  || ''),
+    matchedKeywords: Array.isArray(result.matchedKeywords) ? result.matchedKeywords.slice(0, 30) : [],
+    missingKeywords: Array.isArray(result.missingKeywords) ? result.missingKeywords.slice(0, 15) : [],
+    suggestions:     Array.isArray(result.suggestions)     ? result.suggestions.slice(0, 5)      : [],
+  };
+
+  return new ApiResponse(200, { analysis }, 'ATS analysis complete').send(res);
+});
+
+
+// Build a readable flat text from structured resume JSON — server-side only
+function buildResumeText(resume) {
+  const lines = [];
+  const pi    = resume.personal_info ?? {};
+
+  if (pi.full_name)  lines.push(`Name: ${pi.full_name}`);
+  if (pi.profession) lines.push(`Profession: ${pi.profession}`);
+  if (pi.location)   lines.push(`Location: ${pi.location}`);
+
+  if (resume.professional_summary) {
+    lines.push('\nPROFESSIONAL SUMMARY');
+    lines.push(resume.professional_summary);
+  }
+
+  if (resume.skills?.length) {
+    lines.push('\nSKILLS');
+    lines.push(resume.skills.join(', '));
+  }
+
+  if (resume.experience?.length) {
+    lines.push('\nEXPERIENCE');
+    resume.experience.forEach((exp) => {
+      lines.push(
+        `${exp.position} at ${exp.company} (${exp.start_date ?? ''} – ${exp.is_current ? 'Present' : (exp.end_date ?? '')})`
+      );
+      if (exp.description) lines.push(exp.description);
+    });
+  }
+
+  if (resume.education?.length) {
+    lines.push('\nEDUCATION');
+    resume.education.forEach((edu) => {
+      lines.push(`${edu.degree} in ${edu.field} — ${edu.institution} (${edu.graduation_date ?? ''})`);
+    });
+  }
+
+  if (resume.project?.length) {
+    lines.push('\nPROJECTS');
+    resume.project.forEach((proj) => {
+      lines.push(`${proj.name} (${proj.type}): ${proj.description}`);
+    });
+  }
+
+  return lines.join('\n');
+}
 
 
 ==============================
 FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\controllers\auth.controller.js
 ==============================
 
-
-import User from "../models/user.model.js";
-import { ApiError } from "../utils/api-error.js";
-import { ApiResponse } from "../utils/api-response.js";
-import { asyncHandler } from "../utils/async-handler.js";
-import { setAuthCookie } from "../utils/cookies.js";
-import { generateToken } from "../utils/generateToken.js";
-import { validateSignUpData } from "../utils/validation.js";
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
+import User from '../models/user.model.js';
+import { ApiError } from '../utils/api-error.js';
+import { ApiResponse } from '../utils/api-response.js';
+import { asyncHandler } from '../utils/async-handler.js';
+import {
+  setAuthCookie, clearAuthCookie,
+  setRefreshCookie, clearRefreshCookie,
+} from '../utils/cookies.js';
+import {
+  generateAccessToken,
+  generateRefreshToken,
+} from '../utils/generateToken.js';
+import { validateSignUpData } from '../utils/validation.js';
+import {
+  sendVerificationEmail,
+  sendPasswordResetEmail,
+} from '../utils/email.js';
 
+
+// ── Shared helper ─────────────────────────────────────────────────────────────
+const issueTokens = async (res, user) => {
+  const accessToken  = generateAccessToken(user._id);
+  const refreshToken = generateRefreshToken(user._id);
+
+  user.refreshToken = await bcrypt.hash(refreshToken, 8);
+  await user.save();
+
+  setAuthCookie(res, accessToken);
+  setRefreshCookie(res, refreshToken);
+
+  return { accessToken, refreshToken };
+};
+
+// Generate a cryptographically random hex token and its SHA-256 hash.
+// We store the hash in the DB and send the raw token in the email so a leaked
+// DB doesn't let an attacker use stored tokens.
+const generateSecureToken = () => {
+  const raw  = crypto.randomBytes(32).toString('hex');
+  const hash = crypto.createHash('sha256').update(raw).digest('hex');
+  return { raw, hash };
+};
+
+
+// ── Signup ────────────────────────────────────────────────────────────────────
 export const signupUser = asyncHandler(async (req, res) => {
-  // 1️⃣ Validate request body
-  // validateSignUpData(req);
-
   const { firstName, lastName, emailId, password } = req.body;
 
-  // 2️⃣ Check if user already exists
-  const existingUser = await User.findOne({ emailId });
-  if (existingUser) {
-    throw new ApiError(409, 'User already exists with this email');
-  }
+  validateSignUpData(req);
 
-  // 3️⃣ Hash password
+  const existingUser = await User.findOne({ emailId });
+  if (existingUser) throw new ApiError(409, 'User already exists with this email');
+
   const hashedPassword = await bcrypt.hash(password, 10);
 
-  // 4️⃣ Create user
+  // Generate email verification token
+  const { raw: verifyToken, hash: verifyHash } = generateSecureToken();
+
   const user = await User.create({
     firstName,
     lastName,
     emailId,
-    password: hashedPassword,
+    password:                 hashedPassword,
+    isVerified:               false,
+    emailVerificationToken:   verifyHash,
+    emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24h
   });
 
-  // 5️⃣ Generate token & set cookie
-  const token = generateToken(user._id);
-  setAuthCookie(res, token);
+  // Send verification email — fire-and-forget, don't block signup on email failure
+  sendVerificationEmail({
+    to:        emailId,
+    firstName,
+    token:     verifyToken,
+  }).catch((err) => console.error('Verification email failed:', err));
 
-  // 6️⃣ Remove sensitive fields
-  user.password = undefined;
+  // Issue tokens so the user is logged in immediately after signup
+  await issueTokens(res, user);
 
-  // 7️⃣ Send response
-  return new ApiResponse(201, { user }, 'User registered successfully').send(
-    res
-  );
+  user.password               = undefined;
+  user.refreshToken           = undefined;
+  user.emailVerificationToken = undefined;
+
+  return new ApiResponse(
+    201,
+    { user, requiresVerification: true },
+    'Account created. Please check your email to verify your account.'
+  ).send(res);
 });
 
 
+// ── Login ─────────────────────────────────────────────────────────────────────
 export const loginUser = asyncHandler(async (req, res) => {
   const { emailId, password } = req.body;
 
-  // 1️⃣ Validate input
-  if (!emailId || !password) {
-    throw new ApiError(400, 'Email and password are required');
-  }
+  if (!emailId || !password) throw new ApiError(400, 'Email and password are required');
 
-  // 2️⃣ Check if user exists
   const user = await User.findOne({ emailId });
-  if (!user) {
-    throw new ApiError(401, 'Invalid email or password');
+  if (!user) throw new ApiError(401, 'Invalid email or password');
+
+  // Google-only users have no password
+  if (!user.password) {
+    throw new ApiError(400, 'This account uses Google sign-in. Please continue with Google.');
   }
 
-  // 3️⃣ Verify password
   const isPasswordValid = user.comparePassword(password);
-  if (!isPasswordValid) {
-    throw new ApiError(401, 'Invalid email or password');
+  if (!isPasswordValid) throw new ApiError(401, 'Invalid email or password');
+
+  // Block login for unverified accounts
+  // if (!user.isVerified) {
+  //   throw new ApiError(
+  //     403,
+  //     'Please verify your email address before logging in. Check your inbox for the verification link.'
+  //   );
+  // }
+
+  await issueTokens(res, user);
+
+  user.password     = undefined;
+  user.refreshToken = undefined;
+
+  return new ApiResponse(200, { user }, 'Login successful').send(res);
+});
+
+
+// ── Logout ────────────────────────────────────────────────────────────────────
+export const logoutUser = asyncHandler(async (req, res) => {
+  if (req.userId) {
+    await User.findByIdAndUpdate(req.userId, { refreshToken: null });
+  }
+  clearAuthCookie(res);
+  clearRefreshCookie(res);
+  return new ApiResponse(200, null, 'Logged out successfully').send(res);
+});
+
+
+// ── Refresh tokens ────────────────────────────────────────────────────────────
+export const refreshTokens = asyncHandler(async (req, res) => {
+  const incomingRefresh = req.cookies?.refreshToken;
+  if (!incomingRefresh) throw new ApiError(401, 'No refresh token provided');
+
+  let decoded;
+  try {
+    decoded = jwt.verify(incomingRefresh, process.env.JWT_REFRESH_SECRET);
+  } catch {
+    throw new ApiError(401, 'Invalid or expired refresh token');
   }
 
-  // 4️⃣ Generate token & set cookie
-  const token = generateToken(user._id);
-  setAuthCookie(res, token);
+  const user = await User.findById(decoded.userId);
+  if (!user || !user.refreshToken) {
+    throw new ApiError(401, 'Session expired — please log in again');
+  }
 
-  // 5️⃣ Remove sensitive data
-  user.password = undefined;
+  const isValid = await bcrypt.compare(incomingRefresh, user.refreshToken);
+  if (!isValid) throw new ApiError(401, 'Refresh token reuse detected — please log in again');
 
-  // 6️⃣ Send response
-  return new ApiResponse(200, { user }, 'Login successful').send(res);
+  await issueTokens(res, user);
+
+  user.password     = undefined;
+  user.refreshToken = undefined;
+
+  return new ApiResponse(200, { user }, 'Tokens refreshed successfully').send(res);
+});
+
+
+// ── Verify email ──────────────────────────────────────────────────────────────
+export const verifyEmail = asyncHandler(async (req, res) => {
+  const { token } = req.params;
+  if (!token) throw new ApiError(400, 'Verification token is required');
+
+  const hash = crypto.createHash('sha256').update(token).digest('hex');
+
+  const user = await User.findOne({
+    emailVerificationToken:   hash,
+    emailVerificationExpires: { $gt: Date.now() },
+  });
+
+  if (!user) {
+    throw new ApiError(400, 'Verification link is invalid or has expired');
+  }
+
+  user.isVerified               = true;
+  user.emailVerificationToken   = undefined;
+  user.emailVerificationExpires = undefined;
+  await user.save();
+
+  return new ApiResponse(200, null, 'Email verified successfully').send(res);
+});
+
+
+// ── Resend verification email ─────────────────────────────────────────────────
+export const resendVerification = asyncHandler(async (req, res) => {
+  const { emailId } = req.body;
+  if (!emailId) throw new ApiError(400, 'Email is required');
+
+  const user = await User.findOne({ emailId });
+
+  // Always return success to prevent email enumeration attacks
+  if (!user || user.isVerified) {
+    return new ApiResponse(
+      200,
+      null,
+      'If your account exists and is unverified, a new verification email has been sent.'
+    ).send(res);
+  }
+
+  const { raw: verifyToken, hash: verifyHash } = generateSecureToken();
+
+  user.emailVerificationToken   = verifyHash;
+  user.emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  await user.save();
+
+  sendVerificationEmail({
+    to:        user.emailId,
+    firstName: user.firstName,
+    token:     verifyToken,
+  }).catch((err) => console.error('Resend verification email failed:', err));
+
+  return new ApiResponse(
+    200,
+    null,
+    'If your account exists and is unverified, a new verification email has been sent.'
+  ).send(res);
+});
+
+
+// ── Forgot password ───────────────────────────────────────────────────────────
+export const forgotPassword = asyncHandler(async (req, res) => {
+  const { emailId } = req.body;
+  if (!emailId) throw new ApiError(400, 'Email is required');
+
+  const user = await User.findOne({ emailId });
+
+  // Always return success — prevents email enumeration
+  if (!user || user.googleId) {
+    return new ApiResponse(
+      200,
+      null,
+      'If an account with that email exists, a password reset link has been sent.'
+    ).send(res);
+  }
+
+  const { raw: resetToken, hash: resetHash } = generateSecureToken();
+
+  user.resetPasswordToken   = resetHash;
+  user.resetPasswordExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+  await user.save();
+
+  sendPasswordResetEmail({
+    to:        user.emailId,
+    firstName: user.firstName,
+    token:     resetToken,
+  }).catch((err) => console.error('Password reset email failed:', err));
+
+  return new ApiResponse(
+    200,
+    null,
+    'If an account with that email exists, a password reset link has been sent.'
+  ).send(res);
+});
+
+
+// ── Reset password ────────────────────────────────────────────────────────────
+export const resetPassword = asyncHandler(async (req, res) => {
+  const { token }    = req.params;
+  const { password } = req.body;
+
+  if (!token)    throw new ApiError(400, 'Reset token is required');
+  if (!password) throw new ApiError(400, 'New password is required');
+  if (password.length < 8) throw new ApiError(400, 'Password must be at least 8 characters');
+  if (!/[A-Z]/.test(password)) throw new ApiError(400, 'Password must contain at least one uppercase letter');
+  if (!/\d/.test(password))    throw new ApiError(400, 'Password must contain at least one number');
+
+  const hash = crypto.createHash('sha256').update(token).digest('hex');
+
+  const user = await User.findOne({
+    resetPasswordToken:   hash,
+    resetPasswordExpires: { $gt: Date.now() },
+  });
+
+  if (!user) {
+    throw new ApiError(400, 'Password reset link is invalid or has expired');
+  }
+
+  user.password             = await bcrypt.hash(password, 10);
+  user.resetPasswordToken   = undefined;
+  user.resetPasswordExpires = undefined;
+  // Invalidate all existing sessions after password reset
+  user.refreshToken         = null;
+  await user.save();
+
+  clearAuthCookie(res);
+  clearRefreshCookie(res);
+
+  return new ApiResponse(200, null, 'Password reset successful. Please log in with your new password.').send(res);
+});
+
+
+// ── Google OAuth callback ─────────────────────────────────────────────────────
+// Called by Passport after a successful Google authentication.
+// Issues tokens and redirects to the frontend OAuth callback page.
+export const googleCallback = asyncHandler(async (req, res) => {
+  const user = req.user; // populated by Passport
+  if (!user) throw new ApiError(401, 'Google authentication failed');
+
+  await issueTokens(res, user);
+
+  // Redirect to the frontend callback page which reads the cookie and
+  // redirects to the dashboard. We pass the user's first name in the
+  // query string so the frontend can dispatch setCredentials without
+  // needing to make an extra API call.
+  const clientUrl = process.env.CLIENT_URL?.split(',')[0].trim();
+  res.redirect(`${clientUrl}/oauth/callback?success=true`);
 });
 
 
@@ -380,134 +880,181 @@ export const loginUser = asyncHandler(async (req, res) => {
 FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\controllers\resume.controller.js
 ==============================
 
-import puppeteer from 'puppeteer';
-import imagekit from '../config/imageKit.js';
 import Resume from '../models/resume.model.js';
 import { ApiError } from '../utils/api-error.js';
 import { ApiResponse } from '../utils/api-response.js';
 import { asyncHandler } from '../utils/async-handler.js';
-import fs from 'fs';
 import { generateAndSendPDFFromData, generateAndSendPDFFromUrl } from '../utils/generateAndSendPdf.js';
+import imagekit from '../config/imageKit.js';
+import fs from 'fs';
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Phase 5 — Feature 5: Build a clean snapshot from a resume document.
+// Strips _id, userId, views, downloads, versions, and timestamps so the
+// snapshot only contains editable content fields.
+const buildSnapshot = (resume) => {
+  const {
+    _id, userId, createdAt, updatedAt,
+    views, downloads, versions,
+    ...content
+  } = resume.toObject ? resume.toObject() : resume;
+  return content;
+};
+
+const VERSION_CAP = 10;
 
 
+// ── Resume CRUD ───────────────────────────────────────────────────────────────
 
 export const createResume = asyncHandler(async (req, res) => {
   const userId = req.userId;
   const { title } = req.body;
 
-  if (!userId) {
-    throw new ApiError(401, 'Unauthorized request');
-  }
+  if (!userId) throw new ApiError(401, 'Unauthorized request');
+  if (!title || !title.trim()) throw new ApiError(400, 'Resume title is required');
 
-  if (!title || !title.trim()) {
-    throw new ApiError(400, 'Resume title is required');
-  }
-
-  const resume = await Resume.create({
-    userId,
-    title: title.trim(),
-  });
-
-  return new ApiResponse(201, { resume }, 'Resume created successfully').send(
-    res
-  );
+  const resume = await Resume.create({ userId, title: title.trim() });
+  return new ApiResponse(201, { resume }, 'Resume created successfully').send(res);
 });
 
+
+export const duplicateResume = asyncHandler(async (req, res) => {
+  const userId = req.userId;
+  const { id } = req.params;
+
+  const source = await Resume.findOne({ _id: id, userId });
+  if (!source) throw new ApiError(404, 'Resume not found or access denied');
+
+  const { _id, userId: _uid, createdAt, updatedAt, views, isPublic, ...copyFields } =
+    source.toObject();
+
+  const duplicate = await Resume.create({
+    ...copyFields,
+    userId,
+    title:    `${source.title} (Copy)`,
+    isPublic: false,
+    views:    0,
+    downloads: 0,
+    versions: [],
+  });
+
+  return new ApiResponse(201, { resume: duplicate }, 'Resume duplicated successfully').send(res);
+});
+
+
+// Phase 5 — Feature 5: updateResume pushes a version snapshot before saving.
 export const updateResume = asyncHandler(async (req, res) => {
   const userId = req.userId;
   const { resumeId, resumeData, removeBackground } = req.body;
   const image = req.file;
 
-  // 1️⃣ Validate resumeId
-  if (!resumeId) {
-    throw new ApiError(400, 'Resume ID is required');
-  }
-
-  // 2️⃣ Validate and parse resumeData safely
-  if (!resumeData) {
-    throw new ApiError(400, 'Resume data is required');
-  }
+  if (!resumeId) throw new ApiError(400, 'Resume ID is required');
+  if (!resumeData) throw new ApiError(400, 'Resume data is required');
 
   let parsed;
   try {
-    parsed =
-      typeof resumeData === 'string' ? JSON.parse(resumeData) : resumeData;
+    parsed = typeof resumeData === 'string' ? JSON.parse(resumeData) : resumeData;
   } catch {
     throw new ApiError(400, 'Invalid resume data format');
   }
 
-  // 3️⃣ Whitelist only allowed fields (prevents _id / userId injection)
   const allowedUpdate = {
-    title: parsed.title,
-    personal_info: parsed.personal_info ?? {},
+    title:                parsed.title,
+    personal_info:        parsed.personal_info        ?? {},
     professional_summary: parsed.professional_summary ?? '',
-    experience: parsed.experience ?? [],
-    education: parsed.education ?? [],
-    project: parsed.project ?? [],
-    skills: parsed.skills ?? [],
-    template: parsed.template ?? 'classic',
-    accent_color: parsed.accent_color ?? '#3B82F6',
-    // Frontend uses "public", MongoDB model uses "isPublic" — map it here
+    experience:           parsed.experience           ?? [],
+    education:            parsed.education            ?? [],
+    project:              parsed.project              ?? [],
+    skills:               parsed.skills               ?? [],
+    template:             parsed.template             ?? 'classic',
+    accent_color:         parsed.accent_color         ?? '#3B82F6',
     ...(typeof parsed.public === 'boolean' && { isPublic: parsed.public }),
   };
 
-  // 4️⃣ Handle image upload (optional)
   if (image) {
-    // Coerce removeBackground to a real boolean (FormData sends it as a string)
-    const shouldRemoveBg =
-      removeBackground === true || removeBackground === 'true';
-
+    const shouldRemoveBg = removeBackground === true || removeBackground === 'true';
     try {
       const imageBufferData = fs.createReadStream(image.path);
-
       const response = await imagekit.files.upload({
-        file: imageBufferData,
+        file:     imageBufferData,
         fileName: `resume-${resumeId}.png`,
-        folder: 'user-resumes',
+        folder:   'user-resumes',
         transformation: {
-          pre: `w-300,h-300,fo-face,z-0.75${
-            shouldRemoveBg ? ',e-bgremove' : ''
-          }`,
+          pre: `w-300,h-300,fo-face,z-0.75${shouldRemoveBg ? ',e-bgremove' : ''}`,
         },
       });
-
-      allowedUpdate.personal_info = {
-        ...allowedUpdate.personal_info,
-        image: response.url,
-      };
+      allowedUpdate.personal_info = { ...allowedUpdate.personal_info, image: response.url };
     } finally {
-      // ✅ Always clean up temp file — even if ImageKit upload fails
-      if (fs.existsSync(image.path)) {
-        fs.unlinkSync(image.path);
-      }
+      if (fs.existsSync(image.path)) fs.unlinkSync(image.path);
     }
   }
 
-  // 5️⃣ Update with ownership check
+  // Fetch current state to snapshot BEFORE overwriting
+  const existing = await Resume.findOne({ _id: resumeId, userId });
+  if (!existing) throw new ApiError(404, 'Resume not found or access denied');
+
+  const snapshot   = buildSnapshot(existing);
+  const versionNum = (existing.versions?.length ?? 0) + 1;
+  const label      = `Version ${versionNum} — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+
+  // Push snapshot, cap at VERSION_CAP by slicing from the end
+  const updatedVersions = [
+    ...(existing.versions ?? []).slice(-(VERSION_CAP - 1)),
+    { savedAt: new Date(), label, snapshot },
+  ];
+
   const resume = await Resume.findOneAndUpdate(
     { _id: resumeId, userId },
-    allowedUpdate,
+    { ...allowedUpdate, versions: updatedVersions },
     { new: true }
   );
 
-  if (!resume) {
-    throw new ApiError(404, 'Resume not found or access denied');
-  }
-
-  return new ApiResponse(200, { resume }, 'Resume saved successfully').send(
-    res
-  );
+  return new ApiResponse(200, { resume }, 'Resume saved successfully').send(res);
 });
 
-// PATCH /resumes/:id/title
+
+// Phase 5 — Feature 5: Restore a specific version snapshot.
+export const restoreVersion = asyncHandler(async (req, res) => {
+  const userId = req.userId;
+  const { id, versionIndex } = req.params;
+
+  const resume = await Resume.findOne({ _id: id, userId });
+  if (!resume) throw new ApiError(404, 'Resume not found or access denied');
+
+  const idx = parseInt(versionIndex, 10);
+  if (isNaN(idx) || idx < 0 || idx >= resume.versions.length) {
+    throw new ApiError(400, 'Invalid version index');
+  }
+
+  const { snapshot } = resume.versions[idx];
+
+  // Snapshot before restoring so the current state isn't lost
+  const currentSnapshot = buildSnapshot(resume);
+  const versionNum      = (resume.versions.length) + 1;
+  const label           = `Version ${versionNum} — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} (before restore)`;
+
+  const updatedVersions = [
+    ...resume.versions.slice(-(VERSION_CAP - 1)),
+    { savedAt: new Date(), label, snapshot: currentSnapshot },
+  ];
+
+  const restored = await Resume.findOneAndUpdate(
+    { _id: id, userId },
+    { ...snapshot, versions: updatedVersions },
+    { new: true }
+  );
+
+  return new ApiResponse(200, { resume: restored }, 'Version restored successfully').send(res);
+});
+
+
 export const updateResumeTitle = asyncHandler(async (req, res) => {
   const userId = req.userId;
   const { id } = req.params;
   const { title } = req.body;
 
-  if (!title?.trim()) {
-    throw new ApiError(400, 'Title is required');
-  }
+  if (!title?.trim()) throw new ApiError(400, 'Title is required');
 
   const resume = await Resume.findOneAndUpdate(
     { _id: id, userId },
@@ -515,23 +1062,17 @@ export const updateResumeTitle = asyncHandler(async (req, res) => {
     { new: true }
   );
 
-  if (!resume) {
-    throw new ApiError(404, 'Resume not found');
-  }
-
+  if (!resume) throw new ApiError(404, 'Resume not found');
   return new ApiResponse(200, { resume }, 'Title updated').send(res);
 });
 
-// PATCH /resumes/:id/visibility
+
 export const toggleResumeVisibility = asyncHandler(async (req, res) => {
   const userId = req.userId;
   const { id } = req.params;
 
   const existing = await Resume.findOne({ _id: id, userId });
-
-  if (!existing) {
-    throw new ApiError(404, 'Resume not found');
-  }
+  if (!existing) throw new ApiError(404, 'Resume not found');
 
   existing.isPublic = !existing.isPublic;
   await existing.save();
@@ -543,108 +1084,74 @@ export const toggleResumeVisibility = asyncHandler(async (req, res) => {
   ).send(res);
 });
 
-// POST /resumes/import
+
 export const importResume = asyncHandler(async (req, res) => {
   const userId = req.userId;
   const { title } = req.body;
 
-  const resume = await Resume.create({
-    userId,
-    title,
-    source: 'pdf',
-  });
-
+  const resume = await Resume.create({ userId, title, source: 'pdf' });
   return new ApiResponse(201, { resume }, 'Resume imported').send(res);
 });
+
 
 export const getResumeById = asyncHandler(async (req, res) => {
   const userId = req.userId;
   const { resumeId } = req.params;
 
-  if (!userId) {
-    throw new ApiError(401, 'Unauthorized request');
-  }
-
-  if (!resumeId) {
-    throw new ApiError(400, 'Resume ID is required');
-  }
+  if (!userId) throw new ApiError(401, 'Unauthorized request');
+  if (!resumeId) throw new ApiError(400, 'Resume ID is required');
 
   const resume = await Resume.findOne(
     { _id: resumeId, userId },
     { __v: 0, createdAt: 0, updatedAt: 0 }
   );
 
-  if (!resume) {
-    throw new ApiError(404, 'Resume not found');
-  }
-
-  return new ApiResponse(200, { resume }, 'Resume fetched successfully').send(
-    res
-  );
+  if (!resume) throw new ApiError(404, 'Resume not found');
+  return new ApiResponse(200, { resume }, 'Resume fetched successfully').send(res);
 });
+
 
 export const getPublicResumeById = asyncHandler(async (req, res) => {
   const { resumeId } = req.params;
+  if (!resumeId) throw new ApiError(400, 'Resume ID is required');
 
-  if (!resumeId) {
-    throw new ApiError(400, 'Resume ID is required');
-  }
-
-  const resume = await Resume.findOne(
+  const resume = await Resume.findOneAndUpdate(
     { _id: resumeId, isPublic: true },
-    { __v: 0, createdAt: 0, updatedAt: 0 }
+    { $inc: { views: 1 } },
+    { new: true, projection: { __v: 0, createdAt: 0, updatedAt: 0 } }
   );
 
-  if (!resume) {
-    throw new ApiError(404, 'Resume not found or not public');
-  }
-
-  return new ApiResponse(
-    200,
-    { resume },
-    'Public resume fetched successfully'
-  ).send(res);
+  if (!resume) throw new ApiError(404, 'Resume not found or not public');
+  return new ApiResponse(200, { resume }, 'Public resume fetched successfully').send(res);
 });
+
 
 export const deleteResume = asyncHandler(async (req, res) => {
   const userId = req.userId;
   const { resumeId } = req.params;
 
-  if (!userId) {
-    throw new ApiError(401, 'Unauthorized request');
-  }
+  if (!userId) throw new ApiError(401, 'Unauthorized request');
+  if (!resumeId) throw new ApiError(400, 'Resume ID is required');
 
-  if (!resumeId) {
-    throw new ApiError(400, 'Resume ID is required');
-  }
-
-  const deletedResume = await Resume.findOneAndDelete({
-    _id: resumeId,
-    userId,
-  });
-
-  if (!deletedResume) {
-    throw new ApiError(404, 'Resume not found or access denied');
-  }
+  const deletedResume = await Resume.findOneAndDelete({ _id: resumeId, userId });
+  if (!deletedResume) throw new ApiError(404, 'Resume not found or access denied');
 
   return new ApiResponse(200, null, 'Resume deleted successfully').send(res);
 });
 
-// ─── Export PDF (owner) ────────────────────────────────────────────────────────
-// Called from the builder. Auth required. Owner can download private or public.
-// Accepts current resumeData from the request body so unsaved changes are
-// always reflected in the PDF — never reads stale data from the DB.
+
+// Phase 5 — Feature 3: Increment downloads counter on export.
 export const exportResumePDF = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const userId = req.userId;
 
-  // Verify ownership — but don't use DB data for rendering
-  const resume = await Resume.findOne({ _id: id, userId });
-  if (!resume) {
-    throw new ApiError(404, 'Resume not found or access denied');
-  }
+  const resume = await Resume.findOneAndUpdate(
+    { _id: id, userId },
+    { $inc: { downloads: 1 } },
+    { new: true }
+  );
+  if (!resume) throw new ApiError(404, 'Resume not found or access denied');
 
-  // resumeData is the current frontend state (including unsaved changes)
   let resumeData;
   try {
     resumeData = typeof req.body.resumeData === 'string'
@@ -654,82 +1161,81 @@ export const exportResumePDF = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Invalid resume data');
   }
 
-  if (!resumeData) {
-    throw new ApiError(400, 'Resume data is required');
-  }
-
+  if (!resumeData) throw new ApiError(400, 'Resume data is required');
   await generateAndSendPDFFromData(resumeData, res);
 });
 
-// ─── Export PDF (public) ───────────────────────────────────────────────────────
-// Called from shared public preview page. No auth. Only works for public resumes.
-// Renders from the live public URL — data always comes from DB (as expected for
-// public sharing, where the viewer sees the last saved version).
+
 export const exportResumePDFPublic = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
-  const resume = await Resume.findOne({ _id: id, isPublic: true });
-  if (!resume) {
-    throw new ApiError(404, 'Resume not found or is not public');
-  }
+  const resume = await Resume.findOneAndUpdate(
+    { _id: id, isPublic: true },
+    { $inc: { downloads: 1 } },
+    { new: true }
+  );
+  if (!resume) throw new ApiError(404, 'Resume not found or is not public');
 
   await generateAndSendPDFFromUrl(resume, res);
 });
+
 
 ==============================
 FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\controllers\user.controller.js
 ==============================
 
-import mongoose from "mongoose";
-import Resume from "../models/resume.model.js";
-import User from "../models/user.model.js";
-import { ApiError } from "../utils/api-error.js";
-import { ApiResponse } from "../utils/api-response.js";
-import { asyncHandler } from "../utils/async-handler.js";
+import mongoose from 'mongoose';
+import Resume from '../models/resume.model.js';
+import User from '../models/user.model.js';
+import { ApiError } from '../utils/api-error.js';
+import { ApiResponse } from '../utils/api-response.js';
+import { asyncHandler } from '../utils/async-handler.js';
+
+// Phase 2 — Fix 2: Session restore endpoint.
+// Called once on app boot by useSessionRestore hook in App.jsx.
+// If the httpOnly cookie is still valid this returns the user object so
+// the frontend can refresh its Redux state with up-to-date server data.
+// If the cookie is missing or expired the authMiddleware throws 401,
+// which the frontend 401 interceptor handles (clear Redux + redirect to /login).
+//
+// This is separate from getUserById (/user/profile) which is the
+// "profile page" endpoint — getMe is specifically for silent session hydration.
+export const getMe = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.userId).select('-password');
+  if (!user) throw new ApiError(404, 'User not found');
+
+  return new ApiResponse(200, { user }, 'Session restored successfully').send(
+    res,
+  );
+});
 
 export const getUserById = asyncHandler(async (req, res) => {
   const userId = req.userId;
 
-  // 1️⃣ Validate userId presence (auth middleware responsibility)
-  if (!userId) {
-    throw new ApiError(401, 'Unauthorized request');
-  }
+  if (!userId) throw new ApiError(401, 'Unauthorized request');
 
-  // 2️⃣ Find user
   const user = await User.findById(userId).select('-password');
-  if (!user) {
-    throw new ApiError(404, 'User not found');
-  }
+  if (!user) throw new ApiError(404, 'User not found');
 
-  // 3️⃣ Send response
   return new ApiResponse(200, { user }, 'User fetched successfully').send(res);
 });
-
 
 export const getUserResumes = asyncHandler(async (req, res) => {
   const userId = req.userId;
 
-  // console.log('userId', userId);
+  if (!userId) throw new ApiError(401, 'Unauthorized request');
 
-  // 1️⃣ Ensure user is authenticated
-  if (!userId) {
-    throw new ApiError(401, 'Unauthorized request');
-  }
-
-  // 2️⃣ Fetch resumes belonging to the user
   const resumes = await Resume.find({
     userId: new mongoose.Types.ObjectId(req.userId),
-  }).sort({ title: 1 }); // 1 = A→Z
+  }).sort({ updatedAt: -1 }); // Most recently updated first
 
-  // console.log("resumes", resumes)
-
-  // 3️⃣ Send response
   return new ApiResponse(
     200,
     { resumes },
-    'User resumes fetched successfully'
+    'User resumes fetched successfully',
   ).send(res);
 });
+
 
 ==============================
 FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\middlewares\authMiddleware.js
@@ -803,6 +1309,53 @@ export const globalErrorHandler = (err, req, res, next) => {
 
 
 ==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\middlewares\rateLimiter.js
+==============================
+
+import rateLimit from 'express-rate-limit';
+
+// Phase 2 — Fix 3: Rate limiting on AI endpoints.
+// Every call to /api/ai/* hits a paid external API (OpenAI/Gemini).
+// Without limits a single user can exhaust the API budget in minutes.
+//
+// Two separate limiters:
+//   - aiEnhanceRateLimiter  — enhance-pro-sum and enhance-job-desc
+//     These are called on every keystroke-like interaction, so 20/min is generous.
+//   - aiUploadRateLimiter   — upload-resume (PDF extraction + AI parse)
+//     This is expensive — PDF text extraction + full resume parse. 5/min is plenty.
+//
+// Both use the default in-memory store which is fine for a single-process server.
+// For multi-process/clustered deployments, swap the store for redis-rate-limit.
+
+export const aiEnhanceRateLimiter = rateLimit({
+  windowMs: 60 * 1000,   // 1 minute
+  max: 20,               // 20 requests per window per IP
+  standardHeaders: true, // Return RateLimit-* headers
+  legacyHeaders: false,
+  message: {
+    success: false,
+    statusCode: 429,
+    message: 'Too many enhancement requests. Please wait a moment before trying again.',
+  },
+  // Skip rate limiting in test environments
+  skip: () => process.env.NODE_ENV === 'test',
+});
+
+export const aiUploadRateLimiter = rateLimit({
+  windowMs: 60 * 1000,   // 1 minute
+  max: 5,                // 5 uploads per window per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    statusCode: 429,
+    message: 'Too many upload requests. Please wait a moment before trying again.',
+  },
+  skip: () => process.env.NODE_ENV === 'test',
+});
+
+
+==============================
 FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\models\resume.model.js
 ==============================
 
@@ -818,47 +1371,68 @@ const ResumeSchema = new mongoose.Schema(
     professional_summary: { type: String, default: '' },
     skills: [{ type: String }],
     personal_info: {
-      image: { type: String, default: '' },
-      full_name: { type: String, default: '' },
+      image:      { type: String, default: '' },
+      full_name:  { type: String, default: '' },
       profession: { type: String, default: '' },
-      email: { type: String, default: '' },
-      phone: { type: String, default: '' },
-      location: { type: String, default: '' },
-      linkedin: { type: String, default: '' },
-      website: { type: String, default: '' },
+      email:      { type: String, default: '' },
+      phone:      { type: String, default: '' },
+      location:   { type: String, default: '' },
+      linkedin:   { type: String, default: '' },
+      website:    { type: String, default: '' },
     },
     experience: [
       {
-        company: { type: String },
-        position: { type: String },
-        start_date: { type: String },
-        end_date: { type: String },
+        company:     { type: String },
+        position:    { type: String },
+        start_date:  { type: String },
+        end_date:    { type: String },
         description: { type: String },
-        is_current: { type: Boolean },
+        is_current:  { type: Boolean },
       },
     ],
     project: [
       {
-        name: { type: String },
-        type: { type: String },
+        name:        { type: String },
+        type:        { type: String },
         description: { type: String },
       },
     ],
     education: [
       {
-        institution: { type: String },
-        degree: { type: String },
-        field: { type: String },
+        institution:     { type: String },
+        degree:          { type: String },
+        field:           { type: String },
         graduation_date: { type: String },
-        gpa: { type: String },
+        gpa:             { type: String },
       },
     ],
+
+    // Phase 2: Real view counter
+    views: { type: Number, default: 0 },
+
+    // Phase 5 — Feature 3: Download counter.
+    // Incremented atomically on every PDF export (owner + public).
+    downloads: { type: Number, default: 0 },
+
+    // Phase 5 — Feature 5: Resume versioning.
+    // Each entry is a full snapshot of the resume content at the time of save.
+    // Capped at 10 entries — oldest is shifted out when the cap is reached.
+    // Stored as Mixed so we don't need a rigid sub-schema for the snapshot.
+    versions: {
+      type: [
+        {
+          savedAt:  { type: Date, default: Date.now },
+          label:    { type: String, default: '' }, // e.g. "Version 3 — Jul 14"
+          snapshot: { type: mongoose.Schema.Types.Mixed },
+        },
+      ],
+      default: [],
+    },
   },
   { timestamps: true, minimize: false }
 );
 
 const Resume = mongoose.model('Resume', ResumeSchema);
-
 export default Resume;
 
 
@@ -871,43 +1445,44 @@ import bcrypt from 'bcryptjs';
 
 const UserSchema = new mongoose.Schema(
   {
-    firstName: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-
-    lastName: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-
+    firstName: { type: String, required: true, trim: true },
+    lastName:  { type: String, required: true, trim: true },
     emailId: {
-      type: String,
-      required: true,
-      unique: true,
-      lowercase: true,
-      trim: true,
+      type: String, required: true, unique: true,
+      lowercase: true, trim: true,
     },
-
     password: {
       type: String,
-      required: true,
+      // Not required — Google OAuth users have no password
+      default: null,
     },
+
+    // Phase 5 — refresh token rotation
+    refreshToken: { type: String, default: null },
+
+    // Feature: Email verification
+    isVerified:                { type: Boolean, default: false },
+    emailVerificationToken:    { type: String,  default: null },
+    emailVerificationExpires:  { type: Date,    default: null },
+
+    // Feature: Forgot / reset password
+    resetPasswordToken:   { type: String, default: null },
+    resetPasswordExpires: { type: Date,   default: null },
+
+    // Feature: Google OAuth
+    // Stored so we can find-or-create on subsequent Google logins.
+    // Google users are always considered verified (Google already verified the email).
+    googleId: { type: String, default: null, sparse: true },
   },
   { timestamps: true }
 );
 
-/**
- * Compare plain password with hashed password
- */
 UserSchema.methods.comparePassword = function (password) {
+  if (!this.password) return false;
   return bcrypt.compareSync(password, this.password);
 };
 
 const User = mongoose.model('User', UserSchema);
-
 export default User;
 
 
@@ -920,17 +1495,28 @@ import {
   enhanceProfessionalSummary,
   enhanceJobDescription,
   uploadResume,
+  importFromLinkedIn,
+  generateCoverLetter,
+  analyzeATS,
 } from '../controllers/ai.controller.js';
 import { authMiddleware } from '../middlewares/authMiddleware.js';
-
+import {
+  aiEnhanceRateLimiter,
+  aiUploadRateLimiter,
+} from '../middlewares/rateLimiter.js';
 
 const aiRouter = express.Router();
 
 aiRouter.use(authMiddleware);
 
-aiRouter.post('/enhance-pro-sum', enhanceProfessionalSummary);
-aiRouter.post('/enhance-job-desc', enhanceJobDescription);
-aiRouter.post('/upload-resume', uploadResume);
+aiRouter.post('/enhance-pro-sum',  aiEnhanceRateLimiter, enhanceProfessionalSummary);
+aiRouter.post('/enhance-job-desc', aiEnhanceRateLimiter, enhanceJobDescription);
+aiRouter.post('/upload-resume',    aiUploadRateLimiter,  uploadResume);
+aiRouter.post('/import-linkedin',  aiUploadRateLimiter,  importFromLinkedIn);
+aiRouter.post('/cover-letter',     aiEnhanceRateLimiter, generateCoverLetter);
+
+// ATS analysis — moderate cost, same limit as enhance (10/min)
+aiRouter.post('/ats-analysis',     aiEnhanceRateLimiter, analyzeATS);
 
 export default aiRouter;
 
@@ -968,13 +1554,54 @@ FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\routes\auth
 ==============================
 
 import express from 'express';
-import { loginUser, signupUser } from '../controllers/auth.controller.js';
-
+import passport from '../config/passport.js';
+import {
+  loginUser,
+  logoutUser,
+  signupUser,
+  refreshTokens,
+  forgotPassword,
+  resetPassword,
+  verifyEmail,
+  resendVerification,
+  googleCallback,
+} from '../controllers/auth.controller.js';
 
 const authRouter = express.Router();
 
-authRouter.post('/signup', signupUser);
-authRouter.post('/signin', loginUser);
+// ── Email / password auth ─────────────────────────────────────────────────────
+authRouter.post('/signup',  signupUser);
+authRouter.post('/signin',  loginUser);
+authRouter.post('/logout',  logoutUser);
+authRouter.post('/refresh', refreshTokens);
+
+// ── Email verification ────────────────────────────────────────────────────────
+authRouter.get('/verify-email/:token',  verifyEmail);
+authRouter.post('/resend-verification', resendVerification);
+
+// ── Forgot / reset password ───────────────────────────────────────────────────
+authRouter.post('/forgot-password',       forgotPassword);
+authRouter.post('/reset-password/:token', resetPassword);
+
+// ── Google OAuth ──────────────────────────────────────────────────────────────
+// Step 1: redirect to Google consent screen
+authRouter.get(
+  '/google',
+  passport.authenticate('google', {
+    scope:   ['profile', 'email'],
+    session: false,
+  })
+);
+
+// Step 2: Google redirects back here after the user consents
+authRouter.get(
+  '/google/callback',
+  passport.authenticate('google', {
+    session:         false,
+    failureRedirect: `${process.env.CLIENT_URL?.split(',')[0].trim()}/login?error=google_auth_failed`,
+  }),
+  googleCallback
+);
 
 export default authRouter;
 
@@ -983,31 +1610,37 @@ export default authRouter;
 FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\routes\resume.routes.js
 ==============================
 
-import express from "express";
-import { authMiddleware } from "../middlewares/authMiddleware.js";
-import { createResume, deleteResume, getPublicResumeById, getResumeById, toggleResumeVisibility, updateResume, updateResumeTitle, exportResumePDF, exportResumePDFPublic } from "../controllers/resume.controller.js";
-import upload from "../config/multer.js";
+import express from 'express';
+import { authMiddleware } from '../middlewares/authMiddleware.js';
+import {
+  createResume, deleteResume, duplicateResume,
+  getPublicResumeById, getResumeById,
+  toggleResumeVisibility, updateResume, updateResumeTitle,
+  exportResumePDF, exportResumePDFPublic,
+  restoreVersion,
+} from '../controllers/resume.controller.js';
+import upload from '../config/multer.js';
 
 const resumeRouter = express.Router();
 
-resumeRouter.get('/public/:resumeId', getPublicResumeById);
-resumeRouter.get('/:id/export-pdf/public', exportResumePDFPublic);
+// Public routes
+resumeRouter.get('/public/:resumeId',        getPublicResumeById);
+resumeRouter.get('/:id/export-pdf/public',   exportResumePDFPublic);
 
 resumeRouter.use(authMiddleware);
 
-resumeRouter.post('/create', createResume);
-resumeRouter.patch('/update', upload.single('image'), updateResume);
-resumeRouter.patch('/:id/title', updateResumeTitle);
-resumeRouter.patch('/:id/visibility', toggleResumeVisibility);
-resumeRouter.post('/:id/export-pdf', exportResumePDF);
-resumeRouter.get('/:resumeId', getResumeById);
+resumeRouter.post('/create',                    createResume);
+resumeRouter.patch('/update',                   upload.single('image'), updateResume);
+resumeRouter.patch('/:id/title',                updateResumeTitle);
+resumeRouter.patch('/:id/visibility',           toggleResumeVisibility);
+resumeRouter.post('/:id/export-pdf',            exportResumePDF);
+resumeRouter.post('/:id/duplicate',             duplicateResume);
 
-resumeRouter.delete('/:resumeId', deleteResume);
+// Phase 5 — Feature 5: Restore a previous version snapshot
+resumeRouter.post('/:id/restore/:versionIndex', restoreVersion);
 
-
-
-
-
+resumeRouter.get('/:resumeId',                  getResumeById);
+resumeRouter.delete('/:resumeId',               deleteResume);
 
 export default resumeRouter;
 
@@ -1017,18 +1650,27 @@ FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\routes\user
 ==============================
 
 import express from 'express';
-
-import { getUserById, getUserResumes } from '../controllers/user.controller.js';
+import {
+  getMe,
+  getUserById,
+  getUserResumes,
+} from '../controllers/user.controller.js';
 import { authMiddleware } from '../middlewares/authMiddleware.js';
 
 const userRouter = express.Router();
 
 userRouter.use(authMiddleware);
 
+// Phase 2 — Fix 2: Session restore.
+// Called once on app boot — if the cookie is valid, returns the current user.
+// The 401 interceptor in axiosConfig handles the expired-cookie case.
+userRouter.get('/me', getMe);
+
 userRouter.get('/profile', getUserById);
 userRouter.get('/resumes', getUserResumes);
 
 export default userRouter;
+
 
 ==============================
 FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\utils\api-error.js
@@ -1104,17 +1746,188 @@ export { asyncHandler };
 FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\utils\cookies.js
 ==============================
 
+const isProduction = process.env.NODE_ENV === 'production';
+
+const BASE_OPTS = {
+  httpOnly: true,
+  secure:   isProduction,
+  sameSite: isProduction ? 'none' : 'lax',
+};
+
+// ── Access token cookie (15 min) ─────────────────────────────────────────────
 export const setAuthCookie = (res, token) => {
   res.cookie('token', token, {
-    httpOnly: true,
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    ...BASE_OPTS,
+    maxAge: 15 * 60 * 1000, // 15 minutes
   });
 };
 
 export const clearAuthCookie = (res) => {
-  res.cookie('token', null, {
-    httpOnly: true,
-    maxAge: 0,
+  res.cookie('token', '', { ...BASE_OPTS, maxAge: 0 });
+};
+
+// ── Refresh token cookie (7 days) ────────────────────────────────────────────
+// Phase 5 — Feature 2: Stored in a separate cookie so the access token and
+// refresh token have independent lifetimes and can be cleared separately.
+export const setRefreshCookie = (res, token) => {
+  res.cookie('refreshToken', token, {
+    ...BASE_OPTS,
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  });
+};
+
+export const clearRefreshCookie = (res) => {
+  res.cookie('refreshToken', '', { ...BASE_OPTS, maxAge: 0 });
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\utils\email.js
+==============================
+
+import nodemailer from 'nodemailer';
+
+// ── Transport ─────────────────────────────────────────────────────────────────
+// Reads SMTP config from environment variables so the same code works with
+// any provider: Gmail app passwords, Resend, SendGrid SMTP, Mailtrap (dev), etc.
+//
+// Required env vars:
+//   EMAIL_HOST   — e.g. smtp.gmail.com / smtp.resend.com / sandbox.smtp.mailtrap.io
+//   EMAIL_PORT   — 465 (SSL) or 587 (STARTTLS)
+//   EMAIL_USER   — SMTP username / API key username
+//   EMAIL_PASS   — SMTP password / API key
+//   EMAIL_FROM   — "From" address shown to recipients, e.g. noreply@yourdomain.com
+
+const createTransporter = () => {
+  return nodemailer.createTransport({
+    host:   process.env.EMAIL_HOST,
+    port:   Number(process.env.EMAIL_PORT) || 587,
+    secure: Number(process.env.EMAIL_PORT) === 465,
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+  });
+};
+
+const FROM = process.env.EMAIL_FROM || 'ResumeIQ <noreply@resumeiq.app>';
+
+// ── Email templates ───────────────────────────────────────────────────────────
+
+const baseHtml = (title, body) => `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${title}</title>
+</head>
+<body style="margin:0;padding:0;background:#0f0f1a;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f0f1a;padding:40px 20px;">
+    <tr>
+      <td align="center">
+        <table width="560" cellpadding="0" cellspacing="0"
+          style="background:#15151f;border-radius:16px;border:1px solid rgba(255,255,255,0.08);overflow:hidden;">
+
+          <!-- Header -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#6d28d9,#7c3aed);padding:28px 40px;">
+              <span style="font-size:22px;font-weight:800;color:#fff;letter-spacing:-0.5px;">
+                Resume<span style="color:#c4b5fd;">IQ</span>
+              </span>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:36px 40px;color:#e2e8f0;font-size:15px;line-height:1.7;">
+              ${body}
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding:20px 40px;border-top:1px solid rgba(255,255,255,0.06);
+              color:#64748b;font-size:12px;text-align:center;">
+              © ${new Date().getFullYear()} ResumeIQ. If you didn't request this email, you can safely ignore it.
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+const ctaButton = (href, label) =>
+  `<a href="${href}"
+    style="display:inline-block;margin:24px 0;padding:14px 32px;
+      background:linear-gradient(135deg,#6d28d9,#7c3aed);
+      color:#fff;font-weight:700;font-size:15px;border-radius:10px;
+      text-decoration:none;letter-spacing:0.3px;"
+  >${label}</a>`;
+
+// ── sendVerificationEmail ─────────────────────────────────────────────────────
+export const sendVerificationEmail = async ({ to, firstName, token }) => {
+  const clientUrl    = process.env.CLIENT_URL?.split(',')[0].trim();
+  const verifyUrl    = `${clientUrl}/email-verified?token=${token}`;
+  const transporter  = createTransporter();
+
+  const html = baseHtml(
+    'Verify your ResumeIQ email',
+    `<p style="margin:0 0 8px;font-size:18px;font-weight:700;color:#f1f5f9;">
+       Hi ${firstName} 👋
+     </p>
+     <p style="margin:0 0 20px;color:#94a3b8;">
+       Thanks for signing up! Please verify your email address to activate your account and start building your resume.
+     </p>
+     ${ctaButton(verifyUrl, 'Verify Email Address')}
+     <p style="margin:20px 0 0;color:#64748b;font-size:13px;">
+       This link expires in <strong style="color:#94a3b8;">24 hours</strong>.<br/>
+       If the button doesn't work, copy and paste this URL:<br/>
+       <a href="${verifyUrl}" style="color:#818cf8;word-break:break-all;">${verifyUrl}</a>
+     </p>`
+  );
+
+  await transporter.sendMail({
+    from:    FROM,
+    to,
+    subject: 'Verify your ResumeIQ email address',
+    html,
+  });
+};
+
+// ── sendPasswordResetEmail ────────────────────────────────────────────────────
+export const sendPasswordResetEmail = async ({ to, firstName, token }) => {
+  const clientUrl   = process.env.CLIENT_URL?.split(',')[0].trim();
+  const resetUrl    = `${clientUrl}/reset-password/${token}`;
+  const transporter = createTransporter();
+
+  const html = baseHtml(
+    'Reset your ResumeIQ password',
+    `<p style="margin:0 0 8px;font-size:18px;font-weight:700;color:#f1f5f9;">
+       Hi ${firstName},
+     </p>
+     <p style="margin:0 0 20px;color:#94a3b8;">
+       We received a request to reset the password for your ResumeIQ account.
+       Click the button below to choose a new password.
+     </p>
+     ${ctaButton(resetUrl, 'Reset My Password')}
+     <p style="margin:20px 0 0;color:#64748b;font-size:13px;">
+       This link expires in <strong style="color:#94a3b8;">1 hour</strong>.<br/>
+       If you didn't request a password reset, you can safely ignore this email —
+       your password won't be changed.<br/><br/>
+       If the button doesn't work, copy and paste this URL:<br/>
+       <a href="${resetUrl}" style="color:#818cf8;word-break:break-all;">${resetUrl}</a>
+     </p>`
+  );
+
+  await transporter.sendMail({
+    from:    FROM,
+    to,
+    subject: 'Reset your ResumeIQ password',
+    html,
   });
 };
 
@@ -1241,12 +2054,26 @@ FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\utils\gener
 
 import jwt from 'jsonwebtoken';
 
-export const generateToken = (userId) => {
-  const token = jwt.sign({ userId }, process.env.JWT_SECRET, {
-    expiresIn: '7d',
-  });
-  return token;
+// Phase 5 — Feature 2: Refresh token rotation.
+// Two tokens:
+//   Access token  — short-lived (15 min), sent as httpOnly cookie on every request.
+//   Refresh token — long-lived (7 days), stored in a separate httpOnly cookie.
+//                   Used only to obtain a new access token when it expires.
+//
+// Why separate cookies rather than Authorization headers?
+//   The app already uses httpOnly cookies for auth — keeping both tokens in
+//   httpOnly cookies means XSS attacks can never read either token.
+
+export const generateAccessToken = (userId) => {
+  return jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: '15m' });
 };
+
+export const generateRefreshToken = (userId) => {
+  return jwt.sign({ userId }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
+};
+
+// Keep the old export name as an alias for any code that hasn't migrated yet
+export const generateToken = generateAccessToken;
 
 
 ==============================
@@ -1254,33 +2081,43 @@ FILE: E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src\utils\valid
 ==============================
 
 import validator from 'validator';
+import { ApiError } from './api-error.js';
 
 /**
- * Validate signup request body
- * @param {Object} req - Express request object
+ * Validate signup request body.
+ * FIX: Was imported but commented out in auth.controller.js — never actually ran.
+ * Now throws ApiError (not plain Error) so the global error handler returns
+ * a structured JSON response instead of crashing with a 500.
  */
 export const validateSignUpData = (req) => {
   const { firstName, lastName, emailId, password } = req.body;
 
   if (!firstName?.trim() || !lastName?.trim()) {
-    throw new Error('❌ Name is not valid!');
+    throw new ApiError(400, 'First name and last name are required');
   }
 
   if (!validator.isEmail(emailId || '')) {
-    throw new Error('❌ Email is not valid!');
+    throw new ApiError(400, 'Please provide a valid email address');
   }
 
-//   if (!validator.isStrongPassword(password || '')) {
-//     throw new Error(
-//       '❌ Please enter a strong password (min 8 chars, mix of uppercase, lowercase, number, and symbol).'
-//     );
-//   }
+  if (!password || password.length < 8) {
+    throw new ApiError(400, 'Password must be at least 8 characters');
+  }
+
+  if (!/[A-Z]/.test(password)) {
+    throw new ApiError(
+      400,
+      'Password must contain at least one uppercase letter',
+    );
+  }
+
+  if (!/\d/.test(password)) {
+    throw new ApiError(400, 'Password must contain at least one number');
+  }
 };
 
 /**
  * Validate fields allowed for editing profile
- * @param {Object} req - Express request object
- * @returns {boolean} - true if valid, false otherwise
  */
 export const validateEditProfileData = (req) => {
   const allowedEditFields = [
@@ -1295,6 +2132,6 @@ export const validateEditProfileData = (req) => {
   ];
 
   return Object.keys(req.body).every((field) =>
-    allowedEditFields.includes(field)
+    allowedEditFields.includes(field),
   );
 };
