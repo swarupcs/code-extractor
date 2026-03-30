@@ -28,7 +28,8 @@ const path = require("path");
 // const TARGET_FOLDER = String.raw`E:\My Projects\AI-Interview-Coach\aI-interview-coach-frontend\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\WhatsApp\WhatsApp-Frontend\src`;
 // const TARGET_FOLDER = String.raw`e:\My Projects\WhatsApp\WhatsApp-Backend\src`;
-const TARGET_FOLDER = String.raw`E:\My Projects\WhatsApp-Clone\whatsapp-frontend\src`;
+// const TARGET_FOLDER = String.raw`E:\My Projects\WhatsApp-Clone\whatsapp-frontend\src`;
+const TARGET_FOLDER = String.raw`E:\My Projects\WhatsApp-Clone\whatsapp-backend\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\Drive-X\drive-X-backend\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\Drive-X\drive-X-frontend\src`;
 

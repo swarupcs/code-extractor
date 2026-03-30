@@ -1,1191 +1,3744 @@
 
 
 ==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\app.js
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\app.ts
 ==============================
 
 import express from 'express';
-import dotenv from 'dotenv';
-import morgan from 'morgan';
-import helmet from 'helmet';
-import mongoSanitize from 'express-mongo-sanitize';
-import cookieParser from 'cookie-parser';
-import compression from 'compression';
-import fileUpload from 'express-fileupload';
 import cors from 'cors';
-import createHttpError from 'http-errors';
-import routes from './routes/index.js';
+import helmet from 'helmet';
+import path from 'path';
+import rateLimit from 'express-rate-limit';
+import { env } from './config/env.js';
+import apiRouter from './routes/index.js';
+import {
+  requestLogger,
+  notFoundHandler,
+  globalErrorHandler,
+} from './middleware/error.js';
 
-//dotEnv config
-dotenv.config();
+export function createApp(): express.Application {
+  const app = express();
 
-//create express app
-const app = express();
-
-//morgan
-if (process.env.NODE_ENV !== "production") {
-  app.use(morgan("dev"));
-}
-
-//helmet
-app.use(helmet());
-
-//parse json request url
-app.use(express.json());
-
-//parse json request body
-app.use(express.urlencoded({ extended: true }));
-
-//sanitize request data
-app.use(mongoSanitize());
-
-//enable cookie parser
-app.use(cookieParser());
-
-//gzip compression
-app.use(compression());
-
-//file upload
-app.use(
-  fileUpload({
-    useTempFiles: true,
-  })
-);
-
-//cors
-app.use(cors());
-
-app.use("/test", (req, res) => {
-  res.send("Server is up and running...");
-});
-
-// app.post('/test', (req, res) => {
-//   // res.send(req.body);
-//   throw createHttpError.BadRequest('this route has an error');
-// });
-
-//api v1 routes
-app.use("/api/v1", routes);
-
-app.use(async (req, res, next) => {
-  next(createHttpError.NotFound('This route does not exist.'));
-});
-
-//error handling
-app.use(async (err, req, res, next) => {
-  res.status(err.status || 500);
-  res.send({
-    error: {
-      status: err.status || 500,
-      message: err.message,
-    },
-  });
-});
-
-export default app;
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\configs\logger.config.js
-==============================
-
-import winston from 'winston';
-
-const enumerateErrorFormat = winston.format((info) => {
-  if (info instanceof Error) {
-    Object.assign(info, { message: info.stack });
-  }
-  return info;
-});
-
-const logger = winston.createLogger({
-  level: process.env.NODE_ENV === 'development' ? 'debug' : 'info',
-  format: winston.format.combine(
-    enumerateErrorFormat(),
-    process.env.NODE_ENV === 'development'
-      ? winston.format.colorize()
-      : winston.format.uncolorize(),
-    winston.format.splat(),
-    winston.format.printf(({ level, message }) => `${level}: ${message}`)
-  ),
-  transports: [
-    new winston.transports.Console({
-      stderrLevels: ['error'],
+  // ── Security headers ────────────────────────────────────────────────────
+  app.use(
+    helmet({
+      crossOriginResourcePolicy: { policy: 'cross-origin' }, // allow uploaded file serving
     }),
-  ],
-});
-
-export default logger;
-
-// To be used as logger.info(message) or logger.error(error)
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\controllers\auth.controller.js
-==============================
-
-import createHttpError from 'http-errors';
-import { createUser, signUser } from '../services/auth.service.js';
-import { generateToken, verifyToken } from '../services/token.service.js';
-import { findUser } from '../services/user.service.js';
-
-export const register = async (req, res, next) => {
-  try {
-    const { name, email, picture, status, password } = req.body;
-    const newUser = await createUser({
-      name,
-      email,
-      picture,
-      status,
-      password,
-    });
-
-    const access_token = await generateToken(
-      { userId: newUser._id },
-      '1d',
-      process.env.ACCESS_TOKEN_SECRET
-    );
-    const refresh_token = await generateToken(
-      { userId: newUser._id },
-      '30d',
-      process.env.REFRESH_TOKEN_SECRET
-    );
-
-    res.cookie('refreshtoken', refresh_token, {
-      httpOnly: true,
-      path: '/api/v1/auth/refreshtoken',
-      maxAge: 30 * 24 * 60 * 60 * 1000, //30 days
-    });
-
-    res.json({
-      message: 'register success.',
-      user: {
-        _id: newUser._id,
-        name: newUser.name,
-        email: newUser.email,
-        picture: newUser.picture,
-        status: newUser.status,
-        token: access_token,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-export const login = async (req, res, next) => {
-  try {
-    const { email, password } = req.body;
-    const user = await signUser(email, password);
-    const access_token = await generateToken(
-      { userId: user._id },
-      '1d',
-      process.env.ACCESS_TOKEN_SECRET
-    );
-    const refresh_token = await generateToken(
-      { userId: user._id },
-      '30d',
-      process.env.REFRESH_TOKEN_SECRET
-    );
-
-    res.cookie('refreshtoken', refresh_token, {
-      httpOnly: true,
-      path: '/api/v1/auth/refreshtoken',
-      maxAge: 30 * 24 * 60 * 60 * 1000, //30 days
-    });
-
-    res.json({
-      message: 'register success.',
-      user: {
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        picture: user.picture,
-        status: user.status,
-        token: access_token,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-export const logout = async (req, res, next) => {
-  try {
-    res.clearCookie('refreshtoken', { path: '/api/v1/auth/refreshtoken' });
-    res.json({
-      message: 'logged out !',
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-export const refreshToken = async (req, res, next) => {
-  try {
-    const refresh_token = req.cookies.refreshtoken;
-    if (!refresh_token) throw createHttpError.Unauthorized('Please login.');
-    const check = await verifyToken(
-      refresh_token,
-      process.env.REFRESH_TOKEN_SECRET
-    );
-    const user = await findUser(check.userId);
-    const access_token = await generateToken(
-      { userId: user._id },
-      '1d',
-      process.env.ACCESS_TOKEN_SECRET
-    );
-    res.json({
-      user: {
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        picture: user.picture,
-        status: user.status,
-        token: access_token,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\controllers\conversation.controller.js
-==============================
-
-import createHttpError from 'http-errors';
-import logger from '../configs/logger.config.js';
-import {
-  createConversation,
-  doesConversationExist,
-  getUserConversations,
-  populateConversation,
-} from '../services/conversation.service.js';
-
-export const create_open_conversation = async (req, res, next) => {
-  console.log(req.body);
-  try {
-    const sender_id = req.user.userId;
-    const { receiver_id, isGroup } = req.body;
-    if (isGroup == false) {
-      //check if receiver_id is provided
-      if (!receiver_id) {
-        logger.error(
-          'please provide the user id you wanna start a conversation with !'
-        );
-        throw createHttpError.BadGateway('Oops...Something went wrong !');
-      }
-      //check if chat exists
-      const existed_conversation = await doesConversationExist(
-        sender_id,
-        receiver_id,
-        false
-      );
-      if (existed_conversation) {
-        res.json(existed_conversation);
-      } else {
-        // let receiver_user = await findUser(receiver_id);
-        let convoData = {
-          name: 'conversation name',
-          picture: 'conversation picture',
-          isGroup: false,
-          users: [sender_id, receiver_id],
-        };
-        const newConvo = await createConversation(convoData);
-        const populatedConvo = await populateConversation(
-          newConvo._id,
-          'users',
-          '-password'
-        );
-        res.status(200).json(populatedConvo);
-      }
-    } else {
-      console.log('hnaaaaaaaaaa');
-      //it's a group chat
-      //check if group chat exists
-      const existed_group_conversation = await doesConversationExist(
-        '',
-        '',
-        isGroup
-      );
-      res.status(200).json(existed_group_conversation);
-    }
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getConversations = async (req, res, next) => {
-  try {
-    const user_id = req.user.userId;
-    const conversations = await getUserConversations(user_id);
-    res.status(200).json(conversations);
-  } catch (error) {
-    next(error);
-  }
-};
-export const createGroup = async (req, res, next) => {
-  const { name, users } = req.body;
-  //add current user to users
-  users.push(req.user.userId);
-  if (!name || !users) {
-    throw createHttpError.BadRequest('Please fill all fields.');
-  }
-  if (users.length < 2) {
-    throw createHttpError.BadRequest(
-      'Atleast 2 users are required to start a group chat.'
-    );
-  }
-  let convoData = {
-    name,
-    users,
-    isGroup: true,
-    admin: req.user.userId,
-    picture: process.env.DEFAULT_GROUP_PICTURE,
-  };
-  try {
-    const newConvo = await createConversation(convoData);
-    const populatedConvo = await populateConversation(
-      newConvo._id,
-      'users admin',
-      '-password'
-    );
-    res.status(200).json(populatedConvo);
-  } catch (error) {
-    next(error);
-  }
-};
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\controllers\message.controller.js
-==============================
-
-import logger from '../configs/logger.config.js';
-import { updateLatestMessage } from '../services/conversation.service.js';
-import {
-  createMessage,
-  getConvoMessages,
-  populateMessage,
-} from '../services/message.service.js';
-
-export const sendMessage = async (req, res, next) => {
-  try {
-    const user_id = req.user.userId;
-    const { message, convo_id, files } = req.body;
-    if (!convo_id || (!message && !files)) {
-      logger.error('Please provider a conversation id and a message body');
-      return res.sendStatus(400);
-    }
-    const msgData = {
-      sender: user_id,
-      message,
-      conversation: convo_id,
-      files: files || [],
-    };
-    let newMessage = await createMessage(msgData);
-    let populatedMessage = await populateMessage(newMessage._id);
-    await updateLatestMessage(convo_id, newMessage);
-    res.json(populatedMessage);
-  } catch (error) {
-    next(error);
-  }
-};
-export const getMessages = async (req, res, next) => {
-  try {
-    const convo_id = req.params.convo_id;
-    if (!convo_id) {
-      logger.error('Please add a conversation id in params.');
-      res.sendStatus(400);
-    }
-    const messages = await getConvoMessages(convo_id);
-    res.json(messages);
-  } catch (error) {
-    next(error);
-  }
-};
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\controllers\user.controller.js
-==============================
-
-import createHttpError from 'http-errors';
-import logger from '../configs/logger.config.js';
-import { searchUsers as searchUsersService } from '../services/user.service.js';
-export const searchUsers = async (req, res, next) => {
-  try {
-    const keyword = req.query.search;
-    if (!keyword) {
-      logger.error('Please add a search query first');
-      throw createHttpError.BadRequest('Oops...Something went wrong !');
-    }
-    const users = await searchUsersService(keyword, req.user.userId);
-    res.status(200).json(users);
-  } catch (error) {
-    next(error);
-  }
-};
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\index.js
-==============================
-
-import mongoose from 'mongoose';
-import { Server } from 'socket.io';
-import app from './app.js';
-import logger from './configs/logger.config.js';
-import SocketServer from './SocketServer.js';
-
-//env variables
-const { DATABASE_URL } = process.env;
-const PORT = process.env.PORT || 8000;
-
-//exit on mognodb error
-mongoose.connection.on('error', (err) => {
-  logger.error(`Mongodb connection error : ${err}`);
-  process.exit(1);
-});
-
-//mongodb debug mode
-if (process.env.NODE_ENV !== 'production') {
-  mongoose.set('debug', true);
-}
-
-//mongodb connection
-mongoose
-  .connect(DATABASE_URL, {
-    // useNewUrlParser: true,
-    // useUnifiedTopology: true,
-  })
-  .then(() => {
-    logger.info('Connected to Mongodb.');
-  });
-
-let server;
-
-server = app.listen(PORT, () => {
-  logger.info(`Server is listening at ${PORT}.`);
-});
-
-//socket io
-const io = new Server(server, {
-  pingTimeout: 60000,
-  cors: {
-    origin: process.env.CLIENT_ENDPOINT,
-  },
-});
-io.on('connection', (socket) => {
-  logger.info('socket io connected successfully.');
-  SocketServer(socket, io);
-});
-
-const exitHandler = () => {
-  if (server) {
-    logger.info('Server closed.');
-    process.exit(1);
-  } else {
-    process.exit(1);
-  }
-};
-
-const unexpectedErrorHandler = (error) => {
-  logger.error(error);
-  exitHandler();
-};
-process.on('uncaughtException', unexpectedErrorHandler);
-process.on('unhandledRejection', unexpectedErrorHandler);
-
-//SIGTERM
-process.on('SIGTERM', () => {
-  if (server) {
-    logger.info('Server closed.');
-    process.exit(1);
-  }
-});
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\middlewares\authMiddleware.js
-==============================
-
-import createHttpError from 'http-errors';
-import jwt from 'jsonwebtoken';
-export default async function (req, res, next) {
-  if (!req.headers['authorization'])
-    return next(createHttpError.Unauthorized());
-  const bearerToken = req.headers['authorization'];
-  const token = bearerToken.split(' ')[1];
-
-  // console.log({ bearerToken, token });
-
-  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, payload) => {
-    if (err) {
-      // console.log({err, payload})
-      return next(createHttpError.Unauthorized());
-    }
-    req.user = payload;
-    next();
-  });
-}
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\models\conversationModel.js
-==============================
-
-import mongoose from 'mongoose';
-const { ObjectId } = mongoose.Schema.Types;
-const conversationSchema = mongoose.Schema(
-  {
-    name: {
-      type: String,
-      required: [true, 'Conversations name is required.'],
-      trim: true,
-    },
-    picture: {
-      type: String,
-      required: true,
-    },
-    isGroup: {
-      type: Boolean,
-      required: true,
-      default: false,
-    },
-    users: [
-      {
-        type: ObjectId,
-        ref: 'UserModel',
-      },
-    ],
-    latestMessage: {
-      type: ObjectId,
-      ref: 'MessageModel',
-    },
-    admin: {
-      type: ObjectId,
-      ref: 'UserModel',
-    },
-  },
-  {
-    collection: 'conversations',
-    timestamps: true,
-  }
-);
-
-const ConversationModel =
-  mongoose.models.ConversationModel ||
-  mongoose.model('ConversationModel', conversationSchema);
-
-export default ConversationModel;
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\models\index.js
-==============================
-
-import UserModel from './userModel.js';
-import ConversationModel from './conversationModel.js';
-import MessageModel from './messageModel.js';
-
-
-export { UserModel, ConversationModel, MessageModel };
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\models\messageModel.js
-==============================
-
-import mongoose from 'mongoose';
-
-const { ObjectId } = mongoose.Schema.Types;
-
-const messageSchema = mongoose.Schema(
-  {
-    sender: {
-      type: ObjectId,
-      ref: 'UserModel',
-    },
-    message: {
-      type: String,
-      trim: true,
-    },
-    conversation: {
-      type: ObjectId,
-      ref: 'ConversationModel',
-    },
-    files: [],
-  },
-  {
-    collection: 'messages',
-    timestamps: true,
-  }
-);
-
-const MessageModel =
-  mongoose.models.MessageModel || mongoose.model('MessageModel', messageSchema);
-
-export default MessageModel;
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\models\userModel.js
-==============================
-
-import mongoose from 'mongoose';
-import validator from 'validator';
-import bcrypt from 'bcryptjs';
-
-const userSchema = mongoose.Schema(
-  {
-    name: {
-      type: String,
-      required: [true, 'Please provide your name'],
-    },
-    email: {
-      type: String,
-      required: [true, 'Please provide tour email address'],
-      unqiue: [true, 'This email address already exist'],
-      lowercase: true,
-      validate: [validator.isEmail, 'Please provide a valid email address'],
-    },
-    picture: {
-      type: String,
-      default:
-        'https://res.cloudinary.com/dkd5jblv5/image/upload/v1675976806/Default_ProfilePicture_gjngnb.png',
-    },
-    status: {
-      type: String,
-      default: 'Hey there ! I am using whatsapp',
-    },
-    password: {
-      type: String,
-      required: [true, 'Please provide your password'],
-      minLength: [
-        6,
-        'Plase make sure your password is atleast 6 characters long',
-      ],
-      maxLength: [
-        128,
-        'Plase make sure your password is less than 128 characters long',
-      ],
-    },
-  },
-  {
-    collection: 'users',
-    timestamps: true,
-  }
-);
-
-userSchema.pre('save', async function (next) {
-  try {
-    if (this.isNew) {
-      const salt = await bcrypt.genSalt(12);
-      const hashedPassword = await bcrypt.hash(this.password, salt);
-      this.password = hashedPassword;
-    }
-    next();
-  } catch (error) {
-    next(error);
-  }
-});
-
-const UserModel =
-  mongoose.models.UserModel || mongoose.model('UserModel', userSchema);
-
-export default UserModel;
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\routes\auth.route.js
-==============================
-
-import express from 'express';
-import trimRequest from 'trim-request';
-import {
-  login,
-  logout,
-  refreshToken,
-  register,
-} from '../controllers/auth.controller.js';
-
-const router = express.Router();
-
-router.route('/register').post(trimRequest.all, register);
-router.route('/login').post(trimRequest.all, login);
-router.route('/logout').post(trimRequest.all, logout);
-router.route('/refreshtoken').post(trimRequest.all, refreshToken);
-
-export default router;
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\routes\conversation.route.js
-==============================
-
-import express from 'express';
-import trimRequest from 'trim-request';
-import authMiddleware from '../middlewares/authMiddleware.js';
-import {
-  createGroup,
-  create_open_conversation,
-  getConversations,
-} from '../controllers/conversation.controller.js';
-const router = express.Router();
-
-router
-  .route('/')
-  .post(trimRequest.all, authMiddleware, create_open_conversation);
-
-router.route('/').get(trimRequest.all, authMiddleware, getConversations);
-router.route('/group').post(trimRequest.all, authMiddleware, createGroup);
-
-export default router;
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\routes\index.js
-==============================
-
-import express from 'express';
-import authRoutes from './auth.route.js';
-import ConversationRoutes from './conversation.route.js';
-import MessageRoutes from './message.route.js';
-import userROutes from './user.route.js';
-
-const router = express.Router();
-
-router.use('/auth', authRoutes);
-router.use('/conversation', ConversationRoutes);
-router.use('/message', MessageRoutes);
-router.use('/user', userROutes);
-
-
-export default router;
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\routes\message.route.js
-==============================
-
-import express from 'express';
-import trimRequest from 'trim-request';
-import authMiddleware from '../middlewares/authMiddleware.js';
-import { sendMessage, getMessages } from '../controllers/message.controller.js';
-const router = express.Router();
-
-router.route('/').post(trimRequest.all, authMiddleware, sendMessage);
-router.route('/:convo_id').get(trimRequest.all, authMiddleware, getMessages);
-export default router;
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\routes\user.route.js
-==============================
-
-import express from 'express';
-import trimRequest from 'trim-request';
-import { searchUsers } from '../controllers/user.controller.js';
-import authMiddleware from '../middlewares/authMiddleware.js';
-const router = express.Router();
-
-router.route('/').get(trimRequest.all, authMiddleware, searchUsers);
-export default router;
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\services\auth.service.js
-==============================
-
-import createHttpError from 'http-errors';
-import validator from 'validator';
-import { UserModel } from '../models/index.js';
-import bcrypt from 'bcryptjs';
-
-//env variables
-const { DEFAULT_PICTURE, DEFAULT_STATUS } = process.env;
-
-export const createUser = async (userData) => {
-  const { name, email, picture, status, password } = userData;
-
-  //check if fields are empty
-  if (!name || !email || !password) {
-    throw createHttpError.BadRequest('Please fill all fields.');
-  }
-
-  //check name length
-  if (
-    !validator.isLength(name, {
-      min: 2,
-      max: 25,
-    })
-  ) {
-    throw createHttpError.BadRequest(
-      'Plase make sure your name is between 2 and 16 characters.'
-    );
-  }
-
-  //Check status length
-  if (status && status.length > 64) {
-    throw createHttpError.BadRequest(
-      'Please make sure your status is less than 64 characters.'
-    );
-  }
-
-  //check if email address is valid
-  if (!validator.isEmail(email)) {
-    throw createHttpError.BadRequest(
-      'Please make sure to provide a valid email address.'
-    );
-  }
-
-  //check if user already exist
-  const checkDb = await UserModel.findOne({ email });
-  if (checkDb) {
-    throw createHttpError.Conflict(
-      'Please try again with a different email address, this email already exist.'
-    );
-  }
-
-  //check password length
-  if (
-    !validator.isLength(password, {
-      min: 6,
-      max: 128,
-    })
-  ) {
-    throw createHttpError.BadRequest(
-      'Please make sure your password is between 6 and 128 characters.'
-    );
-  }
-
-  //hash password--->to be done in the user model
-
-  //adding user to databse
-  const user = await new UserModel({
-    name,
-    email,
-    picture: picture || DEFAULT_PICTURE,
-    status: status || DEFAULT_STATUS,
-    password,
-  }).save();
-
-  return user;
-};
-
-
-export const signUser = async (email, password) => {
-  const user = await UserModel.findOne({ email: email.toLowerCase() }).lean();
-
-  //check if user exist
-  if (!user) throw createHttpError.NotFound('Invalid credentials.');
-
-  //compare passwords
-  let passwordMatches = await bcrypt.compare(password, user.password);
-
-  if (!passwordMatches) throw createHttpError.NotFound('Invalid credentials.');
-
-  return user;
-};
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\services\conversation.service.js
-==============================
-
-import createHttpError from 'http-errors';
-import { ConversationModel, UserModel } from '../models/index.js';
-
-export const doesConversationExist = async (
-  sender_id,
-  receiver_id,
-  isGroup
-) => {
-  if (isGroup === false) {
-    let convos = await ConversationModel.find({
-      isGroup: false,
-      $and: [
-        { users: { $elemMatch: { $eq: sender_id } } },
-        { users: { $elemMatch: { $eq: receiver_id } } },
-      ],
-    })
-      .populate('users', '-password')
-      .populate('latestMessage');
-
-    if (!convos)
-      throw createHttpError.BadRequest('Oops...Something went wrong !');
-
-    //populate message model
-    convos = await UserModel.populate(convos, {
-      path: 'latestMessage.sender',
-      select: 'name email picture status',
-    });
-
-    return convos[0];
-  } else {
-    //it's a group chat
-    let convo = await ConversationModel.findById(isGroup)
-      .populate('users admin', '-password')
-      .populate('latestMessage');
-
-    if (!convo)
-      throw createHttpError.BadRequest('Oops...Something went wrong !');
-    //populate message model
-    convo = await UserModel.populate(convo, {
-      path: 'latestMessage.sender',
-      select: 'name email picture status',
-    });
-
-    return convo;
-  }
-};
-
-export const createConversation = async (data) => {
-  const newConvo = await ConversationModel.create(data);
-  if (!newConvo)
-    throw createHttpError.BadRequest('Oops...Something went wrong !');
-  return newConvo;
-};
-
-export const populateConversation = async (
-  id,
-  fieldToPopulate,
-  fieldsToRemove
-) => {
-  const populatedConvo = await ConversationModel.findOne({ _id: id }).populate(
-    fieldToPopulate,
-    fieldsToRemove
   );
-  if (!populatedConvo)
-    throw createHttpError.BadRequest('Oops...Something went wrong !');
-  return populatedConvo;
-};
-export const getUserConversations = async (user_id) => {
-  let conversations;
-  await ConversationModel.find({
-    users: { $elemMatch: { $eq: user_id } },
-  })
-    .populate('users', '-password')
-    .populate('admin', '-password')
-    .populate('latestMessage')
-    .sort({ updatedAt: -1 })
-    .then(async (results) => {
-      results = await UserModel.populate(results, {
-        path: 'latestMessage.sender',
-        select: 'name email picture status',
-      });
-      conversations = results;
-    })
-    .catch((err) => {
-      throw createHttpError.BadRequest('Oops...Something went wrong !');
-    });
-  return conversations;
-};
 
-export const updateLatestMessage = async (convo_id, msg) => {
-  const updatedConvo = await ConversationModel.findByIdAndUpdate(convo_id, {
-    latestMessage: msg,
+  // ── CORS ────────────────────────────────────────────────────────────────
+  app.use(
+    cors({
+      origin: env.cors.clientUrl,
+      credentials: true,
+      methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
+    }),
+  );
+
+  // ── Request logger ───────────────────────────────────────────────────────
+  app.use(requestLogger);
+
+  // ── Body parsers ─────────────────────────────────────────────────────────
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+  // ── Rate limiting ────────────────────────────────────────────────────────
+  const limiter = rateLimit({
+    windowMs: env.rateLimit.windowMs,
+    max: env.rateLimit.maxRequests,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, error: 'Too many requests, please try again later.' },
+    skip: (req) => req.path === '/api/health', // don't rate-limit health checks
   });
-  if (!updatedConvo)
-    throw createHttpError.BadRequest('Oops...Something went wrong !');
+  app.use('/api', limiter);
 
-  return updatedConvo;
-};
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\services\message.service.js
-==============================
-
-import createHttpError from 'http-errors';
-import { MessageModel } from '../models/index.js';
-export const createMessage = async (data) => {
-  let newMessage = await MessageModel.create(data);
-  if (!newMessage)
-    throw createHttpError.BadRequest('Oops...Something went wrong !');
-  return newMessage;
-};
-
-export const populateMessage = async (id) => {
-  let msg = await MessageModel.findById(id)
-    .populate({
-      path: 'sender',
-      select: 'name picture',
-      model: 'UserModel',
-    })
-    .populate({
-      path: 'conversation',
-      select: 'name isGroup users',
-      model: 'ConversationModel',
-      populate: {
-        path: 'users',
-        select: 'name picture isGroup users',
-        model: 'UserModel',
-      },
-    });
-  if (!msg) throw createHttpError.BadRequest('Oops...Something went wrong !');
-  return msg;
-};
-
-export const getConvoMessages = async (convo_id) => {
-  const messages = await MessageModel.find({ conversation: convo_id })
-    .populate('sender', 'name picture email status')
-    .populate('conversation');
-  if (!messages) {
-    throw createHttpError.BadRequest('Oops...Something went wrong !');
-  }
-  return messages;
-};
-
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\services\token.service.js
-==============================
-
-import { sign, verify } from '../utils/token.util.js';
-
-export const generateToken = async (payload, expiresIn, secret) => {
-  let token = await sign(payload, expiresIn, secret);
-  return token;
-};
-
-
-export const verifyToken = async (token, secret) => {
-  let check = await verify(token, secret);
-  return check;
-};
-
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\services\user.service.js
-==============================
-
-import createHttpError from 'http-errors';
-import { UserModel } from '../models/index.js';
-export const findUser = async (userId) => {
-  const user = await UserModel.findById(userId);
-  if (!user) throw createHttpError.BadRequest('Please fill all fields.');
-  return user;
-};
-
-export const searchUsers = async (keyword, userId) => {
-  const users = await UserModel.find({
-    $or: [
-      { name: { $regex: keyword, $options: 'i' } },
-      { email: { $regex: keyword, $options: 'i' } },
-    ],
-  }).find({
-    _id: { $ne: userId },
+  // Auth routes get a tighter limit
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 20,
+    message: { success: false, error: 'Too many auth attempts, please try again later.' },
   });
-  return users;
-};
+  app.use('/api/auth', authLimiter);
 
-==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\SocketServer.js
-==============================
+  // ── Static file serving for uploads ─────────────────────────────────────
+  app.use(
+    '/uploads',
+    express.static(path.resolve(process.cwd(), env.upload.uploadDir), {
+      maxAge: '7d',
+    }),
+  );
 
-let onlineUsers = [];
-export default function (socket, io) {
-  //user joins or opens the application
-  socket.on('join', (user) => {
-    socket.join(user);
-    //add joined user to online users
-    if (!onlineUsers.some((u) => u.userId === user)) {
-      onlineUsers.push({ userId: user, socketId: socket.id });
-    }
-    //send online users to frontend
-    io.emit('get-online-users', onlineUsers);
-    //send socket id
-    io.emit('setup socket', socket.id);
-  });
+  // ── API routes ───────────────────────────────────────────────────────────
+  app.use('/api', apiRouter);
 
-  //socket disconnect
-  socket.on('disconnect', () => {
-    onlineUsers = onlineUsers.filter((user) => user.socketId !== socket.id);
-    io.emit('get-online-users', onlineUsers);
-  });
+  // ── 404 handler ──────────────────────────────────────────────────────────
+  app.use(notFoundHandler);
 
-  //join a conversation room
-  socket.on('join conversation', (conversation) => {
-    socket.join(conversation);
-  });
+  // ── Global error handler (must be last) ──────────────────────────────────
+  app.use(globalErrorHandler);
 
-  //send and receive message
-  socket.on('send message', (message) => {
-    let conversation = message.conversation;
-    if (!conversation.users) return;
-    conversation.users.forEach((user) => {
-      if (user._id === message.sender._id) return;
-      socket.in(user._id).emit('receive message', message);
-    });
-  });
-
-  //typing
-  socket.on('typing', (conversation) => {
-    socket.in(conversation).emit('typing', conversation);
-  });
-  socket.on('stop typing', (conversation) => {
-    socket.in(conversation).emit('stop typing');
-  });
-
-  //call
-  //---call user
-  socket.on('call user', (data) => {
-    let userId = data.userToCall;
-    let userSocketId = onlineUsers.find((user) => user.userId == userId);
-    io.to(userSocketId.socketId).emit('call user', {
-      signal: data.signal,
-      from: data.from,
-      name: data.name,
-      picture: data.picture,
-    });
-  });
-  //---answer call
-  socket.on('answer call', (data) => {
-    io.to(data.to).emit('call accepted', data.signal);
-  });
-
-  //---end call
-  socket.on('end call', (id) => {
-    io.to(id).emit('end call');
-  });
+  return app;
 }
 
 
 ==============================
-FILE: e:\My Projects\WhatsApp\WhatsApp-Backend\src\utils\token.util.js
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\config\env.ts
 ==============================
 
+import dotenv from 'dotenv';
+import path from 'path';
+
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+
+function requireEnv(key: string): string {
+  const value = process.env[key];
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+  return value;
+}
+
+function optionalEnv(key: string, fallback: string): string {
+  return process.env[key] ?? fallback;
+}
+
+export const env = {
+  port: parseInt(optionalEnv('PORT', '5000'), 10),
+  nodeEnv: optionalEnv('NODE_ENV', 'development'),
+  isDev: optionalEnv('NODE_ENV', 'development') === 'development',
+  isProd: optionalEnv('NODE_ENV', 'development') === 'production',
+
+  jwt: {
+    secret: optionalEnv('JWT_SECRET', 'dev-secret-change-in-prod'),
+    expiresIn: optionalEnv('JWT_EXPIRES_IN', '7d'),
+    refreshSecret: optionalEnv('JWT_REFRESH_SECRET', 'dev-refresh-secret'),
+    refreshExpiresIn: optionalEnv('JWT_REFRESH_EXPIRES_IN', '30d'),
+  },
+
+  cors: {
+    clientUrl: optionalEnv('CLIENT_URL', 'http://localhost:5173'),
+  },
+
+  upload: {
+    maxFileSizeMb: parseInt(optionalEnv('MAX_FILE_SIZE_MB', '50'), 10),
+    uploadDir: optionalEnv('UPLOAD_DIR', 'uploads'),
+  },
+
+  rateLimit: {
+    windowMs: parseInt(optionalEnv('RATE_LIMIT_WINDOW_MS', '900000'), 10),
+    maxRequests: parseInt(optionalEnv('RATE_LIMIT_MAX_REQUESTS', '100'), 10),
+  },
+} as const;
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\config\store.ts
+==============================
+
+import { v4 as uuidv4 } from 'uuid';
+import bcrypt from 'bcryptjs';
+import type { InMemoryStore, User, Conversation, Message } from '../types/index.js';
+
+// ─── Singleton store ──────────────────────────────────────────────────────────
+
+export const store: InMemoryStore = {
+  users: new Map(),
+  conversations: new Map(),
+  messages: new Map(),
+  refreshTokens: new Set(),
+  onlineUsers: new Set(),
+  socketUserMap: new Map(),
+};
+
+// ─── Seed data ────────────────────────────────────────────────────────────────
+
+const SEED_PASSWORD_HASH = bcrypt.hashSync('password123', 10);
+
+const seedUsers: User[] = [
+  {
+    id: '1',
+    name: 'John Doe',
+    email: 'john@example.com',
+    passwordHash: SEED_PASSWORD_HASH,
+    picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=john',
+    status: 'online',
+    about: 'Hey there! I am using WhatsUp',
+    createdAt: new Date('2024-01-01'),
+    updatedAt: new Date('2024-01-01'),
+  },
+  {
+    id: '2',
+    name: 'Jane Smith',
+    email: 'jane@example.com',
+    passwordHash: SEED_PASSWORD_HASH,
+    picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=jane',
+    status: 'online',
+    about: 'Available',
+    createdAt: new Date('2024-01-01'),
+    updatedAt: new Date('2024-01-01'),
+  },
+  {
+    id: '3',
+    name: 'Mike Johnson',
+    email: 'mike@example.com',
+    passwordHash: SEED_PASSWORD_HASH,
+    picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=mike',
+    status: 'away',
+    about: 'Busy',
+    createdAt: new Date('2024-01-01'),
+    updatedAt: new Date('2024-01-01'),
+  },
+  {
+    id: '4',
+    name: 'Sarah Wilson',
+    email: 'sarah@example.com',
+    passwordHash: SEED_PASSWORD_HASH,
+    picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=sarah',
+    status: 'offline',
+    about: 'At work',
+    createdAt: new Date('2024-01-01'),
+    updatedAt: new Date('2024-01-01'),
+  },
+  {
+    id: '5',
+    name: 'Alex Brown',
+    email: 'alex@example.com',
+    passwordHash: SEED_PASSWORD_HASH,
+    picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=alex',
+    status: 'online',
+    about: 'Hello!',
+    createdAt: new Date('2024-01-01'),
+    updatedAt: new Date('2024-01-01'),
+  },
+  {
+    id: '6',
+    name: 'Emily Davis',
+    email: 'emily@example.com',
+    passwordHash: SEED_PASSWORD_HASH,
+    picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=emily',
+    status: 'online',
+    about: 'Living life',
+    createdAt: new Date('2024-01-01'),
+    updatedAt: new Date('2024-01-01'),
+  },
+  {
+    id: '7',
+    name: 'Chris Lee',
+    email: 'chris@example.com',
+    passwordHash: SEED_PASSWORD_HASH,
+    picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=chris',
+    status: 'offline',
+    about: 'Away',
+    createdAt: new Date('2024-01-01'),
+    updatedAt: new Date('2024-01-01'),
+  },
+  {
+    id: '8',
+    name: 'David Miller',
+    email: 'david@example.com',
+    passwordHash: SEED_PASSWORD_HASH,
+    picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=david',
+    status: 'online',
+    about: 'Happy to connect!',
+    createdAt: new Date('2024-01-01'),
+    updatedAt: new Date('2024-01-01'),
+  },
+];
+
+// Seed conversations for user '1' (John Doe) — matching frontend mock data
+function buildSeedConversations(): Conversation[] {
+  const user1 = seedUsers[0]!;
+  const user2 = seedUsers[1]!;
+  const user3 = seedUsers[2]!;
+  const user4 = seedUsers[3]!;
+  const user5 = seedUsers[4]!;
+  const user6 = seedUsers[5]!;
+  const user7 = seedUsers[6]!;
+  const user8 = seedUsers[7]!;
+
+  const toPublic = (u: User) => {
+    const { passwordHash: _ph, ...pub } = u;
+    return pub;
+  };
+
+  return [
+    {
+      id: 'conv-1',
+      name: user2.name,
+      picture: user2.picture,
+      isGroup: false,
+      users: [toPublic(user1), toPublic(user2)],
+      unreadCount: 2,
+      createdAt: new Date(Date.now() - 86400000 * 7),
+      updatedAt: new Date(),
+    },
+    {
+      id: 'conv-2',
+      name: user3.name,
+      picture: user3.picture,
+      isGroup: false,
+      users: [toPublic(user1), toPublic(user3)],
+      unreadCount: 0,
+      createdAt: new Date(Date.now() - 86400000 * 5),
+      updatedAt: new Date(),
+    },
+    {
+      id: 'conv-3',
+      name: user4.name,
+      picture: user4.picture,
+      isGroup: false,
+      users: [toPublic(user1), toPublic(user4)],
+      unreadCount: 1,
+      createdAt: new Date(Date.now() - 86400000 * 3),
+      updatedAt: new Date(),
+    },
+    {
+      id: 'conv-4',
+      name: user5.name,
+      picture: user5.picture,
+      isGroup: false,
+      users: [toPublic(user1), toPublic(user5)],
+      unreadCount: 0,
+      createdAt: new Date(Date.now() - 86400000 * 2),
+      updatedAt: new Date(),
+    },
+    {
+      id: 'group-1',
+      name: '🚀 Project Alpha Team',
+      picture: 'https://api.dicebear.com/7.x/shapes/svg?seed=project-alpha',
+      isGroup: true,
+      users: [toPublic(user1), toPublic(user2), toPublic(user3), toPublic(user4)],
+      adminId: '1',
+      unreadCount: 3,
+      createdAt: new Date(Date.now() - 86400000 * 14),
+      updatedAt: new Date(),
+    },
+    {
+      id: 'group-2',
+      name: '🎮 Gaming Squad',
+      picture: 'https://api.dicebear.com/7.x/shapes/svg?seed=gaming-squad',
+      isGroup: true,
+      users: [toPublic(user1), toPublic(user5), toPublic(user6), toPublic(user7), toPublic(user8)],
+      adminId: '5',
+      unreadCount: 8,
+      createdAt: new Date(Date.now() - 86400000 * 30),
+      updatedAt: new Date(),
+    },
+    {
+      id: 'group-3',
+      name: '💼 Work Buddies',
+      picture: 'https://api.dicebear.com/7.x/shapes/svg?seed=work-buddies',
+      isGroup: true,
+      users: [toPublic(user1), toPublic(user2), toPublic(user4), toPublic(user6)],
+      adminId: '2',
+      unreadCount: 0,
+      createdAt: new Date(Date.now() - 86400000 * 60),
+      updatedAt: new Date(),
+    },
+    {
+      id: 'group-4',
+      name: '📚 Book Club',
+      picture: 'https://api.dicebear.com/7.x/shapes/svg?seed=book-club',
+      isGroup: true,
+      users: [toPublic(user1), toPublic(user3), toPublic(user6), toPublic(user7)],
+      adminId: '3',
+      unreadCount: 2,
+      createdAt: new Date(Date.now() - 86400000 * 45),
+      updatedAt: new Date(),
+    },
+  ];
+}
+
+function buildSeedMessages(): Map<string, Message[]> {
+  const map = new Map<string, Message[]>();
+
+  // conv-1: John ↔ Jane
+  map.set('conv-1', [
+    {
+      id: 'conv1-msg-0',
+      conversationId: 'conv-1',
+      senderId: '2',
+      message: "Hey! How's it going? 👋",
+      reactions: [{ emoji: '👋', userId: '1', createdAt: new Date(Date.now() - 3500000) }],
+      seenBy: ['1'],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: new Date(Date.now() - 3600000 * 2),
+      updatedAt: new Date(Date.now() - 3600000 * 2),
+    },
+    {
+      id: 'conv1-msg-1',
+      conversationId: 'conv-1',
+      senderId: '1',
+      message: "Hey! I'm doing great! Just finished working on the new project.",
+      reactions: [
+        { emoji: '👍', userId: '2', createdAt: new Date(Date.now() - 3400000) },
+        { emoji: '🔥', userId: '2', createdAt: new Date(Date.now() - 3400000) },
+      ],
+      seenBy: ['2'],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: new Date(Date.now() - 3600000 * 1.9),
+      updatedAt: new Date(Date.now() - 3600000 * 1.9),
+    },
+    {
+      id: 'conv1-msg-2',
+      conversationId: 'conv-1',
+      senderId: '2',
+      message: "That's awesome! Is it the chat app?",
+      seenBy: ['1'],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: new Date(Date.now() - 3600000 * 1.8),
+      updatedAt: new Date(Date.now() - 3600000 * 1.8),
+    },
+    {
+      id: 'conv1-msg-3',
+      conversationId: 'conv-1',
+      senderId: '1',
+      message: 'Yes! Real-time messaging, emoji reactions, file sharing, and group chats. Pretty proud of it! 🚀',
+      reactions: [
+        { emoji: '🚀', userId: '2', createdAt: new Date(Date.now() - 3000000) },
+        { emoji: '❤️', userId: '2', createdAt: new Date(Date.now() - 3000000) },
+      ],
+      seenBy: ['2'],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: new Date(Date.now() - 3600000 * 1.7),
+      updatedAt: new Date(Date.now() - 3600000 * 1.7),
+    },
+    {
+      id: 'conv1-msg-4',
+      conversationId: 'conv-1',
+      senderId: '2',
+      message: 'Absolutely! Count me in. This is going to be great! 🎉',
+      seenBy: [],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: new Date(Date.now() - 300000),
+      updatedAt: new Date(Date.now() - 300000),
+    },
+  ]);
+
+  // group-1: Project Alpha Team
+  map.set('group-1', [
+    {
+      id: 'group1-msg-0',
+      conversationId: 'group-1',
+      senderId: '2',
+      message: 'Hey team! Quick standup reminder for tomorrow at 9 AM 📅',
+      reactions: [
+        { emoji: '👍', userId: '1', createdAt: new Date(Date.now() - 80000000) },
+        { emoji: '✅', userId: '3', createdAt: new Date(Date.now() - 80000000) },
+      ],
+      seenBy: ['1', '2', '3', '4'],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: true,
+      pinnedAt: new Date(Date.now() - 79000000),
+      pinnedBy: '1',
+      createdAt: new Date(Date.now() - 86400000),
+      updatedAt: new Date(Date.now() - 86400000),
+    },
+    {
+      id: 'group1-msg-1',
+      conversationId: 'group-1',
+      senderId: '1',
+      message: "Got it! I'll have the sprint review ready by then.",
+      seenBy: ['2', '3', '4'],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: new Date(Date.now() - 82800000),
+      updatedAt: new Date(Date.now() - 82800000),
+    },
+    {
+      id: 'group1-msg-2',
+      conversationId: 'group-1',
+      senderId: '3',
+      message: 'Great progress on the sprint! 🎉',
+      seenBy: [],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: new Date(Date.now() - 1800000),
+      updatedAt: new Date(Date.now() - 1800000),
+    },
+  ]);
+
+  // group-2: Gaming Squad
+  map.set('group-2', [
+    {
+      id: 'group2-msg-0',
+      conversationId: 'group-2',
+      senderId: '5',
+      message: "Who's online for some games tonight? 🎮",
+      reactions: [
+        { emoji: '🙋', userId: '1', createdAt: new Date(Date.now() - 28000000) },
+        { emoji: '🙋', userId: '6', createdAt: new Date(Date.now() - 28000000) },
+      ],
+      seenBy: ['1', '5', '6', '7', '8'],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: new Date(Date.now() - 28800000),
+      updatedAt: new Date(Date.now() - 28800000),
+    },
+    {
+      id: 'group2-msg-1',
+      conversationId: 'group-2',
+      senderId: '6',
+      message: 'Anyone up for ranked tonight? 🎮',
+      seenBy: [],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: new Date(Date.now() - 600000),
+      updatedAt: new Date(Date.now() - 600000),
+    },
+  ]);
+
+  // Minimal seeds for other convs so they have some history
+  map.set('conv-2', [
+    {
+      id: 'conv2-msg-0',
+      conversationId: 'conv-2',
+      senderId: '3',
+      message: 'Did you see the meeting notes?',
+      seenBy: ['1'],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: new Date(Date.now() - 7200000),
+      updatedAt: new Date(Date.now() - 7200000),
+    },
+  ]);
+  map.set('conv-3', [
+    {
+      id: 'conv3-msg-0',
+      conversationId: 'conv-3',
+      senderId: '1',
+      message: 'Let me check...',
+      seenBy: ['4'],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: new Date(Date.now() - 3600000),
+      updatedAt: new Date(Date.now() - 3600000),
+    },
+  ]);
+  map.set('conv-4', []);
+  map.set('group-3', [
+    {
+      id: 'group3-msg-0',
+      conversationId: 'group-3',
+      senderId: '1',
+      message: 'Lunch at 12:30? 🍕',
+      seenBy: ['2', '4', '6'],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: new Date(Date.now() - 7200000),
+      updatedAt: new Date(Date.now() - 7200000),
+    },
+  ]);
+  map.set('group-4', [
+    {
+      id: 'group4-msg-0',
+      conversationId: 'group-4',
+      senderId: '7',
+      message: 'Just finished chapter 5, mind-blowing twist! 🤯',
+      seenBy: [],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: new Date(Date.now() - 3600000),
+      updatedAt: new Date(Date.now() - 3600000),
+    },
+  ]);
+
+  return map;
+}
+
+// ─── Initialize store ─────────────────────────────────────────────────────────
+
+export function initializeStore(): void {
+  seedUsers.forEach((u) => store.users.set(u.id, u));
+
+  const conversations = buildSeedConversations();
+  conversations.forEach((c) => store.conversations.set(c.id, c));
+
+  const messages = buildSeedMessages();
+  messages.forEach((msgs, convId) => store.messages.set(convId, msgs));
+
+  // Attach latest messages to conversations
+  conversations.forEach((conv) => {
+    const msgs = store.messages.get(conv.id) ?? [];
+    if (msgs.length > 0) {
+      const latest = msgs[msgs.length - 1];
+      const updated = { ...conv, latestMessage: latest };
+      store.conversations.set(conv.id, updated);
+    }
+  });
+
+  console.log(
+    `[Store] Initialized: ${store.users.size} users, ${store.conversations.size} conversations`,
+  );
+}
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\controllers\auth.controller.ts
+==============================
+
+import type { Request, Response } from 'express';
+import { authService } from '../services/auth.service.js';
+import {
+  sendSuccess,
+  sendCreated,
+  sendError,
+  sendUnauthorized,
+  sendConflict,
+  sendInternalError,
+} from '../helpers/index.js';
+import {
+  loginSchema,
+  registerSchema,
+  refreshTokenSchema,
+  safeParseBody,
+} from '../helpers/validation.js';
+
+export const authController = {
+  /**
+   * POST /api/auth/login
+   */
+  async login(req: Request, res: Response): Promise<void> {
+    const parsed = safeParseBody(loginSchema, req.body);
+    if (!parsed.success) {
+      sendError(res, parsed.error);
+      return;
+    }
+
+    const result = await authService.login(parsed.data);
+    if (!result) {
+      sendUnauthorized(res, 'Invalid email or password');
+      return;
+    }
+
+    sendSuccess(res, result, 'Login successful');
+  },
+
+  /**
+   * POST /api/auth/register
+   */
+  async register(req: Request, res: Response): Promise<void> {
+    const parsed = safeParseBody(registerSchema, req.body);
+    if (!parsed.success) {
+      sendError(res, parsed.error);
+      return;
+    }
+
+    const result = await authService.register(parsed.data);
+    if (result === 'email_taken') {
+      sendConflict(res, 'An account with this email already exists');
+      return;
+    }
+
+    sendCreated(res, result, 'Account created successfully');
+  },
+
+  /**
+   * POST /api/auth/refresh
+   */
+  async refresh(req: Request, res: Response): Promise<void> {
+    const parsed = safeParseBody(refreshTokenSchema, req.body);
+    if (!parsed.success) {
+      sendError(res, parsed.error);
+      return;
+    }
+
+    const tokens = await authService.refreshTokens(parsed.data.refreshToken);
+    if (!tokens) {
+      sendUnauthorized(res, 'Invalid or expired refresh token');
+      return;
+    }
+
+    sendSuccess(res, tokens, 'Tokens refreshed');
+  },
+
+  /**
+   * POST /api/auth/logout
+   * Requires: Authorization header
+   */
+  logout(req: Request, res: Response): void {
+    const userId = req.userId!;
+    const { refreshToken } = req.body as { refreshToken?: string };
+
+    authService.logout(userId, refreshToken);
+    sendSuccess(res, null, 'Logged out successfully');
+  },
+
+  /**
+   * GET /api/auth/me
+   * Requires: Authorization header
+   */
+  me(req: Request, res: Response): void {
+    const user = authService.getMe(req.userId!);
+    if (!user) {
+      sendUnauthorized(res, 'User not found');
+      return;
+    }
+    sendSuccess(res, user);
+  },
+};
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\controllers\conversation.controller.ts
+==============================
+
+import type { Request, Response } from 'express';
+import { conversationService } from '../services/conversation.service.js';
+import {
+  sendSuccess,
+  sendCreated,
+  sendError,
+  sendNotFound,
+  sendForbidden,
+} from '../helpers/index.js';
+import {
+  createConversationSchema,
+  createGroupSchema,
+  safeParseBody,
+} from '../helpers/validation.js';
+
+export const conversationController = {
+  /**
+   * GET /api/conversations
+   */
+  list(req: Request, res: Response): void {
+    const conversations = conversationService.getConversationsForUser(req.userId!);
+    sendSuccess(res, conversations);
+  },
+
+  /**
+   * GET /api/conversations/:conversationId
+   */
+  getOne(req: Request, res: Response): void {
+    const conv = conversationService.getConversationById(
+      req.params['conversationId']!,
+      req.userId!,
+    );
+    if (!conv) {
+      sendNotFound(res, 'Conversation');
+      return;
+    }
+    sendSuccess(res, conv);
+  },
+
+  /**
+   * POST /api/conversations
+   * Start or return an existing 1-on-1 DM.
+   */
+  createDirect(req: Request, res: Response): void {
+    const parsed = safeParseBody(createConversationSchema, req.body);
+    if (!parsed.success) {
+      sendError(res, parsed.error);
+      return;
+    }
+
+    const result = conversationService.findOrCreateDirect(req.userId!, parsed.data);
+
+    if (result === 'user_not_found') {
+      sendNotFound(res, 'User');
+      return;
+    }
+    if (result === 'cannot_self') {
+      sendError(res, 'You cannot start a conversation with yourself');
+      return;
+    }
+
+    sendCreated(res, result, 'Conversation ready');
+  },
+
+  /**
+   * POST /api/conversations/group
+   * Create a new group chat.
+   */
+  createGroup(req: Request, res: Response): void {
+    const parsed = safeParseBody(createGroupSchema, req.body);
+    if (!parsed.success) {
+      sendError(res, parsed.error);
+      return;
+    }
+
+    const result = conversationService.createGroup(req.userId!, parsed.data);
+    if (result === 'invalid_members') {
+      sendError(res, 'One or more specified users do not exist, or group must have at least 2 other members');
+      return;
+    }
+
+    sendCreated(res, result, 'Group created');
+  },
+
+  /**
+   * POST /api/conversations/:conversationId/members
+   * Add a member to a group (admin only).
+   */
+  addMember(req: Request, res: Response): void {
+    const { userId } = req.body as { userId?: string };
+    if (!userId) {
+      sendError(res, 'userId is required');
+      return;
+    }
+
+    const result = conversationService.addGroupMember(
+      req.params['conversationId']!,
+      req.userId!,
+      userId,
+    );
+
+    if (result === 'not_found') { sendNotFound(res, 'Conversation'); return; }
+    if (result === 'not_group') { sendError(res, 'This is not a group conversation'); return; }
+    if (result === 'not_admin') { sendForbidden(res, 'Only the group admin can add members'); return; }
+    if (result === 'already_member') { sendError(res, 'User is already a member of this group'); return; }
+    if (result === 'user_not_found') { sendNotFound(res, 'User'); return; }
+
+    sendSuccess(res, result, 'Member added');
+  },
+
+  /**
+   * DELETE /api/conversations/:conversationId/members/:userId
+   * Remove a member or leave a group.
+   */
+  removeMember(req: Request, res: Response): void {
+    const result = conversationService.removeGroupMember(
+      req.params['conversationId']!,
+      req.userId!,
+      req.params['userId']!,
+    );
+
+    if (result === 'not_found') { sendNotFound(res, 'Conversation'); return; }
+    if (result === 'not_group') { sendError(res, 'This is not a group conversation'); return; }
+    if (result === 'not_admin') { sendForbidden(res, 'Only the admin can remove members'); return; }
+    if (result === 'not_member') { sendNotFound(res, 'Member'); return; }
+
+    sendSuccess(res, result, 'Member removed');
+  },
+
+  /**
+   * POST /api/conversations/:conversationId/read
+   */
+  markRead(req: Request, res: Response): void {
+    conversationService.markAsRead(req.params['conversationId']!, req.userId!);
+    sendSuccess(res, null, 'Marked as read');
+  },
+};
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\controllers\message.controller.ts
+==============================
+
+import type { Request, Response } from 'express';
+import { messageService } from '../services/message.service.js';
+import {
+  sendSuccess,
+  sendCreated,
+  sendError,
+  sendNotFound,
+  sendForbidden,
+} from '../helpers/index.js';
+import {
+  editMessageSchema,
+  addReactionSchema,
+  forwardMessageSchema,
+  paginationQuerySchema,
+  safeParseBody,
+} from '../helpers/validation.js';
+import { multerFileToAttachment } from '../helpers/upload.js';
+import type { Server as SocketIOServer } from 'socket.io';
+import { conversationService } from '../services/conversation.service.js';
+import { emitNewMessage } from '../socket/index.js';
+
+export const messageController = {
+  /**
+   * GET /api/conversations/:conversationId/messages
+   */
+  list(req: Request, res: Response): void {
+    const parsed = safeParseBody(paginationQuerySchema, req.query);
+    const { page, limit } = parsed.success
+      ? parsed.data
+      : { page: 1, limit: 30 };
+
+    const result = messageService.getMessages(
+      req.params['conversationId']!,
+      page,
+      limit,
+    );
+    sendSuccess(res, result);
+  },
+
+  /**
+   * GET /api/conversations/:conversationId/messages/search?q=...
+   */
+  search(req: Request, res: Response): void {
+    const q = String(req.query['q'] ?? '').trim();
+    if (!q) {
+      sendError(res, 'Search query is required');
+      return;
+    }
+
+    const results = messageService.searchMessages(
+      req.params['conversationId']!,
+      q,
+    );
+    sendSuccess(res, results);
+  },
+
+  /**
+   * GET /api/messages/search?q=...
+   * Global search across all conversations the user is a member of.
+   */
+  globalSearch(req: Request, res: Response): void {
+    const q = String(req.query['q'] ?? '').trim();
+    if (q.length < 2) {
+      sendError(res, 'Search query must be at least 2 characters');
+      return;
+    }
+
+    const results = messageService.globalSearch(req.userId!, q);
+    sendSuccess(res, results);
+  },
+
+  /**
+   * POST /api/conversations/:conversationId/messages
+   * Supports optional multipart/form-data for file uploads.
+   *
+   * FIX 2: Emit the socket event BEFORE sending the HTTP response.
+   * This guarantees the broadcast always fires even if the response
+   * path exits early.  Also guard against a null conversation lookup
+   * so the emit is never skipped silently.
+   */
+  send(req: Request, res: Response): void {
+    const uploadedFiles =
+      (req.files as Express.Multer.File[] | undefined) ?? [];
+
+    const rawMessage = String(req.body?.['message'] ?? '').trim();
+    if (!rawMessage && uploadedFiles.length === 0) {
+      sendError(res, 'Message text or at least one file is required');
+      return;
+    }
+
+    let replyTo: Parameters<typeof messageService.sendMessage>[4];
+    if (req.body?.['replyTo']) {
+      try {
+        replyTo =
+          typeof req.body['replyTo'] === 'string'
+            ? JSON.parse(req.body['replyTo'])
+            : req.body['replyTo'];
+      } catch {
+        sendError(res, 'Invalid replyTo format');
+        return;
+      }
+    }
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const fileAttachments = uploadedFiles.map((f) =>
+      multerFileToAttachment(f, baseUrl),
+    );
+
+    const result = messageService.sendMessage(
+      req.params['conversationId']!,
+      req.userId!,
+      rawMessage,
+      fileAttachments.length > 0 ? fileAttachments : undefined,
+      replyTo,
+    );
+
+    if (result === 'conversation_not_found') {
+      sendNotFound(res, 'Conversation');
+      return;
+    }
+    if (result === 'not_member') {
+      sendForbidden(res, 'You are not a member of this conversation');
+      return;
+    }
+
+    // FIX 2: Broadcast via Socket.IO BEFORE sending the HTTP response.
+    // app.locals.io is always the real io instance — never undefined after bootstrap.
+    const io = req.app.locals['io'] as SocketIOServer | undefined;
+    if (io) {
+      const conv = conversationService.getConversationById(
+        result.conversationId,
+        req.userId!,
+      );
+      // Guard: only emit if we can resolve the conversation.
+      // If getConversationById returns null for some reason the message
+      // was still saved — we simply skip the real-time push for this edge case.
+      if (conv) {
+        emitNewMessage(io, result.conversationId, result, conv);
+      } else {
+        console.warn(
+          `[Socket] Could not resolve conversation ${result.conversationId} for emit`,
+        );
+      }
+    }
+
+    sendCreated(res, result, 'Message sent');
+  },
+
+  /**
+   * PATCH /api/conversations/:conversationId/messages/:messageId
+   */
+  edit(req: Request, res: Response): void {
+    const parsed = safeParseBody(editMessageSchema, req.body);
+    if (!parsed.success) {
+      sendError(res, parsed.error);
+      return;
+    }
+
+    const result = messageService.editMessage(
+      req.params['conversationId']!,
+      req.params['messageId']!,
+      req.userId!,
+      parsed.data.message,
+    );
+
+    if (result === 'not_found') {
+      sendNotFound(res, 'Message');
+      return;
+    }
+    if (result === 'not_owner') {
+      sendForbidden(res, 'You can only edit your own messages');
+      return;
+    }
+    if (result === 'deleted') {
+      sendError(res, 'Cannot edit a deleted message');
+      return;
+    }
+
+    sendSuccess(res, result, 'Message edited');
+  },
+
+  /**
+   * DELETE /api/conversations/:conversationId/messages/:messageId
+   */
+  delete(req: Request, res: Response): void {
+    const result = messageService.deleteMessage(
+      req.params['conversationId']!,
+      req.params['messageId']!,
+      req.userId!,
+    );
+
+    if (result === 'not_found') {
+      sendNotFound(res, 'Message');
+      return;
+    }
+    if (result === 'not_owner') {
+      sendForbidden(res, 'You can only delete your own messages');
+      return;
+    }
+
+    sendSuccess(res, result, 'Message deleted');
+  },
+
+  /**
+   * POST /api/conversations/:conversationId/messages/:messageId/reactions
+   */
+  toggleReaction(req: Request, res: Response): void {
+    const parsed = safeParseBody(addReactionSchema, req.body);
+    if (!parsed.success) {
+      sendError(res, parsed.error);
+      return;
+    }
+
+    const result = messageService.toggleReaction(
+      req.params['conversationId']!,
+      req.params['messageId']!,
+      req.userId!,
+      parsed.data.emoji,
+    );
+
+    if (result === 'not_found') {
+      sendNotFound(res, 'Message');
+      return;
+    }
+    if (result === 'deleted') {
+      sendError(res, 'Cannot react to a deleted message');
+      return;
+    }
+
+    sendSuccess(res, result);
+  },
+
+  /**
+   * POST /api/conversations/:conversationId/messages/:messageId/pin
+   */
+  pin(req: Request, res: Response): void {
+    const result = messageService.pinMessage(
+      req.params['conversationId']!,
+      req.params['messageId']!,
+      req.userId!,
+    );
+
+    if (result === 'not_found') {
+      sendNotFound(res, 'Message');
+      return;
+    }
+    if (result === 'deleted') {
+      sendError(res, 'Cannot pin a deleted message');
+      return;
+    }
+
+    sendSuccess(res, result, 'Message pinned');
+  },
+
+  /**
+   * DELETE /api/conversations/:conversationId/messages/:messageId/pin
+   */
+  unpin(req: Request, res: Response): void {
+    const result = messageService.unpinMessage(
+      req.params['conversationId']!,
+      req.params['messageId']!,
+    );
+
+    if (result === 'not_found') {
+      sendNotFound(res, 'Message');
+      return;
+    }
+    if (result === 'deleted') {
+      sendError(res, 'Cannot unpin a deleted message');
+      return;
+    }
+
+    sendSuccess(res, result, 'Message unpinned');
+  },
+
+  /**
+   * GET /api/conversations/:conversationId/messages/pinned
+   */
+  listPinned(req: Request, res: Response): void {
+    const pinned = messageService.getPinnedMessages(
+      req.params['conversationId']!,
+    );
+    sendSuccess(res, pinned);
+  },
+
+  /**
+   * POST /api/conversations/:conversationId/messages/:messageId/forward
+   */
+  forward(req: Request, res: Response): void {
+    const parsed = safeParseBody(forwardMessageSchema, req.body);
+    if (!parsed.success) {
+      sendError(res, parsed.error);
+      return;
+    }
+
+    const result = messageService.forwardMessage(
+      req.params['messageId']!,
+      req.params['conversationId']!,
+      parsed.data.toConversationId,
+      req.userId!,
+    );
+
+    if (result === 'not_found') {
+      sendNotFound(res, 'Message');
+      return;
+    }
+    if (result === 'target_not_found') {
+      sendNotFound(res, 'Target conversation');
+      return;
+    }
+    if (result === 'not_member') {
+      sendForbidden(res, 'You are not a member of the target conversation');
+      return;
+    }
+
+    sendCreated(res, result, 'Message forwarded');
+  },
+
+  /**
+   * POST /api/conversations/:conversationId/messages/:messageId/seen
+   */
+  markSeen(req: Request, res: Response): void {
+    const updated = messageService.markMessageSeen(
+      req.params['conversationId']!,
+      req.params['messageId']!,
+      req.userId!,
+    );
+
+    if (!updated) {
+      sendNotFound(res, 'Message');
+      return;
+    }
+
+    sendSuccess(res, updated);
+  },
+};
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\controllers\user.controller.ts
+==============================
+
+import type { Request, Response } from 'express';
+import { userService } from '../services/user.service.js';
+import {
+  sendSuccess,
+  sendError,
+  sendNotFound,
+} from '../helpers/index.js';
+import {
+  searchUsersSchema,
+  updateProfileSchema,
+  updateStatusSchema,
+  safeParseBody,
+} from '../helpers/validation.js';
+
+export const userController = {
+  /**
+   * GET /api/users/search?q=...
+   */
+  search(req: Request, res: Response): void {
+    const parsed = safeParseBody(searchUsersSchema, req.query);
+    if (!parsed.success) {
+      sendError(res, parsed.error);
+      return;
+    }
+
+    const results = userService.searchUsers(parsed.data.q, req.userId!);
+    sendSuccess(res, results);
+  },
+
+  /**
+   * GET /api/users/:userId
+   */
+  getUser(req: Request, res: Response): void {
+    const user = userService.getUserById(req.params['userId']!);
+    if (!user) {
+      sendNotFound(res, 'User');
+      return;
+    }
+    sendSuccess(res, user);
+  },
+
+  /**
+   * PATCH /api/users/me/profile
+   */
+  updateProfile(req: Request, res: Response): void {
+    const parsed = safeParseBody(updateProfileSchema, req.body);
+    if (!parsed.success) {
+      sendError(res, parsed.error);
+      return;
+    }
+
+    const updated = userService.updateProfile(req.userId!, parsed.data);
+    if (!updated) {
+      sendNotFound(res, 'User');
+      return;
+    }
+
+    sendSuccess(res, updated, 'Profile updated');
+  },
+
+  /**
+   * PATCH /api/users/me/status
+   */
+  updateStatus(req: Request, res: Response): void {
+    const parsed = safeParseBody(updateStatusSchema, req.body);
+    if (!parsed.success) {
+      sendError(res, parsed.error);
+      return;
+    }
+
+    const updated = userService.updateStatus(req.userId!, parsed.data.status);
+    if (!updated) {
+      sendNotFound(res, 'User');
+      return;
+    }
+
+    sendSuccess(res, updated, `Status updated to ${parsed.data.status}`);
+  },
+
+  /**
+   * GET /api/users/online
+   */
+  getOnlineUsers(_req: Request, res: Response): void {
+    const ids = userService.getOnlineUserIds();
+    sendSuccess(res, ids);
+  },
+};
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\helpers\index.ts
+==============================
+
+import type { Response } from 'express';
 import jwt from 'jsonwebtoken';
-import logger from '../configs/logger.config.js';
-export const sign = async (payload, expiresIn, secret) => {
-  return new Promise((resolve, reject) => {
-    jwt.sign(
-      payload,
-      secret,
-      {
-        expiresIn: expiresIn,
-      },
-      (error, token) => {
-        if (error) {
-          logger.error(error);
-          reject(error);
-        } else {
-          resolve(token);
+import bcrypt from 'bcryptjs';
+import { v4 as uuidv4 } from 'uuid';
+import type {
+  ApiSuccess,
+  ApiError,
+  AuthTokenPayload,
+  AuthTokens,
+  PaginatedResponse,
+} from '../types/index.js';
+import { env } from '../config/env.js';
+
+// ─── Response Helpers ─────────────────────────────────────────────────────────
+
+export function sendSuccess<T>(
+  res: Response,
+  data: T,
+  message?: string,
+  statusCode = 200,
+): void {
+  const body: ApiSuccess<T> = { success: true, data, message };
+  res.status(statusCode).json(body);
+}
+
+export function sendCreated<T>(res: Response, data: T, message?: string): void {
+  sendSuccess(res, data, message, 201);
+}
+
+export function sendError(
+  res: Response,
+  error: string,
+  statusCode = 400,
+  details?: unknown,
+): void {
+  const body: ApiError = { success: false, error, details };
+  res.status(statusCode).json(body);
+}
+
+export function sendUnauthorized(res: Response, message = 'Unauthorized'): void {
+  sendError(res, message, 401);
+}
+
+export function sendForbidden(res: Response, message = 'Forbidden'): void {
+  sendError(res, message, 403);
+}
+
+export function sendNotFound(res: Response, resource = 'Resource'): void {
+  sendError(res, `${resource} not found`, 404);
+}
+
+export function sendConflict(res: Response, message: string): void {
+  sendError(res, message, 409);
+}
+
+export function sendInternalError(res: Response, message = 'Internal server error'): void {
+  sendError(res, message, 500);
+}
+
+// ─── JWT Helpers ──────────────────────────────────────────────────────────────
+
+export function signAccessToken(payload: Omit<AuthTokenPayload, 'iat' | 'exp'>): string {
+  return jwt.sign(payload, env.jwt.secret, {
+    expiresIn: env.jwt.expiresIn as jwt.SignOptions['expiresIn'],
+  });
+}
+
+export function signRefreshToken(payload: Omit<AuthTokenPayload, 'iat' | 'exp'>): string {
+  return jwt.sign(payload, env.jwt.refreshSecret, {
+    expiresIn: env.jwt.refreshExpiresIn as jwt.SignOptions['expiresIn'],
+  });
+}
+
+export function verifyAccessToken(token: string): AuthTokenPayload {
+  return jwt.verify(token, env.jwt.secret) as AuthTokenPayload;
+}
+
+export function verifyRefreshToken(token: string): AuthTokenPayload {
+  return jwt.verify(token, env.jwt.refreshSecret) as AuthTokenPayload;
+}
+
+export function generateTokenPair(
+  payload: Omit<AuthTokenPayload, 'iat' | 'exp'>,
+): AuthTokens {
+  return {
+    accessToken: signAccessToken(payload),
+    refreshToken: signRefreshToken(payload),
+  };
+}
+
+export function extractBearerToken(authHeader: string | undefined): string | null {
+  if (!authHeader?.startsWith('Bearer ')) return null;
+  return authHeader.slice(7);
+}
+
+// ─── Password Helpers ─────────────────────────────────────────────────────────
+
+export async function hashPassword(plain: string): Promise<string> {
+  return bcrypt.hash(plain, 12);
+}
+
+export async function comparePassword(
+  plain: string,
+  hash: string,
+): Promise<boolean> {
+  return bcrypt.compare(plain, hash);
+}
+
+// ─── ID Helpers ───────────────────────────────────────────────────────────────
+
+export function generateId(): string {
+  return uuidv4();
+}
+
+export function generateMessageId(): string {
+  return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+// ─── Pagination Helpers ───────────────────────────────────────────────────────
+
+export function paginate<T extends { createdAt: Date }>(
+  items: T[],
+  page: number,
+  limit: number,
+): PaginatedResponse<T> {
+  const safePage = Math.max(1, page);
+  const safeLimit = Math.min(100, Math.max(1, limit));
+  const offset = (safePage - 1) * safeLimit;
+
+  // Sort newest first
+  const sorted = [...items].sort(
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+  );
+
+  const total = sorted.length;
+  const data = sorted.slice(offset, offset + safeLimit);
+  const hasMore = offset + safeLimit < total;
+
+  return {
+    data,
+    total,
+    page: safePage,
+    limit: safeLimit,
+    hasMore,
+    nextCursor: hasMore ? String(safePage + 1) : undefined,
+  };
+}
+
+export function paginateMessages<T extends { createdAt: Date }>(
+  items: T[],
+  page: number,
+  limit: number,
+): PaginatedResponse<T> {
+  const safePage = Math.max(1, page);
+  const safeLimit = Math.min(100, Math.max(1, limit));
+
+  // Messages: oldest first, paginate from the end
+  const sorted = [...items].sort(
+    (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+  );
+
+  const total = sorted.length;
+
+  // For messages we want the most recent "limit" items per page
+  // page=1 → last N messages, page=2 → second-last N, etc.
+  const end = total - (safePage - 1) * safeLimit;
+  const start = Math.max(0, end - safeLimit);
+  const data = sorted.slice(start, end);
+  const hasMore = start > 0;
+
+  return {
+    data,
+    total,
+    page: safePage,
+    limit: safeLimit,
+    hasMore,
+    nextCursor: hasMore ? String(safePage + 1) : undefined,
+  };
+}
+
+// ─── String Helpers ───────────────────────────────────────────────────────────
+
+export function sanitizeString(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.trim().replace(/\s+/g, ' ');
+}
+
+export function truncate(str: string, maxLen: number): string {
+  if (str.length <= maxLen) return str;
+  return str.slice(0, maxLen - 3) + '...';
+}
+
+// ─── User Helpers ─────────────────────────────────────────────────────────────
+
+export function stripPassword<T extends { passwordHash: string }>(
+  user: T,
+): Omit<T, 'passwordHash'> {
+  const { passwordHash: _ph, ...pub } = user;
+  return pub;
+}
+
+// ─── Date Helpers ─────────────────────────────────────────────────────────────
+
+export function nowDate(): Date {
+  return new Date();
+}
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\helpers\upload.ts
+==============================
+
+import multer, { type FileFilterCallback } from 'multer';
+import path from 'path';
+import fs from 'fs';
+import { v4 as uuidv4 } from 'uuid';
+import type { Request } from 'express';
+import { env } from '../config/env.js';
+
+// ─── Allowed MIME types (mirrors frontend fileUtils.ts) ───────────────────────
+
+const ALLOWED_MIME_TYPES = new Set([
+  // Images
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
+  // Videos
+  'video/mp4', 'video/webm', 'video/mpeg', 'video/quicktime',
+  // Audio
+  'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/webm',
+  // Documents
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/plain',
+  // Spreadsheets
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/csv',
+  // Presentations
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  // Archives
+  'application/zip',
+  'application/x-rar-compressed',
+  'application/x-7z-compressed',
+]);
+
+// ─── Ensure upload directory exists ──────────────────────────────────────────
+
+const UPLOAD_DIR = path.resolve(process.cwd(), env.upload.uploadDir);
+
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+}
+
+// ─── Storage engine ───────────────────────────────────────────────────────────
+
+const storage = multer.diskStorage({
+  destination(_req, _file, cb) {
+    cb(null, UPLOAD_DIR);
+  },
+  filename(_req, file, cb) {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const uniqueName = `${uuidv4()}${ext}`;
+    cb(null, uniqueName);
+  },
+});
+
+// ─── File filter ──────────────────────────────────────────────────────────────
+
+function fileFilter(
+  _req: Request,
+  file: Express.Multer.File,
+  cb: FileFilterCallback,
+): void {
+  if (ALLOWED_MIME_TYPES.has(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error(`File type "${file.mimetype}" is not allowed`));
+  }
+}
+
+// ─── Multer instance ──────────────────────────────────────────────────────────
+
+export const upload = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: env.upload.maxFileSizeMb * 1024 * 1024,
+    files: 10,
+  },
+});
+
+// ─── Build public URL for uploaded file ──────────────────────────────────────
+
+export function buildFileUrl(filename: string, baseUrl: string): string {
+  return `${baseUrl}/uploads/${filename}`;
+}
+
+// ─── Remove file from disk ────────────────────────────────────────────────────
+
+export function deleteUploadedFile(filename: string): void {
+  const filePath = path.join(UPLOAD_DIR, filename);
+  fs.unlink(filePath, (err) => {
+    if (err && err.code !== 'ENOENT') {
+      console.error(`[Upload] Failed to delete file ${filename}:`, err.message);
+    }
+  });
+}
+
+// ─── Map multer file to FileAttachment shape ──────────────────────────────────
+
+export function multerFileToAttachment(
+  file: Express.Multer.File,
+  baseUrl: string,
+) {
+  return {
+    id: uuidv4(),
+    name: file.originalname,
+    type: file.mimetype,
+    url: buildFileUrl(file.filename, baseUrl),
+    size: file.size,
+  };
+}
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\helpers\validation.ts
+==============================
+
+import { z } from 'zod';
+
+// ─── Reusable field schemas ───────────────────────────────────────────────────
+
+const emailSchema = z
+  .string({ required_error: 'Email is required' })
+  .email('Invalid email address')
+  .toLowerCase()
+  .trim();
+
+const passwordSchema = z
+  .string({ required_error: 'Password is required' })
+  .min(6, 'Password must be at least 6 characters')
+  .max(128, 'Password is too long');
+
+const nameSchema = z
+  .string({ required_error: 'Name is required' })
+  .min(2, 'Name must be at least 2 characters')
+  .max(60, 'Name is too long')
+  .trim();
+
+const messageTextSchema = z
+  .string()
+  .max(4000, 'Message is too long')
+  .default('');
+
+const emojiSchema = z
+  .string({ required_error: 'Emoji is required' })
+  .min(1)
+  .max(8);
+
+const uuidSchema = z.string().min(1, 'ID is required');
+
+const paginationSchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+});
+
+// ─── Auth schemas ─────────────────────────────────────────────────────────────
+
+export const loginSchema = z.object({
+  email: emailSchema,
+  password: z.string({ required_error: 'Password is required' }).min(1),
+});
+
+export const registerSchema = z.object({
+  name: nameSchema,
+  email: emailSchema,
+  password: passwordSchema,
+});
+
+export const refreshTokenSchema = z.object({
+  refreshToken: z.string({ required_error: 'Refresh token is required' }).min(1),
+});
+
+// ─── Conversation schemas ─────────────────────────────────────────────────────
+
+export const createConversationSchema = z.object({
+  userId: uuidSchema,
+});
+
+export const createGroupSchema = z.object({
+  name: z
+    .string({ required_error: 'Group name is required' })
+    .min(1, 'Group name cannot be empty')
+    .max(80, 'Group name is too long')
+    .trim(),
+  userIds: z
+    .array(uuidSchema)
+    .min(2, 'A group needs at least 2 other members')
+    .max(50, 'Group cannot exceed 50 members'),
+  picture: z.string().url('Invalid picture URL').optional(),
+});
+
+// ─── Message schemas ──────────────────────────────────────────────────────────
+
+export const sendMessageSchema = z
+  .object({
+    message: messageTextSchema,
+    replyTo: z
+      .object({
+        messageId: uuidSchema,
+        senderId: uuidSchema,
+        senderName: z.string().min(1),
+        message: z.string().max(200),
+      })
+      .optional(),
+  })
+  .refine(
+    (data) => data.message.trim().length > 0,
+    { message: 'Message cannot be empty (files are sent via multipart)' },
+  );
+
+export const editMessageSchema = z.object({
+  message: z
+    .string({ required_error: 'Message content is required' })
+    .min(1, 'Message cannot be empty')
+    .max(4000, 'Message is too long')
+    .trim(),
+});
+
+export const addReactionSchema = z.object({
+  emoji: emojiSchema,
+});
+
+export const forwardMessageSchema = z.object({
+  toConversationId: uuidSchema,
+});
+
+// ─── Profile schemas ──────────────────────────────────────────────────────────
+
+export const updateProfileSchema = z.object({
+  name: nameSchema.optional(),
+  about: z.string().max(200, 'About text is too long').trim().optional(),
+  picture: z.string().url('Invalid picture URL').optional(),
+});
+
+export const updateStatusSchema = z.object({
+  status: z.enum(['online', 'offline', 'away'], {
+    required_error: 'Status is required',
+    invalid_type_error: 'Status must be online, offline, or away',
+  }),
+});
+
+// ─── Query schemas ────────────────────────────────────────────────────────────
+
+export const searchUsersSchema = z.object({
+  q: z
+    .string({ required_error: 'Search query is required' })
+    .min(1, 'Search query cannot be empty')
+    .max(100)
+    .trim(),
+});
+
+export const paginationQuerySchema = paginationSchema;
+
+// ─── Utility: parse + throw on error ─────────────────────────────────────────
+
+export function parseBody<T>(schema: z.ZodSchema<T>, data: unknown): T {
+  return schema.parse(data);
+}
+
+export function safeParseBody<T>(
+  schema: z.ZodSchema<T>,
+  data: unknown,
+): { success: true; data: T } | { success: false; error: string } {
+  const result = schema.safeParse(data);
+  if (result.success) return { success: true, data: result.data };
+  const messages = result.error.errors.map((e) => e.message).join(', ');
+  return { success: false, error: messages };
+}
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\index.ts
+==============================
+
+import { createServer } from 'http';
+import { createApp } from './app.js';
+import { initSocket } from './socket/index.js';
+import { initializeStore } from './config/store.js';
+import { env } from './config/env.js';
+
+async function bootstrap(): Promise<void> {
+  // 1. Seed in-memory store
+  initializeStore();
+
+  // 2. Create Express app
+  const app = createApp();
+
+  // 3. Wrap in HTTP server (required for Socket.IO)
+  const httpServer = createServer(app);
+
+  // 4. Attach Socket.IO
+  const io = initSocket(httpServer);
+
+  app.locals.io = io; // For use in routes
+
+  // 5. Start listening
+  httpServer.listen(env.port, () => {
+    console.log('');
+    console.log('  ██╗    ██╗██╗  ██╗ █████╗ ████████╗███████╗██╗   ██╗██████╗ ');
+    console.log('  ██║    ██║██║  ██║██╔══██╗╚══██╔══╝██╔════╝██║   ██║██╔══██╗');
+    console.log('  ██║ █╗ ██║███████║███████║   ██║   ███████╗██║   ██║██████╔╝');
+    console.log('  ██║███╗██║██╔══██║██╔══██║   ██║   ╚════██║██║   ██║██╔═══╝ ');
+    console.log('  ╚███╔███╔╝██║  ██║██║  ██║   ██║   ███████║╚██████╔╝██║     ');
+    console.log('   ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ╚══════╝ ╚═════╝ ╚═╝     ');
+    console.log('');
+    console.log(`  🚀 Server running on http://localhost:${env.port}`);
+    console.log(`  🌍 Environment : ${env.nodeEnv}`);
+    console.log(`  📡 Socket.IO   : enabled`);
+    console.log(`  🔗 CORS origin : ${env.cors.clientUrl}`);
+    console.log('');
+  });
+
+  // 6. Graceful shutdown
+  const shutdown = (signal: string) => {
+    console.log(`\n[Server] ${signal} received. Shutting down gracefully...`);
+    httpServer.close(() => {
+      console.log('[Server] HTTP server closed.');
+      process.exit(0);
+    });
+
+    // Force close after 10s
+    setTimeout(() => {
+      console.error('[Server] Forced shutdown after timeout.');
+      process.exit(1);
+    }, 10_000);
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+
+  process.on('unhandledRejection', (reason) => {
+    console.error('[Server] Unhandled rejection:', reason);
+  });
+
+  process.on('uncaughtException', (err) => {
+    console.error('[Server] Uncaught exception:', err);
+    process.exit(1);
+  });
+}
+
+bootstrap();
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\middleware\auth.ts
+==============================
+
+import type { Request, Response, NextFunction } from 'express';
+import {
+  extractBearerToken,
+  verifyAccessToken,
+  sendUnauthorized,
+  sendForbidden,
+} from '../helpers/index.js';
+import { store } from '../config/store.js';
+
+// ─── Augment Express Request ──────────────────────────────────────────────────
+
+declare global {
+  namespace Express {
+    interface Request {
+      userId?: string;
+      userEmail?: string;
+    }
+  }
+}
+
+// ─── requireAuth: blocks unauthenticated requests ────────────────────────────
+
+export function requireAuth(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  const token = extractBearerToken(req.headers.authorization);
+
+  if (!token) {
+    sendUnauthorized(res, 'No token provided');
+    return;
+  }
+
+  try {
+    const payload = verifyAccessToken(token);
+
+    // Verify user still exists in store
+    if (!store.users.has(payload.userId)) {
+      sendUnauthorized(res, 'User no longer exists');
+      return;
+    }
+
+    req.userId = payload.userId;
+    req.userEmail = payload.email;
+    next();
+  } catch {
+    sendUnauthorized(res, 'Invalid or expired token');
+  }
+}
+
+// ─── optionalAuth: sets userId if token present, but doesn't block ────────────
+
+export function optionalAuth(
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+): void {
+  const token = extractBearerToken(req.headers.authorization);
+
+  if (token) {
+    try {
+      const payload = verifyAccessToken(token);
+      req.userId = payload.userId;
+      req.userEmail = payload.email;
+    } catch {
+      // Token invalid — proceed without userId
+    }
+  }
+
+  next();
+}
+
+// ─── requireConversationMember: verifies the user belongs to a conversation ───
+
+export function requireConversationMember(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  const { conversationId } = req.params;
+  const userId = req.userId!;
+
+  const conversation = store.conversations.get(conversationId);
+
+  if (!conversation) {
+    res.status(404).json({ success: false, error: 'Conversation not found' });
+    return;
+  }
+
+  const isMember = conversation.users.some((u) => u.id === userId);
+
+  if (!isMember) {
+    sendForbidden(res, 'You are not a member of this conversation');
+    return;
+  }
+
+  next();
+}
+
+// ─── requireMessageOwner: verifies the user owns a message ───────────────────
+
+export function requireMessageOwner(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  const { conversationId, messageId } = req.params;
+  const userId = req.userId!;
+
+  const messages = store.messages.get(conversationId) ?? [];
+  const message = messages.find((m) => m.id === messageId);
+
+  if (!message) {
+    res.status(404).json({ success: false, error: 'Message not found' });
+    return;
+  }
+
+  if (message.senderId !== userId) {
+    sendForbidden(res, 'You can only modify your own messages');
+    return;
+  }
+
+  next();
+}
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\middleware\error.ts
+==============================
+
+import type { Request, Response, NextFunction } from 'express';
+import morgan from 'morgan';
+import { env } from '../config/env.js';
+import { sendInternalError } from '../helpers/index.js';
+import { MulterError } from 'multer';
+
+// ─── Request logger ───────────────────────────────────────────────────────────
+
+export const requestLogger = morgan(env.isDev ? 'dev' : 'combined');
+
+// ─── 404 handler ─────────────────────────────────────────────────────────────
+
+export function notFoundHandler(req: Request, res: Response): void {
+  res.status(404).json({
+    success: false,
+    error: `Route ${req.method} ${req.path} not found`,
+  });
+}
+
+// ─── Global error handler ─────────────────────────────────────────────────────
+
+export function globalErrorHandler(
+  err: Error,
+  _req: Request,
+  res: Response,
+  _next: NextFunction,
+): void {
+  // Multer errors (file upload)
+  if (err instanceof MulterError) {
+    let message = 'File upload error';
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      message = `File is too large. Maximum size is ${env.upload.maxFileSizeMb}MB`;
+    } else if (err.code === 'LIMIT_FILE_COUNT') {
+      message = 'Too many files. Maximum is 10 files per upload';
+    } else if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+      message = 'Unexpected file field';
+    }
+    res.status(400).json({ success: false, error: message });
+    return;
+  }
+
+  // Custom multer file-type errors
+  if (err.message?.startsWith('File type')) {
+    res.status(400).json({ success: false, error: err.message });
+    return;
+  }
+
+  // Zod validation errors bubble up as Error with "parse" issues
+  if (err.name === 'ZodError') {
+    res.status(400).json({ success: false, error: err.message });
+    return;
+  }
+
+  // JWT errors
+  if (err.name === 'JsonWebTokenError') {
+    res.status(401).json({ success: false, error: 'Invalid token' });
+    return;
+  }
+  if (err.name === 'TokenExpiredError') {
+    res.status(401).json({ success: false, error: 'Token expired' });
+    return;
+  }
+
+  // Unknown errors
+  if (env.isDev) {
+    console.error('[Error]', err);
+  }
+
+  sendInternalError(res);
+}
+
+// ─── Validate JSON body middleware ────────────────────────────────────────────
+
+export function requireJsonBody(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  if (
+    req.method !== 'GET' &&
+    req.method !== 'DELETE' &&
+    !req.is('application/json') &&
+    !req.is('multipart/form-data')
+  ) {
+    res.status(415).json({
+      success: false,
+      error: 'Content-Type must be application/json',
+    });
+    return;
+  }
+  next();
+}
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\routes\auth.routes.ts
+==============================
+
+import { Router } from 'express';
+import { authController } from '../controllers/auth.controller.js';
+import { requireAuth } from '../middleware/auth.js';
+
+const router = Router();
+
+// Public routes
+router.post('/login', authController.login);
+router.post('/register', authController.register);
+router.post('/refresh', authController.refresh);
+
+// Protected routes
+router.post('/logout', requireAuth, authController.logout);
+router.get('/me', requireAuth, authController.me);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\routes\conversation.routes.ts
+==============================
+
+import { Router } from 'express';
+import { conversationController } from '../controllers/conversation.controller.js';
+import { requireAuth, requireConversationMember } from '../middleware/auth.js';
+
+const router = Router();
+
+router.use(requireAuth);
+
+// List all conversations for current user
+router.get('/', conversationController.list);
+
+// Create a 1-on-1 DM
+router.post('/', conversationController.createDirect);
+
+// Create a group
+router.post('/group', conversationController.createGroup);
+
+// Single conversation (membership verified by middleware)
+router.get('/:conversationId', requireConversationMember, conversationController.getOne);
+router.post('/:conversationId/read', requireConversationMember, conversationController.markRead);
+
+// Group member management
+router.post('/:conversationId/members', requireConversationMember, conversationController.addMember);
+router.delete('/:conversationId/members/:userId', requireConversationMember, conversationController.removeMember);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\routes\index.ts
+==============================
+
+import { Router } from 'express';
+import authRoutes from './auth.routes.js';
+import userRoutes from './user.routes.js';
+import conversationRoutes from './conversation.routes.js';
+import messageRoutes from './message.routes.js';
+import { messageController } from '../controllers/message.controller.js';
+import { requireAuth } from '../middleware/auth.js';
+
+const router = Router();
+
+// Health check
+router.get('/health', (_req, res) => {
+  res.json({
+    success: true,
+    data: {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      uptime: Math.floor(process.uptime()),
+    },
+  });
+});
+
+// Mount routes
+router.use('/auth', authRoutes);
+router.use('/users', userRoutes);
+router.use('/conversations', conversationRoutes);
+
+// Message routes are nested under conversations
+router.use(
+  '/conversations/:conversationId/messages',
+  messageRoutes,
+);
+
+// Global message search (across all conversations)
+router.get('/messages/search', requireAuth, messageController.globalSearch);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\routes\message.routes.ts
+==============================
+
+import { Router } from 'express';
+import { messageController } from '../controllers/message.controller.js';
+import { requireAuth, requireConversationMember } from '../middleware/auth.js';
+import { upload } from '../helpers/upload.js';
+
+const router = Router({ mergeParams: true });
+
+router.use(requireAuth);
+router.use(requireConversationMember);
+
+// List + search messages
+router.get('/', messageController.list);
+router.get('/search', messageController.search);
+router.get('/pinned', messageController.listPinned);
+
+// Send message (supports multipart/form-data for file uploads)
+router.post('/', upload.array('files', 10), messageController.send);
+
+// Single message actions
+router.patch('/:messageId', messageController.edit);
+router.delete('/:messageId', messageController.delete);
+
+// Reactions
+router.post('/:messageId/reactions', messageController.toggleReaction);
+
+// Pin / Unpin
+router.post('/:messageId/pin', messageController.pin);
+router.delete('/:messageId/pin', messageController.unpin);
+
+// Forward
+router.post('/:messageId/forward', messageController.forward);
+
+// Seen receipt
+router.post('/:messageId/seen', messageController.markSeen);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\routes\user.routes.ts
+==============================
+
+import { Router } from 'express';
+import { userController } from '../controllers/user.controller.js';
+import { requireAuth } from '../middleware/auth.js';
+
+const router = Router();
+
+// All user routes require auth
+router.use(requireAuth);
+
+router.get('/search', userController.search);
+router.get('/online', userController.getOnlineUsers);
+router.get('/:userId', userController.getUser);
+router.patch('/me/profile', userController.updateProfile);
+router.patch('/me/status', userController.updateStatus);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\services\auth.service.ts
+==============================
+
+import { v4 as uuidv4 } from 'uuid';
+import { store } from '../config/store.js';
+import {
+  hashPassword,
+  comparePassword,
+  generateTokenPair,
+  verifyRefreshToken,
+  generateId,
+  stripPassword,
+  nowDate,
+} from '../helpers/index.js';
+import type {
+  LoginRequest,
+  RegisterRequest,
+  AuthTokens,
+  PublicUser,
+  User,
+} from '../types/index.js';
+
+// ─── Result types ─────────────────────────────────────────────────────────────
+
+export interface LoginResult {
+  user: PublicUser;
+  tokens: AuthTokens;
+}
+
+export interface RegisterResult {
+  user: PublicUser;
+  tokens: AuthTokens;
+}
+
+// ─── Auth Service ─────────────────────────────────────────────────────────────
+
+export const authService = {
+  /**
+   * Authenticate a user with email + password.
+   * Returns user (without password) and JWT token pair.
+   */
+  async login(data: LoginRequest): Promise<LoginResult | null> {
+    const user = findUserByEmail(data.email);
+    if (!user) return null;
+
+    const passwordMatch = await comparePassword(data.password, user.passwordHash);
+    if (!passwordMatch) return null;
+
+    // Mark user as online
+    user.status = 'online';
+    user.updatedAt = nowDate();
+    store.users.set(user.id, user);
+    store.onlineUsers.add(user.id);
+
+    const tokens = generateTokenPair({ userId: user.id, email: user.email });
+    store.refreshTokens.add(tokens.refreshToken);
+
+    return { user: stripPassword(user), tokens };
+  },
+
+  /**
+   * Register a new user account.
+   */
+  async register(data: RegisterRequest): Promise<RegisterResult | 'email_taken'> {
+    const existing = findUserByEmail(data.email);
+    if (existing) return 'email_taken';
+
+    const passwordHash = await hashPassword(data.password);
+    const now = nowDate();
+
+    const newUser: User = {
+      id: generateId(),
+      name: data.name.trim(),
+      email: data.email.toLowerCase().trim(),
+      passwordHash,
+      picture: `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(data.email)}`,
+      status: 'online',
+      about: 'Hey there! I am using WhatsUp',
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    store.users.set(newUser.id, newUser);
+    store.onlineUsers.add(newUser.id);
+
+    const tokens = generateTokenPair({ userId: newUser.id, email: newUser.email });
+    store.refreshTokens.add(tokens.refreshToken);
+
+    return { user: stripPassword(newUser), tokens };
+  },
+
+  /**
+   * Refresh access token using a valid refresh token.
+   */
+  async refreshTokens(refreshToken: string): Promise<AuthTokens | null> {
+    if (!store.refreshTokens.has(refreshToken)) return null;
+
+    try {
+      const payload = verifyRefreshToken(refreshToken);
+      const user = store.users.get(payload.userId);
+      if (!user) return null;
+
+      // Rotate: remove old, issue new
+      store.refreshTokens.delete(refreshToken);
+      const tokens = generateTokenPair({ userId: user.id, email: user.email });
+      store.refreshTokens.add(tokens.refreshToken);
+
+      return tokens;
+    } catch {
+      store.refreshTokens.delete(refreshToken);
+      return null;
+    }
+  },
+
+  /**
+   * Invalidate refresh token on logout and set user offline.
+   */
+  logout(userId: string, refreshToken?: string): void {
+    if (refreshToken) {
+      store.refreshTokens.delete(refreshToken);
+    }
+
+    const user = store.users.get(userId);
+    if (user) {
+      user.status = 'offline';
+      user.updatedAt = nowDate();
+      store.users.set(userId, user);
+    }
+
+    store.onlineUsers.delete(userId);
+  },
+
+  /**
+   * Get currently authenticated user.
+   */
+  getMe(userId: string): PublicUser | null {
+    const user = store.users.get(userId);
+    if (!user) return null;
+    return stripPassword(user);
+  },
+};
+
+// ─── Private helpers ──────────────────────────────────────────────────────────
+
+function findUserByEmail(email: string): User | undefined {
+  const normalized = email.toLowerCase().trim();
+  for (const user of store.users.values()) {
+    if (user.email === normalized) return user;
+  }
+  return undefined;
+}
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\services\conversation.service.ts
+==============================
+
+import { store } from '../config/store.js';
+import { generateId, stripPassword, nowDate } from '../helpers/index.js';
+import type {
+  Conversation,
+  CreateConversationRequest,
+  CreateGroupRequest,
+  PublicUser,
+} from '../types/index.js';
+
+export const conversationService = {
+  /**
+   * Get all conversations for a user, sorted by latest activity.
+   */
+  getConversationsForUser(userId: string): Conversation[] {
+    const results: Conversation[] = [];
+
+    for (const conv of store.conversations.values()) {
+      const isMember = conv.users.some((u) => u.id === userId);
+      if (isMember) {
+        results.push(withUnreadCount(conv, userId));
+      }
+    }
+
+    return results.sort((a, b) => {
+      const aTime = a.latestMessage?.createdAt.getTime() ?? a.createdAt.getTime();
+      const bTime = b.latestMessage?.createdAt.getTime() ?? b.createdAt.getTime();
+      return bTime - aTime;
+    });
+  },
+
+  /**
+   * Get a single conversation by ID (only if user is a member).
+   */
+  getConversationById(
+    conversationId: string,
+    userId: string,
+  ): Conversation | null {
+    const conv = store.conversations.get(conversationId);
+    if (!conv) return null;
+    const isMember = conv.users.some((u) => u.id === userId);
+    if (!isMember) return null;
+    return withUnreadCount(conv, userId);
+  },
+
+  /**
+   * Start or return an existing 1-on-1 conversation between two users.
+   */
+  findOrCreateDirect(
+    requesterId: string,
+    data: CreateConversationRequest,
+  ): Conversation | 'user_not_found' | 'cannot_self' {
+    const { userId: targetId } = data;
+
+    if (targetId === requesterId) return 'cannot_self';
+
+    const targetUser = store.users.get(targetId);
+    if (!targetUser) return 'user_not_found';
+
+    // Check if a DM already exists between these two users
+    for (const conv of store.conversations.values()) {
+      if (
+        !conv.isGroup &&
+        conv.users.length === 2 &&
+        conv.users.some((u) => u.id === requesterId) &&
+        conv.users.some((u) => u.id === targetId)
+      ) {
+        return withUnreadCount(conv, requesterId);
+      }
+    }
+
+    const requester = store.users.get(requesterId)!;
+    const now = nowDate();
+
+    const newConv: Conversation = {
+      id: generateId(),
+      name: targetUser.name,
+      picture: targetUser.picture,
+      isGroup: false,
+      users: [stripPassword(requester), stripPassword(targetUser)],
+      unreadCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    store.conversations.set(newConv.id, newConv);
+    store.messages.set(newConv.id, []);
+
+    return newConv;
+  },
+
+  /**
+   * Create a new group conversation.
+   */
+  createGroup(
+    creatorId: string,
+    data: CreateGroupRequest,
+  ): Conversation | 'invalid_members' {
+    const creator = store.users.get(creatorId);
+    if (!creator) return 'invalid_members';
+
+    const members: PublicUser[] = [stripPassword(creator)];
+
+    for (const uid of data.userIds) {
+      if (uid === creatorId) continue; // Don't add creator twice
+      const user = store.users.get(uid);
+      if (!user) return 'invalid_members';
+      members.push(stripPassword(user));
+    }
+
+    if (members.length < 3) return 'invalid_members'; // creator + at least 2
+
+    const now = nowDate();
+    const newGroup: Conversation = {
+      id: generateId(),
+      name: data.name.trim(),
+      picture:
+        data.picture ??
+        `https://api.dicebear.com/7.x/shapes/svg?seed=${encodeURIComponent(data.name)}`,
+      isGroup: true,
+      users: members,
+      adminId: creatorId,
+      unreadCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    store.conversations.set(newGroup.id, newGroup);
+    store.messages.set(newGroup.id, []);
+
+    return newGroup;
+  },
+
+  /**
+   * Add a member to a group (admin only).
+   */
+  addGroupMember(
+    conversationId: string,
+    requesterId: string,
+    targetUserId: string,
+  ): Conversation | 'not_found' | 'not_group' | 'not_admin' | 'already_member' | 'user_not_found' {
+    const conv = store.conversations.get(conversationId);
+    if (!conv) return 'not_found';
+    if (!conv.isGroup) return 'not_group';
+    if (conv.adminId !== requesterId) return 'not_admin';
+
+    const alreadyMember = conv.users.some((u) => u.id === targetUserId);
+    if (alreadyMember) return 'already_member';
+
+    const targetUser = store.users.get(targetUserId);
+    if (!targetUser) return 'user_not_found';
+
+    const updated: Conversation = {
+      ...conv,
+      users: [...conv.users, stripPassword(targetUser)],
+      updatedAt: nowDate(),
+    };
+
+    store.conversations.set(conversationId, updated);
+    return updated;
+  },
+
+  /**
+   * Remove a member from a group (admin only, or self-leave).
+   */
+  removeGroupMember(
+    conversationId: string,
+    requesterId: string,
+    targetUserId: string,
+  ): Conversation | 'not_found' | 'not_group' | 'not_admin' | 'not_member' {
+    const conv = store.conversations.get(conversationId);
+    if (!conv) return 'not_found';
+    if (!conv.isGroup) return 'not_group';
+
+    const isSelf = requesterId === targetUserId;
+    if (!isSelf && conv.adminId !== requesterId) return 'not_admin';
+
+    const isMember = conv.users.some((u) => u.id === targetUserId);
+    if (!isMember) return 'not_member';
+
+    const updated: Conversation = {
+      ...conv,
+      users: conv.users.filter((u) => u.id !== targetUserId),
+      updatedAt: nowDate(),
+    };
+
+    store.conversations.set(conversationId, updated);
+    return updated;
+  },
+
+  /**
+   * Mark all messages in a conversation as read for a user.
+   */
+  markAsRead(conversationId: string, userId: string): void {
+    const messages = store.messages.get(conversationId);
+    if (!messages) return;
+
+    const updated = messages.map((msg) => {
+      if (msg.senderId === userId) return msg;
+      const alreadySeen = msg.seenBy?.includes(userId);
+      if (alreadySeen) return msg;
+      return {
+        ...msg,
+        seenBy: [...(msg.seenBy ?? []), userId],
+        read: true,
+      };
+    });
+
+    store.messages.set(conversationId, updated);
+  },
+};
+
+// ─── Private helpers ──────────────────────────────────────────────────────────
+
+function withUnreadCount(conv: Conversation, userId: string): Conversation {
+  const messages = store.messages.get(conv.id) ?? [];
+  const unreadCount = messages.filter(
+    (m) =>
+      m.senderId !== userId &&
+      !m.isDeleted &&
+      !(m.seenBy ?? []).includes(userId),
+  ).length;
+
+  return { ...conv, unreadCount };
+}
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\services\message.service.ts
+==============================
+
+import { store } from '../config/store.js';
+import { generateMessageId, generateId, nowDate } from '../helpers/index.js';
+import { paginateMessages } from '../helpers/index.js';
+import type {
+  Message,
+  FileAttachment,
+  ReplyTo,
+  PaginatedResponse,
+  Reaction,
+} from '../types/index.js';
+
+export const messageService = {
+  /**
+   * Fetch paginated messages for a conversation (newest-first pagination,
+   * but returned in chronological order per page).
+   */
+  getMessages(
+    conversationId: string,
+    page: number,
+    limit: number,
+  ): PaginatedResponse<Message> {
+    const allMessages = store.messages.get(conversationId) ?? [];
+    // Exclude hard-deleted (we keep soft-deleted so the UI can show "deleted")
+    return paginateMessages(allMessages, page, limit);
+  },
+
+  /**
+   * Search messages in a conversation by text content.
+   */
+  searchMessages(conversationId: string, query: string): Message[] {
+    const allMessages = store.messages.get(conversationId) ?? [];
+    const q = query.toLowerCase();
+    return allMessages
+      .filter((m) => !m.isDeleted && m.message.toLowerCase().includes(q))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, 50);
+  },
+
+  /**
+   * Search messages across ALL conversations the user is a member of.
+   */
+  globalSearch(userId: string, query: string): Message[] {
+    const results: Message[] = [];
+    const q = query.toLowerCase();
+
+    for (const [convId, conv] of store.conversations.entries()) {
+      const isMember = conv.users.some((u) => u.id === userId);
+      if (!isMember) continue;
+
+      const messages = store.messages.get(convId) ?? [];
+      for (const msg of messages) {
+        if (!msg.isDeleted && msg.message.toLowerCase().includes(q)) {
+          results.push(msg);
         }
       }
+    }
+
+    return results
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, 100);
+  },
+
+  /**
+   * Send a new message. Accepts optional files and replyTo context.
+   */
+  sendMessage(
+    conversationId: string,
+    senderId: string,
+    text: string,
+    files?: FileAttachment[],
+    replyTo?: ReplyTo,
+  ): Message | 'conversation_not_found' | 'not_member' {
+    const conv = store.conversations.get(conversationId);
+    if (!conv) return 'conversation_not_found';
+
+    const isMember = conv.users.some((u) => u.id === senderId);
+    if (!isMember) return 'not_member';
+
+    const now = nowDate();
+    const newMessage: Message = {
+      id: generateMessageId(),
+      conversationId,
+      senderId,
+      message: text,
+      files: files && files.length > 0 ? files : undefined,
+      replyTo,
+      reactions: [],
+      seenBy: [senderId], // sender has "seen" their own message
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const messages = store.messages.get(conversationId) ?? [];
+    messages.push(newMessage);
+    store.messages.set(conversationId, messages);
+
+    // Update conversation's latest message and updatedAt
+    store.conversations.set(conversationId, {
+      ...conv,
+      latestMessage: newMessage,
+      updatedAt: now,
+    });
+
+    return newMessage;
+  },
+
+  /**
+   * Edit a message. Only the sender can edit.
+   */
+  editMessage(
+    conversationId: string,
+    messageId: string,
+    senderId: string,
+    newText: string,
+  ): Message | 'not_found' | 'not_owner' | 'deleted' {
+    const messages = store.messages.get(conversationId) ?? [];
+    const idx = messages.findIndex((m) => m.id === messageId);
+
+    if (idx === -1) return 'not_found';
+
+    const msg = messages[idx]!;
+    if (msg.senderId !== senderId) return 'not_owner';
+    if (msg.isDeleted) return 'deleted';
+
+    const updated: Message = {
+      ...msg,
+      message: newText,
+      isEdited: true,
+      editedAt: nowDate(),
+      updatedAt: nowDate(),
+    };
+
+    messages[idx] = updated;
+    store.messages.set(conversationId, messages);
+
+    // Refresh latest message if this was it
+    refreshLatestMessage(conversationId);
+
+    return updated;
+  },
+
+  /**
+   * Soft-delete a message. Only the sender can delete.
+   */
+  deleteMessage(
+    conversationId: string,
+    messageId: string,
+    senderId: string,
+  ): Message | 'not_found' | 'not_owner' {
+    const messages = store.messages.get(conversationId) ?? [];
+    const idx = messages.findIndex((m) => m.id === messageId);
+
+    if (idx === -1) return 'not_found';
+
+    const msg = messages[idx]!;
+    if (msg.senderId !== senderId) return 'not_owner';
+
+    const updated: Message = {
+      ...msg,
+      isDeleted: true,
+      deletedAt: nowDate(),
+      updatedAt: nowDate(),
+      message: '', // Clear content on delete
+    };
+
+    messages[idx] = updated;
+    store.messages.set(conversationId, messages);
+    refreshLatestMessage(conversationId);
+
+    return updated;
+  },
+
+  /**
+   * Toggle a reaction on a message.
+   * Adding an existing reaction removes it (toggle behavior).
+   */
+  toggleReaction(
+    conversationId: string,
+    messageId: string,
+    userId: string,
+    emoji: string,
+  ): Message | 'not_found' | 'deleted' {
+    const messages = store.messages.get(conversationId) ?? [];
+    const idx = messages.findIndex((m) => m.id === messageId);
+
+    if (idx === -1) return 'not_found';
+
+    const msg = messages[idx]!;
+    if (msg.isDeleted) return 'deleted';
+
+    const reactions = msg.reactions ?? [];
+    const existingIdx = reactions.findIndex(
+      (r) => r.emoji === emoji && r.userId === userId,
     );
+
+    let updatedReactions: Reaction[];
+    if (existingIdx !== -1) {
+      // Remove reaction
+      updatedReactions = reactions.filter((_, i) => i !== existingIdx);
+    } else {
+      // Add reaction
+      updatedReactions = [
+        ...reactions,
+        { emoji, userId, createdAt: nowDate() },
+      ];
+    }
+
+    const updated: Message = {
+      ...msg,
+      reactions: updatedReactions,
+      updatedAt: nowDate(),
+    };
+
+    messages[idx] = updated;
+    store.messages.set(conversationId, messages);
+
+    return updated;
+  },
+
+  /**
+   * Pin a message in a conversation.
+   */
+  pinMessage(
+    conversationId: string,
+    messageId: string,
+    pinnedBy: string,
+  ): Message | 'not_found' | 'deleted' {
+    return togglePin(conversationId, messageId, true, pinnedBy);
+  },
+
+  /**
+   * Unpin a message.
+   */
+  unpinMessage(
+    conversationId: string,
+    messageId: string,
+  ): Message | 'not_found' | 'deleted' {
+    return togglePin(conversationId, messageId, false);
+  },
+
+  /**
+   * Get all pinned messages in a conversation.
+   */
+  getPinnedMessages(conversationId: string): Message[] {
+    const messages = store.messages.get(conversationId) ?? [];
+    return messages
+      .filter((m) => m.isPinned && !m.isDeleted)
+      .sort((a, b) => (b.pinnedAt?.getTime() ?? 0) - (a.pinnedAt?.getTime() ?? 0));
+  },
+
+  /**
+   * Forward a message to another conversation.
+   */
+  forwardMessage(
+    messageId: string,
+    fromConversationId: string,
+    toConversationId: string,
+    senderId: string,
+  ): Message | 'not_found' | 'target_not_found' | 'not_member' {
+    // Find source message
+    const fromMessages = store.messages.get(fromConversationId) ?? [];
+    const sourceMsg = fromMessages.find((m) => m.id === messageId);
+    if (!sourceMsg || sourceMsg.isDeleted) return 'not_found';
+
+    // Verify target conversation
+    const targetConv = store.conversations.get(toConversationId);
+    if (!targetConv) return 'target_not_found';
+
+    const isMember = targetConv.users.some((u) => u.id === senderId);
+    if (!isMember) return 'not_member';
+
+    const now = nowDate();
+    const forwarded: Message = {
+      id: generateMessageId(),
+      conversationId: toConversationId,
+      senderId,
+      message: sourceMsg.message,
+      files: sourceMsg.files,
+      reactions: [],
+      seenBy: [senderId],
+      isEdited: false,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const toMessages = store.messages.get(toConversationId) ?? [];
+    toMessages.push(forwarded);
+    store.messages.set(toConversationId, toMessages);
+
+    store.conversations.set(toConversationId, {
+      ...targetConv,
+      latestMessage: forwarded,
+      updatedAt: now,
+    });
+
+    return forwarded;
+  },
+
+  /**
+   * Mark a single message as seen by a user.
+   */
+  markMessageSeen(
+    conversationId: string,
+    messageId: string,
+    userId: string,
+  ): Message | null {
+    const messages = store.messages.get(conversationId) ?? [];
+    const idx = messages.findIndex((m) => m.id === messageId);
+    if (idx === -1) return null;
+
+    const msg = messages[idx]!;
+    if ((msg.seenBy ?? []).includes(userId)) return msg; // Already seen
+
+    const updated: Message = {
+      ...msg,
+      seenBy: [...(msg.seenBy ?? []), userId],
+      read: true,
+      updatedAt: nowDate(),
+    };
+
+    messages[idx] = updated;
+    store.messages.set(conversationId, messages);
+
+    return updated;
+  },
+};
+
+// ─── Private helpers ──────────────────────────────────────────────────────────
+
+function togglePin(
+  conversationId: string,
+  messageId: string,
+  pin: boolean,
+  pinnedBy?: string,
+): Message | 'not_found' | 'deleted' {
+  const messages = store.messages.get(conversationId) ?? [];
+  const idx = messages.findIndex((m) => m.id === messageId);
+
+  if (idx === -1) return 'not_found';
+
+  const msg = messages[idx]!;
+  if (msg.isDeleted) return 'deleted';
+
+  const updated: Message = {
+    ...msg,
+    isPinned: pin,
+    pinnedAt: pin ? nowDate() : undefined,
+    pinnedBy: pin ? pinnedBy : undefined,
+    updatedAt: nowDate(),
+  };
+
+  messages[idx] = updated;
+  store.messages.set(conversationId, messages);
+
+  return updated;
+}
+
+function refreshLatestMessage(conversationId: string): void {
+  const conv = store.conversations.get(conversationId);
+  if (!conv) return;
+
+  const messages = store.messages.get(conversationId) ?? [];
+  const visible = messages.filter((m) => !m.isDeleted);
+  const latest = visible[visible.length - 1];
+
+  store.conversations.set(conversationId, {
+    ...conv,
+    latestMessage: latest,
+    updatedAt: nowDate(),
   });
+}
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\services\user.service.ts
+==============================
+
+import { store } from '../config/store.js';
+import { stripPassword, nowDate } from '../helpers/index.js';
+import type { PublicUser, UpdateProfileRequest, UserStatus } from '../types/index.js';
+
+export const userService = {
+  /**
+   * Search users by name or email, excluding the requesting user.
+   */
+  searchUsers(query: string, excludeUserId: string): PublicUser[] {
+    const q = query.toLowerCase().trim();
+    const results: PublicUser[] = [];
+
+    for (const user of store.users.values()) {
+      if (user.id === excludeUserId) continue;
+      if (
+        user.name.toLowerCase().includes(q) ||
+        user.email.toLowerCase().includes(q)
+      ) {
+        results.push(stripPassword(user));
+      }
+    }
+
+    return results.slice(0, 20); // Cap at 20 results
+  },
+
+  /**
+   * Get a single user by ID.
+   */
+  getUserById(userId: string): PublicUser | null {
+    const user = store.users.get(userId);
+    return user ? stripPassword(user) : null;
+  },
+
+  /**
+   * Update user profile fields.
+   */
+  updateProfile(
+    userId: string,
+    updates: UpdateProfileRequest,
+  ): PublicUser | null {
+    const user = store.users.get(userId);
+    if (!user) return null;
+
+    const updated = {
+      ...user,
+      ...(updates.name !== undefined && { name: updates.name.trim() }),
+      ...(updates.about !== undefined && { about: updates.about.trim() }),
+      ...(updates.picture !== undefined && { picture: updates.picture }),
+      updatedAt: nowDate(),
+    };
+
+    store.users.set(userId, updated);
+
+    // Reflect updated user inside any conversations they're part of
+    for (const [convId, conv] of store.conversations.entries()) {
+      const isMember = conv.users.some((u) => u.id === userId);
+      if (isMember) {
+        const updatedConv = {
+          ...conv,
+          users: conv.users.map((u) =>
+            u.id === userId ? stripPassword(updated) : u,
+          ),
+        };
+        store.conversations.set(convId, updatedConv);
+      }
+    }
+
+    return stripPassword(updated);
+  },
+
+  /**
+   * Update user online status.
+   */
+  updateStatus(userId: string, status: UserStatus): PublicUser | null {
+    const user = store.users.get(userId);
+    if (!user) return null;
+
+    const updated = { ...user, status, updatedAt: nowDate() };
+    store.users.set(userId, updated);
+
+    if (status === 'online') {
+      store.onlineUsers.add(userId);
+    } else {
+      store.onlineUsers.delete(userId);
+    }
+
+    return stripPassword(updated);
+  },
+
+  /**
+   * Get the set of currently online user IDs.
+   */
+  getOnlineUserIds(): string[] {
+    return Array.from(store.onlineUsers);
+  },
+
+  /**
+   * Check if a user is online.
+   */
+  isOnline(userId: string): boolean {
+    return store.onlineUsers.has(userId);
+  },
 };
 
 
-export const verify = async (token, secret) => {
-  return new Promise((resolve, reject) => {
-    jwt.verify(token, secret, (error, payload) => {
-      if (error) {
-        logger.error(error);
-        resolve(null);
-      } else {
-        resolve(payload);
-      }
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\socket\index.ts
+==============================
+
+import type { Server as HttpServer } from 'http';
+import { Server as SocketIOServer, type Socket } from 'socket.io';
+import { env } from '../config/env.js';
+import { store } from '../config/store.js';
+import { verifyAccessToken } from '../helpers/index.js';
+import { userService } from '../services/user.service.js';
+import { messageService } from '../services/message.service.js';
+import { conversationService } from '../services/conversation.service.js';
+import type {
+  SocketTypingPayload,
+  SocketCallPayload,
+} from '../types/index.js';
+
+// ─── Socket event name constants ──────────────────────────────────────────────
+
+export const SOCKET_EVENTS = {
+  // Connection
+  CONNECT: 'connect',
+  DISCONNECT: 'disconnect',
+  ERROR: 'error',
+
+  // Auth
+  JOIN: 'join',
+  JOINED: 'joined',
+
+  // Messaging
+  SEND_MESSAGE: 'send_message',
+  NEW_MESSAGE: 'new_message',
+  EDIT_MESSAGE: 'edit_message',
+  MESSAGE_EDITED: 'message_edited',
+  DELETE_MESSAGE: 'delete_message',
+  MESSAGE_DELETED: 'message_deleted',
+
+  // Reactions
+  TOGGLE_REACTION: 'toggle_reaction',
+  REACTION_UPDATED: 'reaction_updated',
+
+  // Read receipts
+  MARK_SEEN: 'mark_seen',
+  MESSAGE_SEEN: 'message_seen',
+
+  // Typing
+  TYPING_START: 'typing',
+  TYPING_STOP: 'stop_typing',
+
+  // Online status
+  USER_ONLINE: 'user_online',
+  USER_OFFLINE: 'user_offline',
+  ONLINE_USERS: 'online_users',
+
+  // Calls
+  INITIATE_CALL: 'initiate_call',
+  INCOMING_CALL: 'incoming_call',
+  CALL_ACCEPTED: 'call_accepted',
+  CALL_REJECTED: 'call_rejected',
+  CALL_ENDED: 'call_ended',
+  CALL_SIGNAL: 'call_signal',
+
+  // Pin
+  PIN_MESSAGE: 'pin_message',
+  MESSAGE_PINNED: 'message_pinned',
+  UNPIN_MESSAGE: 'unpin_message',
+  MESSAGE_UNPINNED: 'message_unpinned',
+} as const;
+
+// ─── Initialise Socket.IO ──────────────────────────────────────────────────────
+
+export function initSocket(httpServer: HttpServer): SocketIOServer {
+  const io = new SocketIOServer(httpServer, {
+    cors: {
+      origin: env.cors.clientUrl,
+      methods: ['GET', 'POST'],
+      credentials: true,
+    },
+    pingTimeout: 60000,
+    pingInterval: 25000,
+  });
+
+  // ── Auth middleware: verify JWT on handshake ──────────────────────────────
+  io.use((socket, next) => {
+    const token =
+      socket.handshake.auth?.['token'] as string | undefined ??
+      (socket.handshake.headers.authorization?.startsWith('Bearer ')
+        ? socket.handshake.headers.authorization.slice(7)
+        : undefined);
+
+    if (!token) {
+      return next(new Error('Authentication token required'));
+    }
+
+    try {
+      const payload = verifyAccessToken(token);
+      (socket as AuthenticatedSocket).userId = payload.userId;
+      (socket as AuthenticatedSocket).userEmail = payload.email;
+      next();
+    } catch {
+      next(new Error('Invalid or expired token'));
+    }
+  });
+
+  io.on('connection', (socket: Socket) => {
+    const authedSocket = socket as AuthenticatedSocket;
+    const userId = authedSocket.userId;
+
+    console.log(`[Socket] Connected: ${userId} (${socket.id})`);
+
+    // Track socket → user mapping
+    store.socketUserMap.set(socket.id, userId);
+
+    // Mark user online and join their conversation rooms
+    handleUserOnline(io, socket, userId);
+
+    // ── Event handlers ──────────────────────────────────────────────────────
+
+    socket.on(SOCKET_EVENTS.TYPING_START, (data: SocketTypingPayload) => {
+      handleTyping(socket, data, true);
+    });
+
+    socket.on(SOCKET_EVENTS.TYPING_STOP, (data: SocketTypingPayload) => {
+      handleTyping(socket, data, false);
+    });
+
+    socket.on(SOCKET_EVENTS.MARK_SEEN, (data: { conversationId: string; messageId: string }) => {
+      handleMarkSeen(io, socket, userId, data);
+    });
+
+    socket.on(SOCKET_EVENTS.TOGGLE_REACTION, (data: { conversationId: string; messageId: string; emoji: string }) => {
+      handleToggleReaction(io, socket, userId, data);
+    });
+
+    socket.on(SOCKET_EVENTS.PIN_MESSAGE, (data: { conversationId: string; messageId: string }) => {
+      handlePin(io, socket, userId, data, true);
+    });
+
+    socket.on(SOCKET_EVENTS.UNPIN_MESSAGE, (data: { conversationId: string; messageId: string }) => {
+      handlePin(io, socket, userId, data, false);
+    });
+
+    socket.on(SOCKET_EVENTS.INITIATE_CALL, (data: SocketCallPayload) => {
+      handleInitiateCall(io, socket, userId, data);
+    });
+
+    socket.on(SOCKET_EVENTS.CALL_ACCEPTED, (data: { callerId: string; conversationId: string; signal?: unknown }) => {
+      handleCallAccepted(io, userId, data);
+    });
+
+    socket.on(SOCKET_EVENTS.CALL_REJECTED, (data: { callerId: string; conversationId: string }) => {
+      handleCallRejected(io, userId, data);
+    });
+
+    socket.on(SOCKET_EVENTS.CALL_ENDED, (data: { conversationId: string; otherUserId: string }) => {
+      handleCallEnded(io, userId, data);
+    });
+
+    socket.on(SOCKET_EVENTS.CALL_SIGNAL, (data: { toUserId: string; signal: unknown }) => {
+      handleCallSignal(io, userId, data);
+    });
+
+    // ── Disconnect ───────────────────────────────────────────────────────────
+
+    socket.on('disconnect', () => {
+      console.log(`[Socket] Disconnected: ${userId} (${socket.id})`);
+      store.socketUserMap.delete(socket.id);
+      handleUserOffline(io, socket, userId);
     });
   });
-};
+
+  return io;
+}
+
+// ─── Handler functions ────────────────────────────────────────────────────────
+
+function handleUserOnline(io: SocketIOServer, socket: Socket, userId: string): void {
+  userService.updateStatus(userId, 'online');
+
+  // Join all conversation rooms the user is part of
+  for (const [convId, conv] of store.conversations.entries()) {
+    if (conv.users.some((u) => u.id === userId)) {
+      socket.join(convId);
+    }
+  }
+
+  // Broadcast to everyone that this user is online
+  socket.broadcast.emit(SOCKET_EVENTS.USER_ONLINE, { userId });
+
+  // Send the current online users list back to just this socket
+  socket.emit(SOCKET_EVENTS.ONLINE_USERS, {
+    userIds: userService.getOnlineUserIds(),
+  });
+}
+
+function handleUserOffline(io: SocketIOServer, socket: Socket, userId: string): void {
+  // Only mark offline if the user has no other active sockets
+  const hasOtherSocket = Array.from(store.socketUserMap.values()).includes(userId);
+
+  if (!hasOtherSocket) {
+    userService.updateStatus(userId, 'offline');
+    io.emit(SOCKET_EVENTS.USER_OFFLINE, { userId });
+  }
+}
+
+function handleTyping(
+  socket: Socket,
+  data: SocketTypingPayload,
+  isTyping: boolean,
+): void {
+  const { conversationId, userId, userName } = data;
+  if (!conversationId) return;
+
+  const event = isTyping ? SOCKET_EVENTS.TYPING_START : SOCKET_EVENTS.TYPING_STOP;
+
+  // Broadcast to everyone else in the conversation room
+  socket.to(conversationId).emit(event, { conversationId, userId, userName });
+}
+
+function handleMarkSeen(
+  io: SocketIOServer,
+  socket: Socket,
+  userId: string,
+  data: { conversationId: string; messageId: string },
+): void {
+  const { conversationId, messageId } = data;
+  if (!conversationId || !messageId) return;
+
+  const updated = messageService.markMessageSeen(conversationId, messageId, userId);
+  if (!updated) return;
+
+  // Broadcast to all conversation members
+  io.to(conversationId).emit(SOCKET_EVENTS.MESSAGE_SEEN, {
+    conversationId,
+    messageId,
+    userId,
+    seenBy: updated.seenBy,
+  });
+}
+
+function handleToggleReaction(
+  io: SocketIOServer,
+  socket: Socket,
+  userId: string,
+  data: { conversationId: string; messageId: string; emoji: string },
+): void {
+  const { conversationId, messageId, emoji } = data;
+  if (!conversationId || !messageId || !emoji) return;
+
+  const updated = messageService.toggleReaction(conversationId, messageId, userId, emoji);
+  if (typeof updated === 'string') return; // error string
+
+  io.to(conversationId).emit(SOCKET_EVENTS.REACTION_UPDATED, {
+    conversationId,
+    messageId,
+    reactions: updated.reactions,
+  });
+}
+
+function handlePin(
+  io: SocketIOServer,
+  socket: Socket,
+  userId: string,
+  data: { conversationId: string; messageId: string },
+  pin: boolean,
+): void {
+  const { conversationId, messageId } = data;
+  if (!conversationId || !messageId) return;
+
+  const result = pin
+    ? messageService.pinMessage(conversationId, messageId, userId)
+    : messageService.unpinMessage(conversationId, messageId);
+
+  if (typeof result === 'string') return;
+
+  const event = pin ? SOCKET_EVENTS.MESSAGE_PINNED : SOCKET_EVENTS.MESSAGE_UNPINNED;
+  io.to(conversationId).emit(event, { conversationId, message: result });
+}
+
+function handleInitiateCall(
+  io: SocketIOServer,
+  socket: Socket,
+  callerId: string,
+  data: SocketCallPayload,
+): void {
+  const { conversationId, callType } = data;
+  if (!conversationId) return;
+
+  const caller = userService.getUserById(callerId);
+  if (!caller) return;
+
+  const conv = store.conversations.get(conversationId);
+  if (!conv) return;
+
+  // Notify all other members of the conversation
+  socket.to(conversationId).emit(SOCKET_EVENTS.INCOMING_CALL, {
+    callerId,
+    caller,
+    conversationId,
+    callType,
+  });
+}
+
+function handleCallAccepted(
+  io: SocketIOServer,
+  acceptorId: string,
+  data: { callerId: string; conversationId: string; signal?: unknown },
+): void {
+  const { callerId, conversationId, signal } = data;
+
+  // Find caller's socket(s) and notify them
+  const callerSocketIds = getSocketsForUser(callerId);
+  callerSocketIds.forEach((socketId) => {
+    io.to(socketId).emit(SOCKET_EVENTS.CALL_ACCEPTED, {
+      acceptorId,
+      conversationId,
+      signal,
+    });
+  });
+}
+
+function handleCallRejected(
+  io: SocketIOServer,
+  rejectorId: string,
+  data: { callerId: string; conversationId: string },
+): void {
+  const { callerId, conversationId } = data;
+
+  const callerSocketIds = getSocketsForUser(callerId);
+  callerSocketIds.forEach((socketId) => {
+    io.to(socketId).emit(SOCKET_EVENTS.CALL_REJECTED, {
+      rejectorId,
+      conversationId,
+    });
+  });
+}
+
+function handleCallEnded(
+  io: SocketIOServer,
+  enderId: string,
+  data: { conversationId: string; otherUserId: string },
+): void {
+  const { conversationId, otherUserId } = data;
+
+  const otherSocketIds = getSocketsForUser(otherUserId);
+  otherSocketIds.forEach((socketId) => {
+    io.to(socketId).emit(SOCKET_EVENTS.CALL_ENDED, {
+      enderId,
+      conversationId,
+    });
+  });
+}
+
+function handleCallSignal(
+  io: SocketIOServer,
+  fromUserId: string,
+  data: { toUserId: string; signal: unknown },
+): void {
+  const { toUserId, signal } = data;
+
+  const targetSocketIds = getSocketsForUser(toUserId);
+  targetSocketIds.forEach((socketId) => {
+    io.to(socketId).emit(SOCKET_EVENTS.CALL_SIGNAL, {
+      fromUserId,
+      signal,
+    });
+  });
+}
+
+// ─── Utility: emit new message to a conversation room ─────────────────────────
+
+export function emitNewMessage(
+  io: SocketIOServer,
+  conversationId: string,
+  message: unknown,
+  conversation: unknown,
+): void {
+  io.to(conversationId).emit(SOCKET_EVENTS.NEW_MESSAGE, {
+    message,
+    conversation,
+  });
+}
+
+// ─── Utility: get all socket IDs for a user ───────────────────────────────────
+
+function getSocketsForUser(userId: string): string[] {
+  const socketIds: string[] = [];
+  for (const [socketId, uid] of store.socketUserMap.entries()) {
+    if (uid === userId) socketIds.push(socketId);
+  }
+  return socketIds;
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface AuthenticatedSocket extends Socket {
+  userId: string;
+  userEmail: string;
+}
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\types\index.ts
+==============================
+
+// ─── User ────────────────────────────────────────────────────────────────────
+
+export type UserStatus = 'online' | 'offline' | 'away';
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  passwordHash: string;
+  picture: string;
+  status: UserStatus;
+  about: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type PublicUser = Omit<User, 'passwordHash'>;
+
+export type UserWithoutPassword = PublicUser;
+
+// ─── Auth ────────────────────────────────────────────────────────────────────
+
+export interface AuthTokenPayload {
+  userId: string;
+  email: string;
+  iat?: number;
+  exp?: number;
+}
+
+export interface AuthTokens {
+  accessToken: string;
+  refreshToken: string;
+}
+
+export interface LoginRequest {
+  email: string;
+  password: string;
+}
+
+export interface RegisterRequest {
+  name: string;
+  email: string;
+  password: string;
+}
+
+export interface RefreshTokenRequest {
+  refreshToken: string;
+}
+
+// ─── Conversation ─────────────────────────────────────────────────────────────
+
+export interface Conversation {
+  id: string;
+  name: string;
+  picture: string;
+  isGroup: boolean;
+  users: PublicUser[];
+  adminId?: string;
+  latestMessage?: Message;
+  unreadCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CreateConversationRequest {
+  userId: string; // The other user to start DM with
+}
+
+export interface CreateGroupRequest {
+  name: string;
+  userIds: string[];
+  picture?: string;
+}
+
+// ─── Message ──────────────────────────────────────────────────────────────────
+
+export interface Reaction {
+  emoji: string;
+  userId: string;
+  createdAt: Date;
+}
+
+export interface FileAttachment {
+  id: string;
+  name: string;
+  type: string;
+  url: string;
+  size: number;
+}
+
+export interface ReplyTo {
+  messageId: string;
+  senderId: string;
+  senderName: string;
+  message: string;
+}
+
+export interface Message {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  message: string;
+  files?: FileAttachment[];
+  reactions?: Reaction[];
+  replyTo?: ReplyTo;
+  seenBy?: string[];
+  isEdited: boolean;
+  editedAt?: Date;
+  isDeleted: boolean;
+  deletedAt?: Date;
+  isPinned: boolean;
+  pinnedAt?: Date;
+  pinnedBy?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SendMessageRequest {
+  conversationId: string;
+  message: string;
+  replyTo?: ReplyTo;
+}
+
+export interface EditMessageRequest {
+  message: string;
+}
+
+export interface AddReactionRequest {
+  emoji: string;
+}
+
+export interface ForwardMessageRequest {
+  toConversationId: string;
+}
+
+// ─── User Search ──────────────────────────────────────────────────────────────
+
+export interface SearchUsersQuery {
+  q: string;
+}
+
+// ─── Profile Update ───────────────────────────────────────────────────────────
+
+export interface UpdateProfileRequest {
+  name?: string;
+  about?: string;
+  picture?: string;
+}
+
+export interface UpdateStatusRequest {
+  status: UserStatus;
+}
+
+// ─── Pagination ───────────────────────────────────────────────────────────────
+
+export interface PaginationQuery {
+  page?: number;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface PaginatedResponse<T> {
+  data: T[];
+  total: number;
+  page: number;
+  limit: number;
+  hasMore: boolean;
+  nextCursor?: string;
+}
+
+// ─── API Response Wrappers ───────────────────────────────────────────────────
+
+export interface ApiSuccess<T = unknown> {
+  success: true;
+  data: T;
+  message?: string;
+}
+
+export interface ApiError {
+  success: false;
+  error: string;
+  details?: unknown;
+}
+
+export type ApiResponse<T = unknown> = ApiSuccess<T> | ApiError;
+
+// ─── Socket Events ────────────────────────────────────────────────────────────
+
+export interface SocketUserJoinPayload {
+  userId: string;
+}
+
+export interface SocketTypingPayload {
+  conversationId: string;
+  userId: string;
+  userName: string;
+}
+
+export interface SocketMessagePayload {
+  message: Message;
+  conversation: Conversation;
+}
+
+export interface SocketReactionPayload {
+  messageId: string;
+  conversationId: string;
+  reaction: Reaction;
+  action: 'add' | 'remove';
+}
+
+export interface SocketSeenPayload {
+  conversationId: string;
+  messageId: string;
+  userId: string;
+}
+
+export interface SocketCallPayload {
+  callerId: string;
+  caller: PublicUser;
+  conversationId: string;
+  callType: 'audio' | 'video';
+  signal?: unknown;
+}
+
+// ─── In-memory store types ────────────────────────────────────────────────────
+
+export interface InMemoryStore {
+  users: Map<string, User>;
+  conversations: Map<string, Conversation>;
+  messages: Map<string, Message[]>; // conversationId → messages
+  refreshTokens: Set<string>;
+  onlineUsers: Set<string>;
+  socketUserMap: Map<string, string>; // socketId → userId
+}
