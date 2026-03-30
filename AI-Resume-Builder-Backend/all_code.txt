@@ -1145,6 +1145,8 @@ export const exportResumePDF = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const userId = req.userId;
 
+  console.log('CLIENT_URL:', process.env.CLIENT_URL);
+
   const resume = await Resume.findOneAndUpdate(
     { _id: id, userId },
     { $inc: { downloads: 1 } },
@@ -1157,7 +1159,8 @@ export const exportResumePDF = asyncHandler(async (req, res) => {
     resumeData = typeof req.body.resumeData === 'string'
       ? JSON.parse(req.body.resumeData)
       : req.body.resumeData;
-  } catch {
+  } catch (error) {
+    console.error("Error parsing resume data:", error);
     throw new ApiError(400, 'Invalid resume data');
   }
 
@@ -1999,8 +2002,17 @@ export const generateAndSendPDFFromUrl = async (resume, res) => {
 // Owner export — injects current frontend state before page load so unsaved
 // changes are always reflected. Never reads from DB.
 export const generateAndSendPDFFromData = async (resumeData, res) => {
+  const clientUrl = process.env.CLIENT_URL;
+
+  if (!clientUrl?.startsWith('http')) {
+    throw new Error(`CLIENT_URL is invalid: "${clientUrl}"`);
+  }
+
+  // Sanitize: strip any non-serializable values (File, undefined, etc.)
+  const safeResumeData = JSON.parse(JSON.stringify(resumeData));
+
   const browser = await puppeteer.launch({
-    headless: 'new',
+    headless: true,
     args: LAUNCH_ARGS,
   });
 
@@ -2008,18 +2020,19 @@ export const generateAndSendPDFFromData = async (resumeData, res) => {
     const page = await browser.newPage();
     await page.setViewport({ width: 816, height: 1056 });
 
-    // Step 1: Inject resume data into the window object before the page loads.
-    // page.evaluateOnNewDocument runs before any script on the page executes.
+    // Inject BEFORE goto — must be serializable plain object
     await page.evaluateOnNewDocument((data) => {
       window.__RESUME_DATA__ = data;
-    }, resumeData);
-    // Step 2: Navigate to the dedicated render route
-    await page.goto(`${CLIENT_URL}/render`, {
+    }, safeResumeData);
+
+    const targetUrl = `${clientUrl}/render`;
+    console.log('Navigating to:', targetUrl);
+
+    await page.goto(targetUrl, {
       waitUntil: 'networkidle0',
       timeout: 30000,
     });
 
-    // Step 3: Wait for React to finish rendering the resume
     await page
       .waitForSelector('[data-resume-ready]', { timeout: 10000 })
       .catch(() => {});
@@ -2035,9 +2048,7 @@ export const generateAndSendPDFFromData = async (resumeData, res) => {
       margin: { top: '0', right: '0', bottom: '0', left: '0' },
     });
 
-    const filename = `${
-      resumeData.personal_info?.full_name ?? 'Resume'
-    }_Resume.pdf`;
+    const filename = `${resumeData.personal_info?.full_name ?? 'Resume'}_Resume.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Length', pdf.length);

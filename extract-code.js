@@ -23,11 +23,14 @@ const path = require("path");
 // const TARGET_FOLDER = String.raw`E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\LeetLab\Algodrill-Project\algodrill-backend-typescript\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\LeetLab\Algodrill-Project\algodrill-frontend\src`;
-const TARGET_FOLDER = String.raw`e:\My Projects\URL-Shortner-NextJS\src`;
+// const TARGET_FOLDER = String.raw`e:\My Projects\URL-Shortner-NextJS\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\AI-Interview-Coach\aI-interview-coach-backend\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\AI-Interview-Coach\aI-interview-coach-frontend\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\WhatsApp\WhatsApp-Frontend\src`;
 // const TARGET_FOLDER = String.raw`e:\My Projects\WhatsApp\WhatsApp-Backend\src`;
+const TARGET_FOLDER = String.raw`E:\My Projects\WhatsApp-Clone\whatsapp-frontend\src`;
+// const TARGET_FOLDER = String.raw`E:\My Projects\Drive-X\drive-X-backend\src`;
+// const TARGET_FOLDER = String.raw`E:\My Projects\Drive-X\drive-X-frontend\src`;
 
 
 
@@ -81,6 +84,9 @@ const EXCLUDED_EXTENSIONS = new Set([
   ".tsbuildinfo",
   ".json",
   ".yml",
+  ".png",
+  ".jpg",
+  ".jpeg",
 ]);
 
 // Directories excluded only when inside a specific parent directory

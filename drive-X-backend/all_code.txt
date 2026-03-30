@@ -1,0 +1,4445 @@
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\app.ts
+==============================
+
+import express, { Application } from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import path from 'path';
+import { env } from './config/env';
+import { globalRateLimiter } from './middleware/rateLimiter.middleware';
+import { errorHandler, notFoundHandler } from './middleware/error.middleware';
+import { logger } from './utils/logger';
+import apiRoutes from './routes/index';
+
+const app: Application = express();
+
+// Security middleware
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
+
+// CORS
+app.use(cors({
+  origin: env.CORS_ORIGIN,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+// Rate limiting
+app.use(globalRateLimiter);
+
+// Request logging
+if (env.NODE_ENV !== 'test') {
+  app.use(morgan('combined', {
+    stream: { write: (message) => logger.info(message.trim()) },
+  }));
+}
+
+// Body parsing
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Serve static uploads (local storage only)
+if (env.STORAGE_PROVIDER === 'local') {
+  app.use('/uploads', express.static(path.resolve(env.LOCAL_UPLOAD_DIR)));
+}
+
+// API routes
+app.use('/api/v1', apiRoutes);
+
+// 404 handler
+app.use(notFoundHandler);
+
+// Global error handler
+app.use(errorHandler);
+
+export default app;
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\config\database.ts
+==============================
+
+import mongoose from 'mongoose';
+import { env } from './env';
+import { logger } from '../utils/logger';
+
+export const connectDatabase = async (): Promise<void> => {
+  try {
+    mongoose.set('strictQuery', true);
+
+    const conn = await mongoose.connect(env.MONGODB_URI, {
+      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+    });
+
+    logger.info(`✅ MongoDB connected: ${conn.connection.host}`);
+
+    mongoose.connection.on('error', (err) => {
+      logger.error('MongoDB connection error:', err);
+    });
+
+    mongoose.connection.on('disconnected', () => {
+      logger.warn('MongoDB disconnected. Attempting to reconnect...');
+    });
+
+    mongoose.connection.on('reconnected', () => {
+      logger.info('MongoDB reconnected');
+    });
+
+  } catch (error) {
+    logger.error('MongoDB connection failed:', error);
+    process.exit(1);
+  }
+};
+
+export const disconnectDatabase = async (): Promise<void> => {
+  await mongoose.connection.close();
+  logger.info('MongoDB connection closed');
+};
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\config\env.ts
+==============================
+
+import { z } from 'zod';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  PORT: z.string().default('5000').transform(Number),
+  MONGODB_URI: z.string().min(1, 'MongoDB URI is required'),
+  JWT_SECRET: z.string().min(32, 'JWT secret must be at least 32 characters'),
+  JWT_EXPIRES_IN: z.string().default('7d'),
+  JWT_REFRESH_SECRET: z.string().min(32, 'JWT refresh secret must be at least 32 characters').optional(),
+  JWT_REFRESH_EXPIRES_IN: z.string().default('30d'),
+  CORS_ORIGIN: z.string().default('http://localhost:5173'),
+  STORAGE_PROVIDER: z.enum(['s3', 'lightsail', 'cloudinary', 'local']).default('local'),
+  AWS_ACCESS_KEY_ID: z.string().optional(),
+  AWS_SECRET_ACCESS_KEY: z.string().optional(),
+  AWS_REGION: z.string().default('us-east-1'),
+  AWS_S3_BUCKET: z.string().optional(),
+  AWS_ENDPOINT_URL: z.string().optional(),
+  CLOUDINARY_CLOUD_NAME: z.string().optional(),
+  CLOUDINARY_API_KEY: z.string().optional(),
+  CLOUDINARY_API_SECRET: z.string().optional(),
+  LOCAL_UPLOAD_DIR: z.string().default('uploads'),
+  RATE_LIMIT_WINDOW_MS: z.string().default('900000').transform(Number),
+  RATE_LIMIT_MAX: z.string().default('100').transform(Number),
+  MAX_FILE_SIZE: z.string().default('104857600').transform(Number),
+  DEFAULT_STORAGE_QUOTA: z.string().default('5368709120').transform(Number),
+  LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
+  LOG_DIR: z.string().default('logs'),
+});
+
+const parsed = envSchema.safeParse(process.env);
+
+if (!parsed.success) {
+  console.error('❌ Invalid environment variables:', parsed.error.format());
+  process.exit(1);
+}
+
+export const env = parsed.data;
+export type Env = typeof env;
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\controllers\activity.controller.ts
+==============================
+
+import { Request, Response } from 'express';
+import { asyncHandler } from '../utils/asyncHandler';
+import { ApiResponse } from '../utils/apiResponse';
+import { activityService } from '../services/activity.service';
+
+export const getUserActivities = asyncHandler(async (req: Request, res: Response) => {
+  const limit = parseInt(req.query.limit as string) || 50;
+  const action = req.query.action as string | undefined;
+  const activities = await activityService.getUserActivities(req.user!.userId, limit, action);
+  return ApiResponse.ok(res, 'Activities retrieved', activities);
+});
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\controllers\admin.controller.ts
+==============================
+
+import { Request, Response } from 'express';
+import { asyncHandler } from '../utils/asyncHandler';
+import { ApiResponse } from '../utils/apiResponse';
+import { adminService } from '../services/admin.service';
+
+export const getDashboardStats = asyncHandler(async (_req: Request, res: Response) => {
+  const stats = await adminService.getDashboardStats();
+  return ApiResponse.ok(res, 'Dashboard stats retrieved', stats);
+});
+
+export const getAllUsers = asyncHandler(async (req: Request, res: Response) => {
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 20;
+  const result = await adminService.getAllUsers(page, limit);
+  return ApiResponse.ok(res, 'Users retrieved', result.data, result.meta);
+});
+
+export const updateUser = asyncHandler(async (req: Request, res: Response) => {
+  const user = await adminService.updateUser(String(req.params.id), req.body);
+  return ApiResponse.ok(res, 'User updated', user);
+});
+
+export const suspendUser = asyncHandler(async (req: Request, res: Response) => {
+  const { suspended } = req.body;
+  const user = await adminService.suspendUser(String(req.params.id), suspended, req.user!.userId);
+  return ApiResponse.ok(res, `User ${suspended ? 'suspended' : 'activated'}`, user);
+});
+
+export const getAllFiles = asyncHandler(async (req: Request, res: Response) => {
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 50;
+  const result = await adminService.getAllFiles(page, limit);
+  return ApiResponse.ok(res, 'Files retrieved', result.data, result.meta);
+});
+
+export const getAllShareLinks = asyncHandler(async (req: Request, res: Response) => {
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 50;
+  const result = await adminService.getAllShareLinks(page, limit);
+  return ApiResponse.ok(res, 'Share links retrieved', result.data, result.meta);
+});
+
+export const getStorageOverview = asyncHandler(async (_req: Request, res: Response) => {
+  const stats = await adminService.getStorageOverview();
+  return ApiResponse.ok(res, 'Storage overview retrieved', stats);
+});
+
+export const getSettings = asyncHandler(async (_req: Request, res: Response) => {
+  const settings = await adminService.getSettings();
+  return ApiResponse.ok(res, 'Settings retrieved', settings);
+});
+
+export const updateSettings = asyncHandler(async (req: Request, res: Response) => {
+  const settings = await adminService.updateSettings(req.body);
+  return ApiResponse.ok(res, 'Settings updated', settings);
+});
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\controllers\auth.controller.ts
+==============================
+
+import { Request, Response } from 'express';
+import { asyncHandler } from '../utils/asyncHandler';
+import { ApiResponse } from '../utils/apiResponse';
+import { authService } from '../services/auth.service';
+import { RegisterInput, LoginInput, UpdateProfileInput, ChangePasswordInput, UpdateNotificationPreferencesInput } from '../validators/auth.validator';
+
+export const register = asyncHandler(async (req: Request, res: Response) => {
+  const data = req.body as RegisterInput;
+  const result = await authService.register(data, req);
+  return ApiResponse.created(res, 'Registration successful', result);
+});
+
+export const login = asyncHandler(async (req: Request, res: Response) => {
+  const data = req.body as LoginInput;
+  const result = await authService.login(data, req);
+  return ApiResponse.ok(res, 'Login successful', result);
+});
+
+export const getMe = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const user = await authService.getMe(userId);
+  return ApiResponse.ok(res, 'User profile retrieved', user);
+});
+
+export const updateProfile = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const data = req.body as UpdateProfileInput;
+  const user = await authService.updateProfile(userId, data);
+  return ApiResponse.ok(res, 'Profile updated successfully', user);
+});
+
+export const updateNotificationPreferences = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const data = req.body as UpdateNotificationPreferencesInput;
+  const user = await authService.updateNotificationPreferences(userId, data);
+  return ApiResponse.ok(res, 'Notification preferences updated', user);
+});
+
+export const changePassword = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const { currentPassword, newPassword } = req.body as ChangePasswordInput;
+  await authService.changePassword(userId, currentPassword, newPassword);
+  return ApiResponse.ok(res, 'Password changed successfully', null);
+});
+
+export const logout = asyncHandler(async (_req: Request, res: Response) => {
+  // JWT is stateless - client discards the token
+  // For refresh token invalidation, implement a token blocklist with Redis
+  return ApiResponse.ok(res, 'Logged out successfully', null);
+});
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\controllers\comment.controller.ts
+==============================
+
+import { Request, Response } from 'express';
+import { asyncHandler } from '../utils/asyncHandler';
+import { ApiResponse } from '../utils/apiResponse';
+import { commentService } from '../services/comment.service';
+import { userRepository } from '../repositories/user.repository';
+
+export const getComments = asyncHandler(async (req: Request, res: Response) => {
+  const comments = await commentService.getComments(String(req.params.fileId), req.user!.userId);
+  return ApiResponse.ok(res, 'Comments retrieved', comments);
+});
+
+export const addComment = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const user = await userRepository.findById(userId);
+  const comment = await commentService.addComment(
+    String(req.params.fileId), userId, user?.name || 'Unknown', req.body.text, user?.avatar
+  );
+  return ApiResponse.created(res, 'Comment added', comment);
+});
+
+export const deleteComment = asyncHandler(async (req: Request, res: Response) => {
+  await commentService.deleteComment(String(req.params.commentId), req.user!.userId);
+  return ApiResponse.ok(res, 'Comment deleted', null);
+});
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\controllers\file.controller.ts
+==============================
+
+import { Request, Response } from 'express';
+import { asyncHandler } from '../utils/asyncHandler';
+import { ApiResponse } from '../utils/apiResponse';
+import { fileService } from '../services/file.service';
+import { ApiError } from '../utils/apiError';
+import {
+  CreateFolderInput,
+  RenameInput,
+  MoveInput,
+  LabelInput,
+  FileQueryInput,
+} from '../validators/file.validator';
+
+export const uploadFile = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.file) throw ApiError.badRequest('No file provided');
+  const { userId, userName } = { userId: req.user!.userId, userName: '' };
+  const user = await import('../repositories/user.repository').then(m => m.userRepository.findById(userId));
+  const file = await fileService.uploadFile(
+    {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      buffer: req.file.buffer,
+      size: req.file.size,
+    },
+    userId,
+    user?.name || 'Unknown',
+    req.body.parentId || null
+  );
+  return ApiResponse.created(res, 'File uploaded successfully', file);
+});
+
+export const uploadMultipleFiles = asyncHandler(async (req: Request, res: Response) => {
+  const files = req.files as Express.Multer.File[];
+  if (!files || files.length === 0) throw ApiError.badRequest('No files provided');
+
+  const userId = req.user!.userId;
+  const user = await import('../repositories/user.repository').then(m => m.userRepository.findById(userId));
+  const userName = user?.name || 'Unknown';
+
+  const results = await Promise.all(
+    files.map((f) =>
+      fileService.uploadFile(
+        { originalname: f.originalname, mimetype: f.mimetype, buffer: f.buffer, size: f.size },
+        userId, userName, req.body.parentId || null
+      )
+    )
+  );
+  return ApiResponse.created(res, `${results.length} files uploaded successfully`, results);
+});
+
+export const getFiles = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const query = req.query as FileQueryInput;
+
+  const files = await fileService.getFiles({
+    ownerId: userId,
+    parentId: query.parentId !== undefined ? (query.parentId || null) : undefined,
+    search: query.search,
+    filterType: query.filterType as any,
+    sortBy: query.sortBy as any,
+    sortOrder: query.sortOrder as any,
+  });
+  return ApiResponse.ok(res, 'Files retrieved', files);
+});
+
+export const getFileById = asyncHandler(async (req: Request, res: Response) => {
+  const file = await fileService.getFileById(String(req.params.id), req.user!.userId);
+  return ApiResponse.ok(res, 'File retrieved', file);
+});
+
+export const createFolder = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const { name, parentId } = req.body as CreateFolderInput;
+  const user = await import('../repositories/user.repository').then(m => m.userRepository.findById(userId));
+  const folder = await fileService.createFolder(name, userId, user?.name || 'Unknown', parentId);
+  return ApiResponse.created(res, 'Folder created successfully', folder);
+});
+
+export const renameFile = asyncHandler(async (req: Request, res: Response) => {
+  const { name } = req.body as RenameInput;
+  const file = await fileService.renameFile(String(req.params.id), name, req.user!.userId);
+  return ApiResponse.ok(res, 'File renamed successfully', file);
+});
+
+export const moveFile = asyncHandler(async (req: Request, res: Response) => {
+  const { targetFolderId } = req.body as MoveInput;
+  const file = await fileService.moveFile(String(req.params.id), targetFolderId, req.user!.userId);
+  return ApiResponse.ok(res, 'File moved successfully', file);
+});
+
+export const copyFile = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const user = await import('../repositories/user.repository').then(m => m.userRepository.findById(userId));
+  const file = await fileService.copyFile(
+    String(req.params.id),
+    req.body.targetFolderId || null,
+    userId,
+    user?.name || 'Unknown'
+  );
+  return ApiResponse.created(res, 'File copied successfully', file);
+});
+
+export const trashFile = asyncHandler(async (req: Request, res: Response) => {
+  const file = await fileService.trashFile(String(req.params.id), req.user!.userId);
+  return ApiResponse.ok(res, 'File moved to trash', file);
+});
+
+export const restoreFile = asyncHandler(async (req: Request, res: Response) => {
+  const file = await fileService.restoreFile(String(req.params.id), req.user!.userId);
+  return ApiResponse.ok(res, 'File restored successfully', file);
+});
+
+export const deleteFilePermanently = asyncHandler(async (req: Request, res: Response) => {
+  await fileService.deleteFilePermanently(String(req.params.id), req.user!.userId);
+  return ApiResponse.ok(res, 'File permanently deleted', null);
+});
+
+export const toggleStar = asyncHandler(async (req: Request, res: Response) => {
+  const { starred } = req.body;
+  const file = await fileService.toggleStar(String(req.params.id), starred, req.user!.userId);
+  return ApiResponse.ok(res, `File ${starred ? 'starred' : 'unstarred'}`, file);
+});
+
+export const labelFile = asyncHandler(async (req: Request, res: Response) => {
+  const { label } = req.body as LabelInput;
+  const file = await fileService.labelFile(String(req.params.id), label, req.user!.userId);
+  return ApiResponse.ok(res, 'File label updated', file);
+});
+
+export const getDownloadUrl = asyncHandler(async (req: Request, res: Response) => {
+  const url = await fileService.getDownloadUrl(String(req.params.id), req.user!.userId);
+  return ApiResponse.ok(res, 'Download URL generated', { url });
+});
+
+export const getPresignedUploadUrl = asyncHandler(async (req: Request, res: Response) => {
+  const { filename, mimeType } = req.body;
+  const result = await fileService.getPresignedUploadUrl(filename, mimeType, req.user!.userId);
+  return ApiResponse.ok(res, 'Presigned URL generated', result);
+});
+
+export const bulkTrash = asyncHandler(async (req: Request, res: Response) => {
+  const { ids } = req.body as { ids: string[] };
+  if (!Array.isArray(ids) || ids.length === 0) throw ApiError.badRequest('ids array required');
+  const results = await Promise.all(ids.map((id) => fileService.trashFile(id, req.user!.userId)));
+  return ApiResponse.ok(res, `${results.length} files moved to trash`, results);
+});
+
+export const bulkRestore = asyncHandler(async (req: Request, res: Response) => {
+  const { ids } = req.body as { ids: string[] };
+  if (!Array.isArray(ids) || ids.length === 0) throw ApiError.badRequest('ids array required');
+  const results = await Promise.all(ids.map((id) => fileService.restoreFile(id, req.user!.userId)));
+  return ApiResponse.ok(res, `${results.length} files restored`, results);
+});
+
+export const bulkStar = asyncHandler(async (req: Request, res: Response) => {
+  const { ids, starred } = req.body as { ids: string[]; starred: boolean };
+  if (!Array.isArray(ids) || ids.length === 0) throw ApiError.badRequest('ids array required');
+  const results = await Promise.all(ids.map((id) => fileService.toggleStar(id, starred, req.user!.userId)));
+  return ApiResponse.ok(res, `${results.length} files updated`, results);
+});
+
+export const getRecentFiles = asyncHandler(async (req: Request, res: Response) => {
+  const files = await fileService.getRecentFiles(req.user!.userId);
+  return ApiResponse.ok(res, 'Recent files retrieved', files);
+});
+
+export const getStarredFiles = asyncHandler(async (req: Request, res: Response) => {
+  const files = await fileService.getStarredFiles(req.user!.userId);
+  return ApiResponse.ok(res, 'Starred files retrieved', files);
+});
+
+export const getTrashedFiles = asyncHandler(async (req: Request, res: Response) => {
+  const files = await fileService.getTrashedFiles(req.user!.userId);
+  return ApiResponse.ok(res, 'Trashed files retrieved', files);
+});
+
+export const getSharedFiles = asyncHandler(async (req: Request, res: Response) => {
+  const files = await fileService.getSharedFiles(req.user!.userId);
+  return ApiResponse.ok(res, 'Shared files retrieved', files);
+});
+
+export const getFolderTree = asyncHandler(async (req: Request, res: Response) => {
+  const folders = await fileService.getFolderTree(req.user!.userId);
+  return ApiResponse.ok(res, 'Folder tree retrieved', folders);
+});
+
+export const getStorageInfo = asyncHandler(async (req: Request, res: Response) => {
+  const info = await fileService.getStorageInfo(req.user!.userId);
+  return ApiResponse.ok(res, 'Storage info retrieved', info);
+});
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\controllers\share.controller.ts
+==============================
+
+import { Request, Response } from 'express';
+import { asyncHandler } from '../utils/asyncHandler';
+import { ApiResponse } from '../utils/apiResponse';
+import { shareService } from '../services/share.service';
+import { ShareWithUsersInput, GenerateShareLinkInput, UpdateSharedUserPermissionInput } from '../validators/share.validator';
+
+export const shareWithUsers = asyncHandler(async (req: Request, res: Response) => {
+  const data = req.body as ShareWithUsersInput;
+  const file = await shareService.shareWithUsers(String(req.params.id), data, req.user!.userId);
+  return ApiResponse.ok(res, 'File shared successfully', file);
+});
+
+export const generateShareLink = asyncHandler(async (req: Request, res: Response) => {
+  const { permission, expiresAt } = req.body as GenerateShareLinkInput;
+  const expiry = expiresAt ? new Date(expiresAt) : null;
+  const link = await shareService.generateShareLink(String(req.params.id), permission, req.user!.userId, expiry);
+  return ApiResponse.created(res, 'Share link generated', link);
+});
+
+export const getPublicShareLink = asyncHandler(async (req: Request, res: Response) => {
+  const result = await shareService.getShareLink(String(req.params.token));
+  return ApiResponse.ok(res, 'Share link retrieved', result);
+});
+
+export const toggleShareLink = asyncHandler(async (req: Request, res: Response) => {
+  const link = await shareService.toggleShareLink(String(req.params.linkId), req.user!.userId);
+  return ApiResponse.ok(res, 'Share link toggled', link);
+});
+
+export const revokeShareLink = asyncHandler(async (req: Request, res: Response) => {
+  await shareService.revokeShareLink(String(req.params.linkId), req.user!.userId);
+  return ApiResponse.ok(res, 'Share link revoked', null);
+});
+
+export const getFileShareLinks = asyncHandler(async (req: Request, res: Response) => {
+  const links = await shareService.getFileShareLinks(String(req.params.id), req.user!.userId);
+  return ApiResponse.ok(res, 'Share links retrieved', links);
+});
+
+export const removeSharedUser = asyncHandler(async (req: Request, res: Response) => {
+  const file = await shareService.removeSharedUser(
+    String(req.params.id),
+    decodeURIComponent(String(req.params.email)),
+    req.user!.userId
+  );
+  return ApiResponse.ok(res, 'User access removed', file);
+});
+
+export const updateSharedUserPermission = asyncHandler(async (req: Request, res: Response) => {
+  const { permission } = req.body as UpdateSharedUserPermissionInput;
+  const file = await shareService.updateSharedUserPermission(
+    String(req.params.id),
+    decodeURIComponent(String(req.params.email)),
+    permission,
+    req.user!.userId
+  );
+  return ApiResponse.ok(res, 'Permission updated', file);
+});
+
+export const getPublicDownloadUrl = asyncHandler(async (req: Request, res: Response) => {
+  const url = await shareService.getPublicDownloadUrl(String(req.params.token));
+  return ApiResponse.ok(res, 'Download URL generated', { url });
+});
+
+export const downloadPublicFile = asyncHandler(async (req: Request, res: Response) => {
+  const url = await shareService.getPublicDownloadUrl(String(req.params.token));
+  return res.redirect(302, url);
+});
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\middleware\admin.middleware.ts
+==============================
+
+import { Request, Response, NextFunction } from 'express';
+import { ApiError } from '../utils/apiError';
+
+export const requireAdmin = (req: Request, _res: Response, next: NextFunction): void => {
+  if (!req.user) {
+    throw ApiError.unauthorized();
+  }
+
+  if (req.user.role !== 'admin') {
+    throw ApiError.forbidden('Admin access required');
+  }
+
+  next();
+};
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\middleware\auth.middleware.ts
+==============================
+
+import { Request, Response, NextFunction } from 'express';
+import { asyncHandler } from '../utils/asyncHandler';
+import { verifyAccessToken } from '../utils/jwt.utils';
+import { ApiError } from '../utils/apiError';
+import { User } from '../models/User.model';
+
+export const authenticate = asyncHandler(async (req: Request, _res: Response, next: NextFunction) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    throw ApiError.unauthorized('Authentication token is required');
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  if (!token) {
+    throw ApiError.unauthorized('Authentication token is required');
+  }
+
+  const payload = verifyAccessToken(token);
+
+  // Verify user still exists and is active
+  const user = await User.findById(payload.userId).select('-password');
+
+  if (!user) {
+    throw ApiError.unauthorized('User no longer exists');
+  }
+
+  if (user.status === 'suspended') {
+    throw ApiError.forbidden('Your account has been suspended');
+  }
+
+  req.user = {
+    userId: user._id.toString(),
+    email: user.email,
+    role: user.role,
+  };
+
+  next();
+});
+
+export const optionalAuthenticate = asyncHandler(async (req: Request, _res: Response, next: NextFunction) => {
+  const authHeader = req.headers.authorization;
+
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.split(' ')[1];
+    try {
+      const payload = verifyAccessToken(token);
+      const user = await User.findById(payload.userId).select('-password');
+      if (user && user.status === 'active') {
+        req.user = {
+          userId: user._id.toString(),
+          email: user.email,
+          role: user.role,
+        };
+      }
+    } catch {
+      // Ignore auth errors for optional authentication
+    }
+  }
+
+  next();
+});
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\middleware\error.middleware.ts
+==============================
+
+import { Request, Response, NextFunction } from 'express';
+import { ZodError } from 'zod';
+import { ApiError } from '../utils/apiError';
+import { logger } from '../utils/logger';
+import { env } from '../config/env';
+
+interface ErrorResponse {
+  success: false;
+  statusCode: number;
+  message: string;
+  errors?: unknown[];
+  stack?: string;
+}
+
+export const errorHandler = (
+  err: Error,
+  req: Request,
+  res: Response,
+  _next: NextFunction
+): void => {
+  logger.error({
+    message: err.message,
+    stack: err.stack,
+    path: req.path,
+    method: req.method,
+    ip: req.ip,
+  });
+
+  let response: ErrorResponse;
+
+  if (err instanceof ApiError) {
+    response = {
+      success: false,
+      statusCode: err.statusCode,
+      message: err.message,
+      ...(err.errors.length > 0 && { errors: err.errors }),
+    };
+
+    if (env.NODE_ENV === 'development') {
+      response.stack = err.stack;
+    }
+
+    res.status(err.statusCode).json(response);
+    return;
+  }
+
+  if (err instanceof ZodError) {
+    const errors = err.errors.map((e) => ({
+      field: e.path.join('.'),
+      message: e.message,
+    }));
+
+    response = {
+      success: false,
+      statusCode: 400,
+      message: 'Validation failed',
+      errors,
+    };
+
+    res.status(400).json(response);
+    return;
+  }
+
+  // Mongoose validation error
+  if (err.name === 'ValidationError') {
+    const errors = Object.values((err as unknown as { errors: Record<string, { message: string }> }).errors).map(
+      (e) => e.message
+    );
+
+    response = {
+      success: false,
+      statusCode: 400,
+      message: 'Validation failed',
+      errors,
+    };
+
+    res.status(400).json(response);
+    return;
+  }
+
+  // Mongoose duplicate key error
+  if ((err as NodeJS.ErrnoException).code === '11000') {
+    const field = Object.keys((err as unknown as { keyPattern: Record<string, number> }).keyPattern || {})[0];
+    response = {
+      success: false,
+      statusCode: 409,
+      message: `${field || 'Field'} already exists`,
+    };
+
+    res.status(409).json(response);
+    return;
+  }
+
+  // Mongoose CastError (invalid ObjectId)
+  if (err.name === 'CastError') {
+    response = {
+      success: false,
+      statusCode: 400,
+      message: 'Invalid resource identifier',
+    };
+
+    res.status(400).json(response);
+    return;
+  }
+
+  // JWT errors
+  if (err.name === 'JsonWebTokenError') {
+    response = {
+      success: false,
+      statusCode: 401,
+      message: 'Invalid token',
+    };
+
+    res.status(401).json(response);
+    return;
+  }
+
+  if (err.name === 'TokenExpiredError') {
+    response = {
+      success: false,
+      statusCode: 401,
+      message: 'Token expired',
+    };
+
+    res.status(401).json(response);
+    return;
+  }
+
+  // Default: internal server error
+  const statusCode = 500;
+  response = {
+    success: false,
+    statusCode,
+    message: env.NODE_ENV === 'production' ? 'Internal server error' : err.message,
+  };
+
+  if (env.NODE_ENV === 'development') {
+    response.stack = err.stack;
+  }
+
+  res.status(statusCode).json(response);
+};
+
+export const notFoundHandler = (req: Request, _res: Response, next: NextFunction): void => {
+  next(ApiError.notFound(`Route ${req.originalUrl} not found`));
+};
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\middleware\rateLimiter.middleware.ts
+==============================
+
+import rateLimit from 'express-rate-limit';
+import { env } from '../config/env';
+import { ApiError } from '../utils/apiError';
+
+export const globalRateLimiter = rateLimit({
+  windowMs: env.RATE_LIMIT_WINDOW_MS,
+  max: env.RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_req, _res, next) => {
+    next(new ApiError(429, 'Too many requests, please try again later.'));
+  },
+});
+
+export const authRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_req, _res, next) => {
+    next(new ApiError(429, 'Too many authentication attempts, please try again later.'));
+  },
+});
+
+export const uploadRateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_req, _res, next) => {
+    next(new ApiError(429, 'Upload rate limit exceeded.'));
+  },
+});
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\middleware\upload.middleware.ts
+==============================
+
+import multer from 'multer';
+import path from 'path';
+import { Request } from 'express';
+import { env } from '../config/env';
+import { ApiError } from '../utils/apiError';
+
+const ALLOWED_MIME_TYPES = [
+  'image/jpeg', 'image/png', 'image/gif', 'image/svg+xml', 'image/webp',
+  'video/mp4', 'video/mpeg', 'video/quicktime', 'video/webm',
+  'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/webm',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/zip',
+  'application/x-zip-compressed',
+  'text/plain',
+  'text/csv',
+  'application/json',
+  'text/html',
+];
+
+const fileFilter = (
+  _req: Request,
+  file: Express.Multer.File,
+  callback: multer.FileFilterCallback
+): void => {
+  if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+    callback(null, true);
+  } else {
+    callback(new ApiError(400, `File type ${file.mimetype} is not allowed`));
+  }
+};
+
+// Use memory storage - buffer sent to storage provider
+const storage = multer.memoryStorage();
+
+export const upload = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: env.MAX_FILE_SIZE,
+    files: 10, // max 10 files per request
+  },
+});
+
+export const uploadSingle = upload.single('file');
+export const uploadMultiple = upload.array('files', 10);
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\middleware\validate.middleware.ts
+==============================
+
+import { Request, Response, NextFunction } from 'express';
+import { ZodSchema, ZodError } from 'zod';
+import { ApiError } from '../utils/apiError';
+
+type ValidationTarget = 'body' | 'query' | 'params';
+
+export const validate = (schema: ZodSchema, target: ValidationTarget = 'body') => {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    try {
+      const parsed = schema.parse(req[target]);
+      req[target] = parsed;
+      next();
+    } catch (error) {
+      if (error instanceof ZodError) {
+        const errors = error.errors.map((e) => ({
+          field: e.path.join('.'),
+          message: e.message,
+        }));
+        next(ApiError.badRequest('Validation failed', errors));
+      } else {
+        next(error);
+      }
+    }
+  };
+};
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\models\Activity.model.ts
+==============================
+
+import mongoose, { Document, Schema } from 'mongoose';
+import { ActivityAction } from '../types/common.types';
+
+export interface IActivity extends Document {
+  _id: mongoose.Types.ObjectId;
+  userId: mongoose.Types.ObjectId;
+  userName: string;
+  action: ActivityAction;
+  targetId?: mongoose.Types.ObjectId;
+  targetName: string;
+  targetType: string;
+  details?: string;
+  ipAddress?: string;
+  userAgent?: string;
+  createdAt: Date;
+}
+
+const activitySchema = new Schema<IActivity>(
+  {
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    userName: {
+      type: String,
+      required: true,
+    },
+    action: {
+      type: String,
+      enum: [
+        'upload', 'download', 'share', 'rename', 'move', 'delete',
+        'restore', 'create_folder', 'star', 'unstar', 'trash', 'copy',
+        'label', 'login', 'register',
+      ],
+      required: true,
+    },
+    targetId: {
+      type: Schema.Types.ObjectId,
+      ref: 'File',
+    },
+    targetName: {
+      type: String,
+      required: true,
+    },
+    targetType: {
+      type: String,
+      default: 'file',
+    },
+    details: {
+      type: String,
+    },
+    ipAddress: {
+      type: String,
+    },
+    userAgent: {
+      type: String,
+    },
+  },
+  {
+    timestamps: true,
+    versionKey: false,
+    // Only keep createdAt, not updatedAt
+    toJSON: {
+      transform: (_doc: unknown, ret: Record<string, unknown>) => {
+        delete ret.updatedAt;
+        return ret;
+      },
+    },
+  }
+);
+
+activitySchema.index({ userId: 1, createdAt: -1 });
+activitySchema.index({ createdAt: -1 });
+// Auto delete activities older than 90 days
+activitySchema.index({ createdAt: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 });
+
+export const Activity = mongoose.model<IActivity>('Activity', activitySchema);
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\models\Comment.model.ts
+==============================
+
+import mongoose, { Document, Schema } from 'mongoose';
+
+export interface IComment extends Document {
+  _id: mongoose.Types.ObjectId;
+  fileId: mongoose.Types.ObjectId;
+  userId: mongoose.Types.ObjectId;
+  userName: string;
+  userAvatar?: string;
+  text: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const commentSchema = new Schema<IComment>(
+  {
+    fileId: {
+      type: Schema.Types.ObjectId,
+      ref: 'File',
+      required: true,
+    },
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    userName: {
+      type: String,
+      required: true,
+    },
+    userAvatar: {
+      type: String,
+    },
+    text: {
+      type: String,
+      required: [true, 'Comment text is required'],
+      trim: true,
+      maxlength: [2000, 'Comment cannot exceed 2000 characters'],
+    },
+  },
+  {
+    timestamps: true,
+    versionKey: false,
+  }
+);
+
+commentSchema.index({ fileId: 1, createdAt: -1 });
+commentSchema.index({ userId: 1 });
+
+export const Comment = mongoose.model<IComment>('Comment', commentSchema);
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\models\File.model.ts
+==============================
+
+import mongoose, { Document, Schema, Model } from 'mongoose';
+import { FileLabel } from '../types/common.types';
+
+export interface ISharedUser {
+  userId: mongoose.Types.ObjectId;
+  email: string;
+  name: string;
+  permission: 'viewer' | 'commenter' | 'editor';
+  sharedAt: Date;
+}
+
+export interface IFile extends Document {
+  _id: mongoose.Types.ObjectId;
+  name: string;
+  type: string;
+  mimeType: string;
+  size: number;
+  storageKey: string;
+  url: string;
+  thumbnailUrl?: string;
+  parentId: mongoose.Types.ObjectId | null;
+  ownerId: mongoose.Types.ObjectId;
+  ownerName: string;
+  isFolder: boolean;
+  starred: boolean;
+  trashed: boolean;
+  trashedAt?: Date;
+  label?: FileLabel | null;
+  sharedWith: ISharedUser[];
+  isPublic: boolean;
+  accessedAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const sharedUserSchema = new Schema<ISharedUser>(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    email: { type: String, required: true, lowercase: true },
+    name: { type: String, required: true },
+    permission: {
+      type: String,
+      enum: ['viewer', 'commenter', 'editor'],
+      default: 'viewer',
+    },
+    sharedAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const fileSchema = new Schema<IFile>(
+  {
+    name: {
+      type: String,
+      required: [true, 'File name is required'],
+      trim: true,
+      maxlength: [255, 'File name cannot exceed 255 characters'],
+    },
+    type: {
+      type: String,
+      required: true,
+      default: 'other',
+    },
+    mimeType: {
+      type: String,
+      default: 'application/octet-stream',
+    },
+    size: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    storageKey: {
+      type: String,
+      default: '',
+    },
+    url: {
+      type: String,
+      default: '',
+    },
+    thumbnailUrl: {
+      type: String,
+    },
+    parentId: {
+      type: Schema.Types.ObjectId,
+      ref: 'File',
+      default: null,
+    },
+    ownerId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    ownerName: {
+      type: String,
+      required: true,
+    },
+    isFolder: {
+      type: Boolean,
+      default: false,
+    },
+    starred: {
+      type: Boolean,
+      default: false,
+    },
+    trashed: {
+      type: Boolean,
+      default: false,
+    },
+    trashedAt: {
+      type: Date,
+    },
+    label: {
+      type: String,
+      enum: ['red', 'orange', 'yellow', 'green', 'blue', 'purple', null],
+      default: null,
+    },
+    sharedWith: {
+      type: [sharedUserSchema],
+      default: [],
+    },
+    isPublic: {
+      type: Boolean,
+      default: false,
+    },
+    accessedAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  {
+    timestamps: true,
+    versionKey: false,
+  }
+);
+
+fileSchema.index({ ownerId: 1, parentId: 1, trashed: 1 });
+fileSchema.index({ ownerId: 1, starred: 1, trashed: 1 });
+fileSchema.index({ ownerId: 1, trashed: 1, trashedAt: 1 });
+fileSchema.index({ 'sharedWith.userId': 1 });
+fileSchema.index({ ownerId: 1, accessedAt: -1 });
+fileSchema.index({ name: 'text' });
+fileSchema.index({ ownerId: 1, type: 1 });
+// Auto-delete trashed files 30 days after they were trashed
+fileSchema.index({ trashedAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60, partialFilterExpression: { trashed: true } });
+
+// Virtual for shared status
+fileSchema.virtual('shared').get(function (this: IFile) {
+  return this.sharedWith.length > 0 || this.isPublic;
+});
+
+fileSchema.set('toJSON', { virtuals: true });
+fileSchema.set('toObject', { virtuals: true });
+
+export const File = mongoose.model<IFile>('File', fileSchema);
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\models\ShareLink.model.ts
+==============================
+
+import mongoose, { Document, Schema } from 'mongoose';
+import { SharePermission } from '../types/common.types';
+
+export interface IShareLink extends Document {
+  _id: mongoose.Types.ObjectId;
+  fileId: mongoose.Types.ObjectId;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  createdBy: mongoose.Types.ObjectId;
+  creatorName: string;
+  creatorEmail: string;
+  permission: SharePermission;
+  active: boolean;
+  token: string;
+  expiresAt?: Date | null;
+  accessCount: number;
+  lastAccessedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const shareLinkSchema = new Schema<IShareLink>(
+  {
+    fileId: {
+      type: Schema.Types.ObjectId,
+      ref: 'File',
+      required: true,
+    },
+    fileName: {
+      type: String,
+      required: true,
+    },
+    fileType: {
+      type: String,
+      required: true,
+    },
+    fileSize: {
+      type: Number,
+      default: 0,
+    },
+    createdBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    creatorName: {
+      type: String,
+      required: true,
+    },
+    creatorEmail: {
+      type: String,
+      required: true,
+      lowercase: true,
+    },
+    permission: {
+      type: String,
+      enum: ['view', 'edit', 'restricted'],
+      default: 'view',
+    },
+    active: {
+      type: Boolean,
+      default: true,
+    },
+    token: {
+      type: String,
+      required: true,
+      unique: true,
+    },
+    expiresAt: {
+      type: Date,
+      default: null,
+    },
+    accessCount: {
+      type: Number,
+      default: 0,
+    },
+    lastAccessedAt: {
+      type: Date,
+    },
+  },
+  {
+    timestamps: true,
+    versionKey: false,
+  }
+);
+
+shareLinkSchema.index({ token: 1 });
+shareLinkSchema.index({ fileId: 1 });
+shareLinkSchema.index({ createdBy: 1 });
+shareLinkSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0, sparse: true });
+
+export const ShareLink = mongoose.model<IShareLink>('ShareLink', shareLinkSchema);
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\models\SystemSettings.model.ts
+==============================
+
+import mongoose, { Document, Schema } from 'mongoose';
+
+export interface ISystemSettings extends Document {
+  allowPublicSharing: boolean;
+  allowRegistration: boolean;
+  enableFileVersioning: boolean;
+  defaultStorageQuotaGB: number;
+  bannerMessage: string;
+  showBanner: boolean;
+  updatedAt: Date;
+}
+
+const systemSettingsSchema = new Schema<ISystemSettings>(
+  {
+    allowPublicSharing: { type: Boolean, default: true },
+    allowRegistration: { type: Boolean, default: true },
+    enableFileVersioning: { type: Boolean, default: false },
+    defaultStorageQuotaGB: { type: Number, default: 15, min: 1, max: 1000 },
+    bannerMessage: { type: String, default: '', maxlength: 500 },
+    showBanner: { type: Boolean, default: false },
+  },
+  { timestamps: true, versionKey: false }
+);
+
+export const SystemSettings = mongoose.model<ISystemSettings>('SystemSettings', systemSettingsSchema);
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\models\User.model.ts
+==============================
+
+import mongoose, { Document, Schema, Model } from 'mongoose';
+import { UserRole } from '../types/common.types';
+
+export interface INotificationPreferences {
+  notifyUploads: boolean;
+  notifyShares: boolean;
+  notifyComments: boolean;
+  emailDigest: 'never' | 'daily' | 'weekly' | 'monthly';
+}
+
+export interface IUser extends Document {
+  _id: mongoose.Types.ObjectId;
+  name: string;
+  email: string;
+  password: string;
+  role: UserRole;
+  avatar: string;
+  storageUsed: number;
+  storageQuota: number;
+  status: 'active' | 'suspended';
+  lastLogin?: Date;
+  notificationPreferences: INotificationPreferences;
+  createdAt: Date;
+  updatedAt: Date;
+  toSafeObject(): Omit<IUser, 'password'>;
+}
+
+export interface IUserMethods {
+  toSafeObject(): Omit<IUser, 'password'>;
+}
+
+type UserModel = Model<IUser, Record<string, never>, IUserMethods>;
+
+const userSchema = new Schema<IUser, UserModel, IUserMethods>(
+  {
+    name: {
+      type: String,
+      required: [true, 'Name is required'],
+      trim: true,
+      minlength: [2, 'Name must be at least 2 characters'],
+      maxlength: [100, 'Name cannot exceed 100 characters'],
+    },
+    email: {
+      type: String,
+      required: [true, 'Email is required'],
+      unique: true,
+      lowercase: true,
+      trim: true,
+      match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please provide a valid email'],
+    },
+    password: {
+      type: String,
+      required: [true, 'Password is required'],
+      minlength: [8, 'Password must be at least 8 characters'],
+      select: false,
+    },
+    role: {
+      type: String,
+      enum: ['user', 'admin'],
+      default: 'user',
+    },
+    avatar: {
+      type: String,
+      default: '',
+    },
+    storageUsed: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    storageQuota: {
+      type: Number,
+      default: 5 * 1024 * 1024 * 1024, // 5GB
+    },
+    status: {
+      type: String,
+      enum: ['active', 'suspended'],
+      default: 'active',
+    },
+    lastLogin: {
+      type: Date,
+    },
+    notificationPreferences: {
+      type: new Schema({
+        notifyUploads: { type: Boolean, default: true },
+        notifyShares: { type: Boolean, default: true },
+        notifyComments: { type: Boolean, default: false },
+        emailDigest: { type: String, enum: ['never', 'daily', 'weekly', 'monthly'], default: 'weekly' },
+      }, { _id: false }),
+      default: () => ({ notifyUploads: true, notifyShares: true, notifyComments: false, emailDigest: 'weekly' }),
+    },
+  },
+  {
+    timestamps: true,
+    versionKey: false,
+  }
+);
+
+userSchema.index({ email: 1 });
+userSchema.index({ role: 1, status: 1 });
+
+userSchema.methods.toSafeObject = function (this: IUser) {
+  const obj = this.toObject();
+  delete (obj as { password?: string }).password;
+  return obj;
+};
+
+export const User = mongoose.model<IUser, UserModel>('User', userSchema);
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\repositories\activity.repository.ts
+==============================
+
+import mongoose from 'mongoose';
+import { Activity, IActivity } from '../models/Activity.model';
+import { BaseRepository } from './base.repository';
+import { ActivityAction } from '../types/common.types';
+import { Request } from 'express';
+
+export interface CreateActivityData {
+  userId: string;
+  userName: string;
+  action: ActivityAction;
+  targetId?: string;
+  targetName: string;
+  targetType?: string;
+  details?: string;
+  req?: Request;
+}
+
+export class ActivityRepository extends BaseRepository<IActivity> {
+  constructor() {
+    super(Activity);
+  }
+
+  async createActivity(data: CreateActivityData): Promise<IActivity> {
+    return Activity.create({
+      userId: new mongoose.Types.ObjectId(data.userId),
+      userName: data.userName,
+      action: data.action,
+      ...(data.targetId && { targetId: new mongoose.Types.ObjectId(data.targetId) }),
+      targetName: data.targetName,
+      targetType: data.targetType || 'file',
+      details: data.details,
+      ipAddress: data.req?.ip,
+      userAgent: data.req?.headers['user-agent'],
+    });
+  }
+
+  async findByUser(userId: string, limit = 50, action?: string): Promise<IActivity[]> {
+    const filter: Record<string, unknown> = { userId: new mongoose.Types.ObjectId(userId) };
+    if (action) {
+      const actions = action.split(',').map((a) => a.trim()).filter(Boolean);
+      filter.action = actions.length === 1 ? actions[0] : { $in: actions };
+    }
+    return Activity.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .exec();
+  }
+
+  async findAll(limit = 100): Promise<IActivity[]> {
+    return Activity.find({})
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .exec();
+  }
+}
+
+export const activityRepository = new ActivityRepository();
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\repositories\base.repository.ts
+==============================
+
+import { Document, Model, FilterQuery, UpdateQuery, QueryOptions } from 'mongoose';
+import { PaginationQuery, PaginationMeta } from '../types/common.types';
+
+export abstract class BaseRepository<T extends Document> {
+  protected model: Model<T>;
+
+  constructor(model: Model<T>) {
+    this.model = model;
+  }
+
+  async findById(id: string): Promise<T | null> {
+    return this.model.findById(id).exec();
+  }
+
+  async findOne(filter: FilterQuery<T>): Promise<T | null> {
+    return this.model.findOne(filter).exec();
+  }
+
+  async find(filter: FilterQuery<T>, options?: QueryOptions<T>): Promise<T[]> {
+    return this.model.find(filter, null, options).exec();
+  }
+
+  async create(data: Partial<T>): Promise<T> {
+    return this.model.create(data);
+  }
+
+  async updateById(id: string, update: UpdateQuery<T>): Promise<T | null> {
+    return this.model.findByIdAndUpdate(id, update, { new: true, runValidators: true }).exec();
+  }
+
+  async deleteById(id: string): Promise<boolean> {
+    const result = await this.model.findByIdAndDelete(id).exec();
+    return !!result;
+  }
+
+  async count(filter: FilterQuery<T>): Promise<number> {
+    return this.model.countDocuments(filter).exec();
+  }
+
+  async paginate(
+    filter: FilterQuery<T>,
+    pagination: PaginationQuery,
+    sort: Record<string, 1 | -1> = { createdAt: -1 }
+  ): Promise<{ data: T[]; meta: PaginationMeta }> {
+    const page = Math.max(1, pagination.page || 1);
+    const limit = Math.min(100, Math.max(1, pagination.limit || 20));
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.model.find(filter).sort(sort).skip(skip).limit(limit).exec(),
+      this.model.countDocuments(filter).exec(),
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
+    };
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\repositories\comment.repository.ts
+==============================
+
+import mongoose from 'mongoose';
+import { Comment, IComment } from '../models/Comment.model';
+import { BaseRepository } from './base.repository';
+
+export class CommentRepository extends BaseRepository<IComment> {
+  constructor() {
+    super(Comment);
+  }
+
+  async findByFileId(fileId: string): Promise<IComment[]> {
+    return Comment.find({ fileId: new mongoose.Types.ObjectId(fileId) })
+      .sort({ createdAt: -1 })
+      .exec();
+  }
+
+  async findByIdAndOwner(commentId: string, userId: string): Promise<IComment | null> {
+    return Comment.findOne({
+      _id: new mongoose.Types.ObjectId(commentId),
+      userId: new mongoose.Types.ObjectId(userId),
+    }).exec();
+  }
+}
+
+export const commentRepository = new CommentRepository();
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\repositories\file.repository.ts
+==============================
+
+import mongoose from 'mongoose';
+import { File, IFile } from '../models/File.model';
+import { BaseRepository } from './base.repository';
+import { SortField, SortOrder, FilterType, StorageBreakdown } from '../types/common.types';
+
+export interface FileQuery {
+  ownerId: string;
+  parentId?: string | null;
+  trashed?: boolean;
+  starred?: boolean;
+  search?: string;
+  filterType?: FilterType;
+  sortBy?: SortField;
+  sortOrder?: SortOrder;
+  isFolder?: boolean;
+}
+
+export class FileRepository extends BaseRepository<IFile> {
+  constructor() {
+    super(File);
+  }
+
+  async findFiles(query: FileQuery): Promise<IFile[]> {
+    const filter: mongoose.FilterQuery<IFile> = {
+      ownerId: new mongoose.Types.ObjectId(query.ownerId),
+      trashed: query.trashed ?? false,
+    };
+
+    if (query.parentId !== undefined) {
+      filter.parentId = query.parentId ? new mongoose.Types.ObjectId(query.parentId) : null;
+    }
+
+    if (query.starred !== undefined) {
+      filter.starred = query.starred;
+    }
+
+    if (query.isFolder !== undefined) {
+      filter.isFolder = query.isFolder;
+    }
+
+    if (query.search) {
+      filter.name = { $regex: query.search, $options: 'i' };
+    }
+
+    if (query.filterType && query.filterType !== 'all') {
+      const typeMap: Record<string, string[]> = {
+        documents: ['pdf', 'docx', 'xlsx', 'pptx', 'txt', 'csv', 'json', 'html'],
+        images: ['jpg', 'png', 'gif', 'svg', 'webp'],
+        videos: ['mp4', 'mpeg', 'mov', 'webm'],
+        audio: ['mp3', 'wav', 'ogg'],
+        archives: ['zip', 'rar', 'tar', 'gz'],
+        other: [],
+      };
+      const types = typeMap[query.filterType];
+      if (types && types.length > 0) {
+        filter.type = { $in: types };
+      }
+    }
+
+    const sortField = query.sortBy || 'updatedAt';
+    const sortOrder = query.sortOrder === 'asc' ? 1 : -1;
+    const sort: Record<string, 1 | -1> = {};
+
+    // Folders always come first
+    sort.isFolder = -1;
+    sort[sortField] = sortOrder;
+
+    return File.find(filter).sort(sort).exec();
+  }
+
+  async findRecentFiles(ownerId: string, limit = 20): Promise<IFile[]> {
+    return File.find({
+      ownerId: new mongoose.Types.ObjectId(ownerId),
+      trashed: false,
+      isFolder: false,
+    })
+      .sort({ accessedAt: -1 })
+      .limit(limit)
+      .exec();
+  }
+
+  async findSharedWithUser(userId: string): Promise<IFile[]> {
+    return File.find({
+      'sharedWith.userId': new mongoose.Types.ObjectId(userId),
+      trashed: false,
+    })
+      .sort({ updatedAt: -1 })
+      .exec();
+  }
+
+  async updateAccessedAt(fileId: string): Promise<void> {
+    await File.findByIdAndUpdate(fileId, { accessedAt: new Date() }).exec();
+  }
+
+  async getFolderPath(folderId: string): Promise<IFile[]> {
+    const path: IFile[] = [];
+    let currentId: string | null = folderId;
+
+    while (currentId) {
+      const folder = await File.findById(currentId).exec();
+      if (!folder) break;
+      path.unshift(folder);
+      currentId = folder.parentId ? folder.parentId.toString() : null;
+    }
+
+    return path;
+  }
+
+  async getFolderTree(ownerId: string): Promise<IFile[]> {
+    return File.find({
+      ownerId: new mongoose.Types.ObjectId(ownerId),
+      isFolder: true,
+      trashed: false,
+    })
+      .select('_id name parentId')
+      .sort({ name: 1 })
+      .exec();
+  }
+
+  async getTrashedFiles(ownerId: string): Promise<IFile[]> {
+    return File.find({
+      ownerId: new mongoose.Types.ObjectId(ownerId),
+      trashed: true,
+    })
+      .sort({ trashedAt: -1 })
+      .exec();
+  }
+
+  async getStorageBreakdown(ownerId: string): Promise<StorageBreakdown> {
+    const result = await File.aggregate([
+      {
+        $match: {
+          ownerId: new mongoose.Types.ObjectId(ownerId),
+          isFolder: false,
+          trashed: false,
+        },
+      },
+      {
+        $group: {
+          _id: '$type',
+          total: { $sum: '$size' },
+        },
+      },
+    ]);
+
+    const breakdown: StorageBreakdown = {
+      documents: 0,
+      images: 0,
+      videos: 0,
+      audio: 0,
+      archives: 0,
+      other: 0,
+    };
+
+    const typeToCategory: Record<string, keyof StorageBreakdown> = {
+      pdf: 'documents', docx: 'documents', xlsx: 'documents', pptx: 'documents',
+      txt: 'documents', csv: 'documents', json: 'documents', html: 'documents',
+      jpg: 'images', png: 'images', gif: 'images', svg: 'images', webp: 'images',
+      mp4: 'videos', mpeg: 'videos', mov: 'videos', webm: 'videos',
+      mp3: 'audio', wav: 'audio', ogg: 'audio',
+      zip: 'archives', rar: 'archives', tar: 'archives',
+    };
+
+    for (const item of result) {
+      const category = typeToCategory[item._id] || 'other';
+      breakdown[category] += item.total;
+    }
+
+    return breakdown;
+  }
+
+  async getAllFilesAdmin(): Promise<IFile[]> {
+    return File.find({ trashed: false })
+      .populate('ownerId', 'name email')
+      .sort({ createdAt: -1 })
+      .limit(1000)
+      .exec();
+  }
+
+  async getTotalFileCount(): Promise<number> {
+    return File.countDocuments({ isFolder: false, trashed: false }).exec();
+  }
+}
+
+export const fileRepository = new FileRepository();
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\repositories\shareLink.repository.ts
+==============================
+
+import { ShareLink, IShareLink } from '../models/ShareLink.model';
+import { BaseRepository } from './base.repository';
+
+export class ShareLinkRepository extends BaseRepository<IShareLink> {
+  constructor() {
+    super(ShareLink);
+  }
+
+  async findByToken(token: string): Promise<IShareLink | null> {
+    return ShareLink.findOne({ token, active: true }).exec();
+  }
+
+  async findByFileId(fileId: string): Promise<IShareLink[]> {
+    return ShareLink.find({ fileId }).sort({ createdAt: -1 }).exec();
+  }
+
+  async findByCreator(userId: string): Promise<IShareLink[]> {
+    return ShareLink.find({ createdBy: userId }).sort({ createdAt: -1 }).exec();
+  }
+
+  async incrementAccessCount(linkId: string): Promise<void> {
+    await ShareLink.findByIdAndUpdate(linkId, {
+      $inc: { accessCount: 1 },
+      lastAccessedAt: new Date(),
+    }).exec();
+  }
+
+  async getAllLinks(): Promise<IShareLink[]> {
+    return ShareLink.find({}).sort({ createdAt: -1 }).limit(500).exec();
+  }
+}
+
+export const shareLinkRepository = new ShareLinkRepository();
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\repositories\user.repository.ts
+==============================
+
+import mongoose from 'mongoose';
+import { User, IUser } from '../models/User.model';
+import { BaseRepository } from './base.repository';
+import { StorageBreakdown } from '../types/common.types';
+
+export class UserRepository extends BaseRepository<IUser> {
+  constructor() {
+    super(User);
+  }
+
+  async findByEmail(email: string): Promise<IUser | null> {
+    return User.findOne({ email: email.toLowerCase() }).select('+password').exec();
+  }
+
+  async findByEmailWithoutPassword(email: string): Promise<IUser | null> {
+    return User.findOne({ email: email.toLowerCase() }).exec();
+  }
+
+  async updateStorageUsed(userId: string, delta: number): Promise<IUser | null> {
+    return User.findByIdAndUpdate(
+      userId,
+      { $inc: { storageUsed: delta } },
+      { new: true }
+    ).exec();
+  }
+
+  async updateLastLogin(userId: string): Promise<void> {
+    await User.findByIdAndUpdate(userId, { lastLogin: new Date() }).exec();
+  }
+
+  async getStorageStats(): Promise<Array<{ _id: mongoose.Types.ObjectId; name: string; email: string; storageUsed: number; storageQuota: number }>> {
+    const results = await User.find({}, { name: 1, email: 1, storageUsed: 1, storageQuota: 1 })
+      .sort({ storageUsed: -1 })
+      .lean()
+      .exec();
+    return results as unknown as Array<{ _id: mongoose.Types.ObjectId; name: string; email: string; storageUsed: number; storageQuota: number }>;
+  }
+
+  async getTotalStorageUsed(): Promise<number> {
+    const result = await User.aggregate([
+      { $group: { _id: null, total: { $sum: '$storageUsed' } } },
+    ]);
+    return result[0]?.total || 0;
+  }
+}
+
+export const userRepository = new UserRepository();
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\routes\activity.routes.ts
+==============================
+
+import { Router } from 'express';
+import { getUserActivities } from '../controllers/activity.controller';
+import { authenticate } from '../middleware/auth.middleware';
+
+const router = Router();
+
+router.use(authenticate);
+router.get('/', getUserActivities);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\routes\admin.routes.ts
+==============================
+
+import { Router } from 'express';
+import {
+  getDashboardStats, getAllUsers, updateUser, suspendUser,
+  getAllFiles, getAllShareLinks, getStorageOverview,
+  getSettings, updateSettings,
+} from '../controllers/admin.controller';
+import { authenticate } from '../middleware/auth.middleware';
+import { requireAdmin } from '../middleware/admin.middleware';
+import { validate } from '../middleware/validate.middleware';
+import { updateUserSchema, updateSettingsSchema } from '../validators/admin.validator';
+
+const router = Router();
+
+router.use(authenticate, requireAdmin);
+
+router.get('/stats', getDashboardStats);
+router.get('/users', getAllUsers);
+router.patch('/users/:id', validate(updateUserSchema), updateUser);
+router.patch('/users/:id/suspend', suspendUser);
+router.get('/files', getAllFiles);
+router.get('/share-links', getAllShareLinks);
+router.get('/storage', getStorageOverview);
+router.get('/settings', getSettings);
+router.patch('/settings', validate(updateSettingsSchema), updateSettings);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\routes\auth.routes.ts
+==============================
+
+import { Router } from 'express';
+import { register, login, getMe, updateProfile, changePassword, updateNotificationPreferences, logout } from '../controllers/auth.controller';
+import { validate } from '../middleware/validate.middleware';
+import { authenticate } from '../middleware/auth.middleware';
+import { authRateLimiter } from '../middleware/rateLimiter.middleware';
+import { registerSchema, loginSchema, updateProfileSchema, changePasswordSchema, updateNotificationPreferencesSchema } from '../validators/auth.validator';
+
+const router = Router();
+
+router.post('/register', authRateLimiter, validate(registerSchema), register);
+router.post('/login', authRateLimiter, validate(loginSchema), login);
+router.post('/logout', authenticate, logout);
+router.get('/me', authenticate, getMe);
+router.patch('/me', authenticate, validate(updateProfileSchema), updateProfile);
+router.patch('/me/password', authenticate, validate(changePasswordSchema), changePassword);
+router.patch('/me/preferences', authenticate, validate(updateNotificationPreferencesSchema), updateNotificationPreferences);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\routes\comment.routes.ts
+==============================
+
+import { Router } from 'express';
+import { deleteComment } from '../controllers/comment.controller';
+import { authenticate } from '../middleware/auth.middleware';
+
+const router = Router();
+
+router.use(authenticate);
+router.delete('/:commentId', deleteComment);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\routes\file.routes.ts
+==============================
+
+import { Router } from 'express';
+import {
+  uploadFile, uploadMultipleFiles, getFiles, getFileById, createFolder,
+  renameFile, moveFile, copyFile, trashFile, restoreFile, deleteFilePermanently,
+  toggleStar, labelFile, getDownloadUrl, getPresignedUploadUrl,
+  getRecentFiles, getStarredFiles, getTrashedFiles, getSharedFiles,
+  getFolderTree, getStorageInfo, bulkTrash, bulkRestore, bulkStar,
+} from '../controllers/file.controller';
+import {
+  shareWithUsers, generateShareLink, getFileShareLinks,
+  removeSharedUser, updateSharedUserPermission,
+} from '../controllers/share.controller';
+import { getComments, addComment } from '../controllers/comment.controller';
+import { authenticate } from '../middleware/auth.middleware';
+import { uploadSingle, uploadMultiple } from '../middleware/upload.middleware';
+import { validate } from '../middleware/validate.middleware';
+import { uploadRateLimiter } from '../middleware/rateLimiter.middleware';
+import {
+  createFolderSchema, renameSchema, moveSchema,
+  copySchema, labelSchema, starSchema, fileQuerySchema, presignedUrlSchema,
+} from '../validators/file.validator';
+import { shareWithUsersSchema, generateShareLinkSchema, updateSharedUserPermissionSchema } from '../validators/share.validator';
+
+const router = Router();
+
+router.use(authenticate);
+
+// Special routes first
+router.get('/recent', getRecentFiles);
+router.get('/starred', getStarredFiles);
+router.get('/trash', getTrashedFiles);
+router.get('/shared', getSharedFiles);
+router.get('/tree', getFolderTree);
+router.get('/storage', getStorageInfo);
+router.post('/folders', validate(createFolderSchema), createFolder);
+router.post('/upload-url', validate(presignedUrlSchema), getPresignedUploadUrl);
+
+// File upload
+router.post('/upload', uploadRateLimiter, uploadSingle, uploadFile);
+router.post('/upload-multiple', uploadRateLimiter, uploadMultiple, uploadMultipleFiles);
+
+// Bulk operations
+router.post('/bulk/trash', bulkTrash);
+router.post('/bulk/restore', bulkRestore);
+router.post('/bulk/star', bulkStar);
+
+// File listing
+router.get('/', validate(fileQuerySchema, 'query'), getFiles);
+
+// Individual file operations
+router.get('/:id', getFileById);
+router.patch('/:id/rename', validate(renameSchema), renameFile);
+router.patch('/:id/move', validate(moveSchema), moveFile);
+router.post('/:id/copy', validate(copySchema), copyFile);
+router.patch('/:id/star', toggleStar);
+router.patch('/:id/label', validate(labelSchema), labelFile);
+router.patch('/:id/trash', trashFile);
+router.patch('/:id/restore', restoreFile);
+router.delete('/:id', deleteFilePermanently);
+router.get('/:id/download', getDownloadUrl);
+
+// Sharing
+router.post('/:id/share', validate(shareWithUsersSchema), shareWithUsers);
+router.delete('/:id/share/:email', removeSharedUser);
+router.patch('/:id/share/:email', validate(updateSharedUserPermissionSchema), updateSharedUserPermission);
+router.post('/:id/share-link', validate(generateShareLinkSchema), generateShareLink);
+router.get('/:id/share-links', getFileShareLinks);
+
+// Comments
+router.get('/:fileId/comments', getComments);
+router.post('/:fileId/comments', addComment);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\routes\index.ts
+==============================
+
+import { Router } from 'express';
+import authRoutes from './auth.routes';
+import fileRoutes from './file.routes';
+import shareRoutes from './share.routes';
+import activityRoutes from './activity.routes';
+import commentRoutes from './comment.routes';
+import adminRoutes from './admin.routes';
+import settingsRoutes from './settings.routes';
+
+const router = Router();
+
+router.use('/auth', authRoutes);
+router.use('/files', fileRoutes);
+router.use('/share', shareRoutes);
+router.use('/activities', activityRoutes);
+router.use('/comments', commentRoutes);
+router.use('/admin', adminRoutes);
+router.use('/settings', settingsRoutes);
+
+// Health check
+router.get('/health', (_req, res) => {
+  res.json({ success: true, message: 'Drive-X API is running', timestamp: new Date().toISOString() });
+});
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\routes\settings.routes.ts
+==============================
+
+import { Router } from 'express';
+import { asyncHandler } from '../utils/asyncHandler';
+import { ApiResponse } from '../utils/apiResponse';
+import { SystemSettings } from '../models/SystemSettings.model';
+import { authenticate } from '../middleware/auth.middleware';
+
+const router = Router();
+
+// Any authenticated user can read the banner
+router.get('/banner', authenticate, asyncHandler(async (_req, res) => {
+  const settings = await SystemSettings.findOne().select('showBanner bannerMessage');
+  return ApiResponse.ok(res, 'Banner retrieved', {
+    showBanner: settings?.showBanner ?? false,
+    bannerMessage: settings?.bannerMessage ?? '',
+  });
+}));
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\routes\share.routes.ts
+==============================
+
+import { Router } from 'express';
+import {
+  getPublicShareLink, toggleShareLink, revokeShareLink,
+  getPublicDownloadUrl, downloadPublicFile,
+} from '../controllers/share.controller';
+import { authenticate } from '../middleware/auth.middleware';
+
+const router = Router();
+
+// Public download routes — must be before /:token to avoid shadowing
+router.get('/:token/download-url', getPublicDownloadUrl);
+router.get('/:token/download', downloadPublicFile);
+
+// Public info route
+router.get('/:token', getPublicShareLink);
+
+// Protected management routes
+router.patch('/:linkId/toggle', authenticate, toggleShareLink);
+router.delete('/:linkId', authenticate, revokeShareLink);
+
+export default router;
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\server.ts
+==============================
+
+import { connectDatabase } from './config/database';
+import app from './app';
+import { env } from './config/env';
+import { logger } from './utils/logger';
+
+const startServer = async (): Promise<void> => {
+  try {
+    // Connect to MongoDB
+    await connectDatabase();
+
+    const server = app.listen(env.PORT, () => {
+      logger.info(`🚀 Drive-X API server running on port ${env.PORT}`);
+      logger.info(`📁 Storage provider: ${env.STORAGE_PROVIDER}`);
+      logger.info(`🌍 Environment: ${env.NODE_ENV}`);
+      logger.info(`🔗 CORS origin: ${env.CORS_ORIGIN}`);
+    });
+
+    // Graceful shutdown
+    const shutdown = async (signal: string): Promise<void> => {
+      logger.info(`${signal} received. Starting graceful shutdown...`);
+
+      server.close(async () => {
+        logger.info('HTTP server closed');
+
+        const { disconnectDatabase } = await import('./config/database');
+        await disconnectDatabase();
+
+        logger.info('Graceful shutdown complete');
+        process.exit(0);
+      });
+
+      // Force shutdown after 10 seconds
+      setTimeout(() => {
+        logger.error('Forced shutdown after timeout');
+        process.exit(1);
+      }, 10000);
+    };
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+
+    process.on('unhandledRejection', (reason: unknown) => {
+      logger.error('Unhandled Rejection:', reason);
+    });
+
+    process.on('uncaughtException', (error: Error) => {
+      logger.error('Uncaught Exception:', error);
+      process.exit(1);
+    });
+
+  } catch (error) {
+    logger.error('Failed to start server:', error);
+    process.exit(1);
+  }
+};
+
+startServer();
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\services\activity.service.ts
+==============================
+
+import { activityRepository } from '../repositories/activity.repository';
+
+export class ActivityService {
+  async getUserActivities(userId: string, limit = 50, action?: string) {
+    return activityRepository.findByUser(userId, limit, action);
+  }
+
+  async getAllActivities(limit = 100) {
+    return activityRepository.findAll(limit);
+  }
+}
+
+export const activityService = new ActivityService();
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\services\admin.service.ts
+==============================
+
+import { userRepository } from '../repositories/user.repository';
+import { fileRepository } from '../repositories/file.repository';
+import { shareLinkRepository } from '../repositories/shareLink.repository';
+import { activityRepository } from '../repositories/activity.repository';
+import { SystemSettings } from '../models/SystemSettings.model';
+import { ApiError } from '../utils/apiError';
+
+export class AdminService {
+  async getDashboardStats() {
+    const [totalUsers, totalFiles, totalLinks, storageData] = await Promise.all([
+      userRepository.count({}),
+      fileRepository.getTotalFileCount(),
+      shareLinkRepository.count({ active: true }),
+      userRepository.getTotalStorageUsed(),
+    ]);
+
+    const recentActivity = await activityRepository.findAll(10);
+    const userStorageStats = await userRepository.getStorageStats();
+
+    return {
+      totalUsers,
+      totalFiles,
+      activeLinkCount: totalLinks,
+      totalStorageUsed: storageData,
+      recentActivity,
+      userStorageStats: userStorageStats.slice(0, 10),
+    };
+  }
+
+  async getAllUsers(page = 1, limit = 20) {
+    return userRepository.paginate({}, { page, limit }, { createdAt: -1 });
+  }
+
+  async updateUser(userId: string, data: { name?: string; storageQuota?: number; role?: string }) {
+    const user = await userRepository.updateById(userId, data);
+    if (!user) throw ApiError.notFound('User not found');
+    return user.toSafeObject();
+  }
+
+  async suspendUser(userId: string, suspended: boolean, adminId: string) {
+    if (userId === adminId) throw ApiError.badRequest('You cannot suspend yourself');
+    const user = await userRepository.updateById(userId, {
+      status: suspended ? 'suspended' : 'active',
+    });
+    if (!user) throw ApiError.notFound('User not found');
+    return user.toSafeObject();
+  }
+
+  async getAllFiles(page = 1, limit = 50) {
+    return fileRepository.paginate(
+      { isFolder: false, trashed: false },
+      { page, limit },
+      { createdAt: -1 }
+    );
+  }
+
+  async getAllShareLinks(page = 1, limit = 50) {
+    return shareLinkRepository.paginate({}, { page, limit }, { createdAt: -1 });
+  }
+
+  async getStorageOverview() {
+    return userRepository.getStorageStats();
+  }
+
+  async getSettings() {
+    // Singleton: always find-or-create the single settings document
+    let settings = await SystemSettings.findOne();
+    if (!settings) {
+      settings = await SystemSettings.create({});
+    }
+    return settings;
+  }
+
+  async updateSettings(data: {
+    allowPublicSharing?: boolean;
+    allowRegistration?: boolean;
+    enableFileVersioning?: boolean;
+    defaultStorageQuotaGB?: number;
+    bannerMessage?: string;
+    showBanner?: boolean;
+  }) {
+    let settings = await SystemSettings.findOne();
+    if (!settings) {
+      settings = await SystemSettings.create(data);
+    } else {
+      Object.assign(settings, data);
+      await settings.save();
+    }
+    return settings;
+  }
+}
+
+export const adminService = new AdminService();
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\services\auth.service.ts
+==============================
+
+import { userRepository } from '../repositories/user.repository';
+import { activityRepository } from '../repositories/activity.repository';
+import { SystemSettings } from '../models/SystemSettings.model';
+import { hashPassword, comparePassword } from '../utils/password.utils';
+import { generateAccessToken, generateRefreshToken } from '../utils/jwt.utils';
+import { ApiError } from '../utils/apiError';
+import { env } from '../config/env';
+import { Request } from 'express';
+
+interface RegisterData {
+  name: string;
+  email: string;
+  password: string;
+}
+
+interface LoginData {
+  email: string;
+  password: string;
+}
+
+export class AuthService {
+  async register(data: RegisterData, req?: Request) {
+    // Check if registration is enabled
+    const settings = await SystemSettings.findOne();
+    if (settings && !settings.allowRegistration) {
+      throw ApiError.forbidden('User registration is currently disabled');
+    }
+
+    const existing = await userRepository.findByEmail(data.email);
+    if (existing) {
+      throw ApiError.conflict('An account with this email already exists');
+    }
+
+    const hashedPassword = await hashPassword(data.password);
+
+    const quotaBytes = settings?.defaultStorageQuotaGB
+      ? settings.defaultStorageQuotaGB * 1024 * 1024 * 1024
+      : env.DEFAULT_STORAGE_QUOTA;
+
+    const user = await userRepository.create({
+      name: data.name.trim(),
+      email: data.email.toLowerCase().trim(),
+      password: hashedPassword,
+      storageQuota: quotaBytes,
+    });
+
+    const payload = { userId: user._id.toString(), email: user.email, role: user.role };
+    const accessToken = generateAccessToken(payload);
+    const refreshToken = generateRefreshToken(payload);
+
+    await activityRepository.createActivity({
+      userId: user._id.toString(),
+      userName: user.name,
+      action: 'register',
+      targetName: user.email,
+      targetType: 'user',
+      details: 'New user registration',
+      req,
+    });
+
+    return {
+      user: user.toSafeObject(),
+      accessToken,
+      refreshToken,
+    };
+  }
+
+  async login(data: LoginData, req?: Request) {
+    const user = await userRepository.findByEmail(data.email);
+
+    if (!user) {
+      throw ApiError.unauthorized('Invalid email or password');
+    }
+
+    if (user.status === 'suspended') {
+      throw ApiError.forbidden('Your account has been suspended. Please contact support.');
+    }
+
+    const isPasswordValid = await comparePassword(data.password, user.password);
+    if (!isPasswordValid) {
+      throw ApiError.unauthorized('Invalid email or password');
+    }
+
+    await userRepository.updateLastLogin(user._id.toString());
+
+    const payload = { userId: user._id.toString(), email: user.email, role: user.role };
+    const accessToken = generateAccessToken(payload);
+    const refreshToken = generateRefreshToken(payload);
+
+    await activityRepository.createActivity({
+      userId: user._id.toString(),
+      userName: user.name,
+      action: 'login',
+      targetName: user.email,
+      targetType: 'user',
+      req,
+    });
+
+    return {
+      user: user.toSafeObject(),
+      accessToken,
+      refreshToken,
+    };
+  }
+
+  async getMe(userId: string) {
+    const user = await userRepository.findById(userId);
+    if (!user) {
+      throw ApiError.notFound('User not found');
+    }
+    return user.toSafeObject();
+  }
+
+  async updateProfile(userId: string, data: { name?: string; avatar?: string }) {
+    const user = await userRepository.updateById(userId, data);
+    if (!user) {
+      throw ApiError.notFound('User not found');
+    }
+    return user.toSafeObject();
+  }
+
+  async updateNotificationPreferences(userId: string, prefs: {
+    notifyUploads?: boolean;
+    notifyShares?: boolean;
+    notifyComments?: boolean;
+    emailDigest?: 'never' | 'daily' | 'weekly' | 'monthly';
+  }) {
+    const update: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(prefs)) {
+      if (val !== undefined) update[`notificationPreferences.${key}`] = val;
+    }
+    const user = await userRepository.updateById(userId, update as any);
+    if (!user) throw ApiError.notFound('User not found');
+    return user.toSafeObject();
+  }
+
+  async changePassword(userId: string, currentPassword: string, newPassword: string) {
+    const user = await userRepository.findById(userId);
+    if (!user) throw ApiError.notFound('User not found');
+
+    // Reload with password field
+    const userWithPassword = await userRepository.findByEmail(user.email);
+    if (!userWithPassword) throw ApiError.notFound('User not found');
+
+    const isValid = await comparePassword(currentPassword, userWithPassword.password);
+    if (!isValid) throw ApiError.badRequest('Current password is incorrect');
+
+    const hashed = await hashPassword(newPassword);
+    await userRepository.updateById(userId, { password: hashed } as any);
+  }
+}
+
+export const authService = new AuthService();
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\services\comment.service.ts
+==============================
+
+import mongoose from 'mongoose';
+import { commentRepository } from '../repositories/comment.repository';
+import { fileRepository } from '../repositories/file.repository';
+import { ApiError } from '../utils/apiError';
+
+export class CommentService {
+  async getComments(fileId: string, userId: string) {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+
+    const hasAccess = file.ownerId.toString() === userId ||
+      file.sharedWith.some((s) => s.userId.toString() === userId) || file.isPublic;
+    if (!hasAccess) throw ApiError.forbidden('Access denied');
+
+    return commentRepository.findByFileId(fileId);
+  }
+
+  async addComment(fileId: string, userId: string, userName: string, text: string, userAvatar?: string) {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+
+    const hasAccess = file.ownerId.toString() === userId ||
+      file.sharedWith.some((s) =>
+        s.userId.toString() === userId &&
+        ['commenter', 'editor'].includes(s.permission)
+      );
+    if (!hasAccess) throw ApiError.forbidden('You do not have permission to comment on this file');
+
+    return commentRepository.create({
+      fileId: new mongoose.Types.ObjectId(fileId),
+      userId: new mongoose.Types.ObjectId(userId),
+      userName,
+      text: text.trim(),
+      userAvatar,
+    });
+  }
+
+  async deleteComment(commentId: string, userId: string) {
+    const comment = await commentRepository.findByIdAndOwner(commentId, userId);
+    if (!comment) throw ApiError.notFound('Comment not found or access denied');
+
+    await commentRepository.deleteById(commentId);
+  }
+}
+
+export const commentService = new CommentService();
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\services\file.service.ts
+==============================
+
+import mongoose from 'mongoose';
+import { fileRepository, FileQuery } from '../repositories/file.repository';
+import { userRepository } from '../repositories/user.repository';
+import { activityRepository } from '../repositories/activity.repository';
+import { storageProvider } from '../storage/storage.factory';
+import { getFileType, generateStorageKey, getFileCategory } from '../utils/file.utils';
+import { ApiError } from '../utils/apiError';
+import { FileLabel, SortField, SortOrder, FilterType } from '../types/common.types';
+import { File, IFile } from '../models/File.model';
+
+interface UploadFileData {
+  originalname: string;
+  mimetype: string;
+  buffer: Buffer;
+  size: number;
+}
+
+export class FileService {
+  async uploadFile(
+    fileData: UploadFileData,
+    userId: string,
+    userName: string,
+    parentId?: string | null
+  ): Promise<IFile> {
+    // Check storage quota
+    const user = await userRepository.findById(userId);
+    if (!user) throw ApiError.notFound('User not found');
+
+    if (user.storageUsed + fileData.size > user.storageQuota) {
+      throw ApiError.badRequest('Storage quota exceeded');
+    }
+
+    // Validate parent folder exists if provided
+    if (parentId) {
+      const parent = await fileRepository.findById(parentId);
+      if (!parent || !parent.isFolder) {
+        throw ApiError.notFound('Parent folder not found');
+      }
+      if (parent.ownerId.toString() !== userId) {
+        throw ApiError.forbidden('Access denied to parent folder');
+      }
+    }
+
+    const storageKey = generateStorageKey(fileData.originalname, userId);
+    const fileType = getFileType(fileData.mimetype, fileData.originalname);
+
+    // Upload to storage provider
+    const uploadResult = await storageProvider.upload(fileData.buffer, {
+      key: storageKey,
+      mimeType: fileData.mimetype,
+      size: fileData.size,
+      metadata: { userId, originalName: fileData.originalname },
+    });
+
+    // Create file record in DB
+    const file = await fileRepository.create({
+      name: fileData.originalname,
+      type: fileType,
+      mimeType: fileData.mimetype,
+      size: fileData.size,
+      storageKey,
+      url: uploadResult.url,
+      parentId: parentId ? new mongoose.Types.ObjectId(parentId) : null,
+      ownerId: new mongoose.Types.ObjectId(userId),
+      ownerName: userName,
+      isFolder: false,
+    });
+
+    // Update user storage
+    await userRepository.updateStorageUsed(userId, fileData.size);
+
+    await activityRepository.createActivity({
+      userId,
+      userName,
+      action: 'upload',
+      targetId: file._id.toString(),
+      targetName: file.name,
+      targetType: file.type,
+    });
+
+    return file;
+  }
+
+  async createFolder(
+    name: string,
+    userId: string,
+    userName: string,
+    parentId?: string | null
+  ): Promise<IFile> {
+    if (parentId) {
+      const parent = await fileRepository.findById(parentId);
+      if (!parent || !parent.isFolder) throw ApiError.notFound('Parent folder not found');
+      if (parent.ownerId.toString() !== userId) throw ApiError.forbidden('Access denied');
+    }
+
+    const folder = await fileRepository.create({
+      name: name.trim(),
+      type: 'folder',
+      mimeType: 'folder',
+      size: 0,
+      storageKey: '',
+      url: '',
+      parentId: parentId ? new mongoose.Types.ObjectId(parentId) : null,
+      ownerId: new mongoose.Types.ObjectId(userId),
+      ownerName: userName,
+      isFolder: true,
+    });
+
+    await activityRepository.createActivity({
+      userId, userName, action: 'create_folder',
+      targetId: folder._id.toString(),
+      targetName: folder.name, targetType: 'folder',
+    });
+
+    return folder;
+  }
+
+  async getFiles(query: FileQuery): Promise<IFile[]> {
+    return fileRepository.findFiles(query);
+  }
+
+  async getFileById(fileId: string, userId: string): Promise<IFile> {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+
+    const hasAccess =
+      file.ownerId.toString() === userId ||
+      file.sharedWith.some((s) => s.userId.toString() === userId);
+
+    if (!hasAccess) throw ApiError.forbidden('Access denied');
+
+    await fileRepository.updateAccessedAt(fileId);
+    return file;
+  }
+
+  async renameFile(fileId: string, name: string, userId: string): Promise<IFile> {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+    if (file.ownerId.toString() !== userId) throw ApiError.forbidden('Access denied');
+
+    const updated = await fileRepository.updateById(fileId, { name: name.trim() });
+    if (!updated) throw ApiError.notFound('File not found');
+
+    await activityRepository.createActivity({
+      userId, userName: file.ownerName, action: 'rename',
+      targetId: fileId, targetName: name, targetType: file.type,
+      details: `Renamed from "${file.name}" to "${name}"`,
+    });
+
+    return updated;
+  }
+
+  async moveFile(fileId: string, targetFolderId: string | null, userId: string): Promise<IFile> {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+    if (file.ownerId.toString() !== userId) throw ApiError.forbidden('Access denied');
+
+    if (targetFolderId) {
+      const target = await fileRepository.findById(targetFolderId);
+      if (!target || !target.isFolder) throw ApiError.notFound('Target folder not found');
+      if (target.ownerId.toString() !== userId) throw ApiError.forbidden('Access denied to target');
+    }
+
+    const updated = await fileRepository.updateById(fileId, {
+      parentId: targetFolderId ? new mongoose.Types.ObjectId(targetFolderId) : null,
+    });
+    if (!updated) throw ApiError.notFound('File not found');
+
+    await activityRepository.createActivity({
+      userId, userName: file.ownerName, action: 'move',
+      targetId: fileId, targetName: file.name, targetType: file.type,
+    });
+
+    return updated;
+  }
+
+  async copyFile(fileId: string, targetFolderId: string | null, userId: string, userName: string): Promise<IFile> {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+
+    const hasAccess = file.ownerId.toString() === userId ||
+      file.sharedWith.some((s) => s.userId.toString() === userId);
+    if (!hasAccess) throw ApiError.forbidden('Access denied');
+
+    if (file.isFolder) throw ApiError.badRequest('Cannot copy folders');
+
+    const user = await userRepository.findById(userId);
+    if (!user) throw ApiError.notFound('User not found');
+    if (user.storageUsed + file.size > user.storageQuota) throw ApiError.badRequest('Storage quota exceeded');
+
+    const newStorageKey = generateStorageKey(`copy_${file.name}`, userId);
+    const copyResult = await storageProvider.copy({ sourceKey: file.storageKey, destinationKey: newStorageKey });
+
+    const copiedFile = await fileRepository.create({
+      name: `Copy of ${file.name}`,
+      type: file.type,
+      mimeType: file.mimeType,
+      size: file.size,
+      storageKey: newStorageKey,
+      url: copyResult.url,
+      parentId: targetFolderId ? new mongoose.Types.ObjectId(targetFolderId) : null,
+      ownerId: new mongoose.Types.ObjectId(userId),
+      ownerName: userName,
+      isFolder: false,
+    });
+
+    await userRepository.updateStorageUsed(userId, file.size);
+
+    await activityRepository.createActivity({
+      userId, userName, action: 'copy',
+      targetId: copiedFile._id.toString(), targetName: copiedFile.name, targetType: file.type,
+    });
+
+    return copiedFile;
+  }
+
+  async trashFile(fileId: string, userId: string): Promise<IFile> {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+    if (file.ownerId.toString() !== userId) throw ApiError.forbidden('Access denied');
+
+    const updated = await fileRepository.updateById(fileId, {
+      trashed: true,
+      trashedAt: new Date(),
+    });
+    if (!updated) throw ApiError.notFound('File not found');
+
+    await activityRepository.createActivity({
+      userId, userName: file.ownerName, action: 'trash',
+      targetId: fileId, targetName: file.name, targetType: file.type,
+    });
+
+    return updated;
+  }
+
+  async restoreFile(fileId: string, userId: string): Promise<IFile> {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+    if (file.ownerId.toString() !== userId) throw ApiError.forbidden('Access denied');
+    if (!file.trashed) throw ApiError.badRequest('File is not in trash');
+
+    const updated = await fileRepository.updateById(fileId, {
+      trashed: false,
+      trashedAt: undefined,
+    });
+    if (!updated) throw ApiError.notFound('File not found');
+
+    await activityRepository.createActivity({
+      userId, userName: file.ownerName, action: 'restore',
+      targetId: fileId, targetName: file.name, targetType: file.type,
+    });
+
+    return updated;
+  }
+
+  async deleteFilePermanently(fileId: string, userId: string): Promise<void> {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+    if (file.ownerId.toString() !== userId) throw ApiError.forbidden('Access denied');
+
+    if (!file.isFolder && file.storageKey) {
+      try {
+        await storageProvider.delete({ key: file.storageKey });
+      } catch {
+        // Log but don't throw - still delete the DB record
+      }
+    }
+
+    await fileRepository.deleteById(fileId);
+    if (!file.isFolder) {
+      await userRepository.updateStorageUsed(userId, -file.size);
+    }
+
+    await activityRepository.createActivity({
+      userId, userName: file.ownerName, action: 'delete',
+      targetName: file.name, targetType: file.type,
+    });
+  }
+
+  async toggleStar(fileId: string, starred: boolean, userId: string): Promise<IFile> {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+    if (file.ownerId.toString() !== userId) throw ApiError.forbidden('Access denied');
+
+    const updated = await fileRepository.updateById(fileId, { starred });
+    if (!updated) throw ApiError.notFound('File not found');
+
+    await activityRepository.createActivity({
+      userId, userName: file.ownerName,
+      action: starred ? 'star' : 'unstar',
+      targetId: fileId, targetName: file.name, targetType: file.type,
+    });
+
+    return updated;
+  }
+
+  async labelFile(fileId: string, label: FileLabel | null, userId: string): Promise<IFile> {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+    if (file.ownerId.toString() !== userId) throw ApiError.forbidden('Access denied');
+
+    const updated = await fileRepository.updateById(fileId, { label });
+    if (!updated) throw ApiError.notFound('File not found');
+
+    return updated;
+  }
+
+  async getDownloadUrl(fileId: string, userId: string): Promise<string> {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+
+    const hasAccess = file.ownerId.toString() === userId ||
+      file.sharedWith.some((s) => s.userId.toString() === userId) || file.isPublic;
+    if (!hasAccess) throw ApiError.forbidden('Access denied');
+
+    if (file.isFolder) throw ApiError.badRequest('Cannot download folders');
+
+    await activityRepository.createActivity({
+      userId, userName: file.ownerName, action: 'download',
+      targetId: fileId, targetName: file.name, targetType: file.type,
+    });
+
+    return storageProvider.getFileUrl({ key: file.storageKey, expiresIn: 3600 });
+  }
+
+  async getPresignedUploadUrl(filename: string, mimeType: string, userId: string) {
+    const user = await userRepository.findById(userId);
+    if (!user) throw ApiError.notFound('User not found');
+
+    const storageKey = generateStorageKey(filename, userId);
+
+    const result = await storageProvider.getPresignedUploadUrl({
+      key: storageKey,
+      contentType: mimeType,
+      expiresIn: 3600,
+    });
+
+    return { ...result, storageKey };
+  }
+
+  async getRecentFiles(userId: string): Promise<IFile[]> {
+    return fileRepository.findRecentFiles(userId);
+  }
+
+  async getStarredFiles(userId: string): Promise<IFile[]> {
+    return fileRepository.findFiles({ ownerId: userId, starred: true });
+  }
+
+  async getTrashedFiles(userId: string): Promise<IFile[]> {
+    return fileRepository.getTrashedFiles(userId);
+  }
+
+  async getSharedFiles(userId: string): Promise<IFile[]> {
+    return fileRepository.findSharedWithUser(userId);
+  }
+
+  async getFolderTree(userId: string): Promise<IFile[]> {
+    return fileRepository.getFolderTree(userId);
+  }
+
+  async getStorageInfo(userId: string) {
+    const user = await userRepository.findById(userId);
+    if (!user) throw ApiError.notFound('User not found');
+
+    const breakdown = await fileRepository.getStorageBreakdown(userId);
+
+    return {
+      used: user.storageUsed,
+      quota: user.storageQuota,
+      available: Math.max(0, user.storageQuota - user.storageUsed),
+      breakdown,
+    };
+  }
+}
+
+export const fileService = new FileService();
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\services\share.service.ts
+==============================
+
+import { v4 as uuidv4 } from 'uuid';
+import mongoose from 'mongoose';
+import { shareLinkRepository } from '../repositories/shareLink.repository';
+import { fileRepository } from '../repositories/file.repository';
+import { userRepository } from '../repositories/user.repository';
+import { activityRepository } from '../repositories/activity.repository';
+import { storageProvider } from '../storage/storage.factory';
+import { ApiError } from '../utils/apiError';
+import { SharePermission } from '../types/common.types';
+import { File } from '../models/File.model';
+
+interface ShareWithUsersData {
+  emails: string[];
+  permission: 'viewer' | 'commenter' | 'editor';
+}
+
+export class ShareService {
+  async shareWithUsers(fileId: string, data: ShareWithUsersData, requesterId: string) {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+    if (file.ownerId.toString() !== requesterId) throw ApiError.forbidden('Only the owner can share this file');
+
+    const updatedSharedWith = [...file.sharedWith];
+
+    for (const email of data.emails) {
+      const user = await userRepository.findByEmailWithoutPassword(email);
+      if (!user) continue;
+      if (user._id.toString() === requesterId) continue;
+
+      const existingIndex = updatedSharedWith.findIndex(
+        (s) => s.userId.toString() === user._id.toString()
+      );
+
+      if (existingIndex >= 0) {
+        updatedSharedWith[existingIndex].permission = data.permission;
+      } else {
+        updatedSharedWith.push({
+          userId: user._id,
+          email: user.email,
+          name: user.name,
+          permission: data.permission,
+          sharedAt: new Date(),
+        });
+      }
+    }
+
+    const updated = await fileRepository.updateById(fileId, { sharedWith: updatedSharedWith });
+    if (!updated) throw ApiError.notFound('File not found');
+
+    await activityRepository.createActivity({
+      userId: requesterId,
+      userName: file.ownerName,
+      action: 'share',
+      targetId: fileId,
+      targetName: file.name,
+      targetType: file.type,
+      details: `Shared with: ${data.emails.join(', ')}`,
+    });
+
+    return updated;
+  }
+
+  async generateShareLink(
+    fileId: string,
+    permission: SharePermission,
+    requesterId: string,
+    expiresAt?: Date | null
+  ) {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+
+    const hasAccess = file.ownerId.toString() === requesterId ||
+      file.sharedWith.some((s) => s.userId.toString() === requesterId && s.permission === 'editor');
+    if (!hasAccess) throw ApiError.forbidden('Access denied');
+
+    const requester = await userRepository.findById(requesterId);
+    if (!requester) throw ApiError.notFound('User not found');
+
+    const token = uuidv4();
+
+    const shareLink = await shareLinkRepository.create({
+      fileId: new mongoose.Types.ObjectId(fileId),
+      fileName: file.name,
+      fileType: file.type,
+      fileSize: file.size,
+      createdBy: new mongoose.Types.ObjectId(requesterId),
+      creatorName: requester.name,
+      creatorEmail: requester.email,
+      permission,
+      token,
+      expiresAt: expiresAt || null,
+    });
+
+    // Mark file as public if permission is view or edit
+    if (permission !== 'restricted') {
+      await fileRepository.updateById(fileId, { isPublic: true });
+    }
+
+    return shareLink;
+  }
+
+  async getShareLink(token: string) {
+    const link = await shareLinkRepository.findByToken(token);
+    if (!link) throw ApiError.notFound('Share link not found or expired');
+
+    if (link.expiresAt && link.expiresAt < new Date()) {
+      throw ApiError.badRequest('Share link has expired');
+    }
+
+    await shareLinkRepository.incrementAccessCount(link._id.toString());
+
+    const file = await fileRepository.findById(link.fileId.toString());
+    if (!file) throw ApiError.notFound('File not found');
+
+    return { link, file };
+  }
+
+  async toggleShareLink(linkId: string, requesterId: string) {
+    const link = await shareLinkRepository.findById(linkId);
+    if (!link) throw ApiError.notFound('Share link not found');
+    if (link.createdBy.toString() !== requesterId) throw ApiError.forbidden('Access denied');
+
+    return shareLinkRepository.updateById(linkId, { active: !link.active });
+  }
+
+  async revokeShareLink(linkId: string, requesterId: string) {
+    const link = await shareLinkRepository.findById(linkId);
+    if (!link) throw ApiError.notFound('Share link not found');
+    if (link.createdBy.toString() !== requesterId) throw ApiError.forbidden('Access denied');
+
+    await shareLinkRepository.deleteById(linkId);
+  }
+
+  async getFileShareLinks(fileId: string, requesterId: string) {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+    if (file.ownerId.toString() !== requesterId) throw ApiError.forbidden('Access denied');
+
+    return shareLinkRepository.findByFileId(fileId);
+  }
+
+  async removeSharedUser(fileId: string, email: string, requesterId: string) {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+    if (file.ownerId.toString() !== requesterId) throw ApiError.forbidden('Only the owner can manage sharing');
+
+    const exists = file.sharedWith.some((s) => s.email === email.toLowerCase());
+    if (!exists) throw ApiError.notFound('User is not in the shared list');
+
+    const updatedSharedWith = file.sharedWith.filter((s) => s.email !== email.toLowerCase());
+    const updated = await fileRepository.updateById(fileId, { sharedWith: updatedSharedWith });
+    if (!updated) throw ApiError.notFound('File not found');
+
+    await activityRepository.createActivity({
+      userId: requesterId,
+      userName: file.ownerName,
+      action: 'share',
+      targetId: fileId,
+      targetName: file.name,
+      targetType: file.type,
+      details: `Removed access for: ${email}`,
+    });
+
+    return updated;
+  }
+
+  async updateSharedUserPermission(
+    fileId: string,
+    email: string,
+    permission: 'viewer' | 'commenter' | 'editor',
+    requesterId: string
+  ) {
+    const file = await fileRepository.findById(fileId);
+    if (!file) throw ApiError.notFound('File not found');
+    if (file.ownerId.toString() !== requesterId) throw ApiError.forbidden('Only the owner can manage sharing');
+
+    const index = file.sharedWith.findIndex((s) => s.email === email.toLowerCase());
+    if (index < 0) throw ApiError.notFound('User is not in the shared list');
+
+    const updatedSharedWith = [...file.sharedWith];
+    updatedSharedWith[index] = { ...updatedSharedWith[index], permission };
+
+    const updated = await fileRepository.updateById(fileId, { sharedWith: updatedSharedWith });
+    if (!updated) throw ApiError.notFound('File not found');
+
+    return updated;
+  }
+
+  async getPublicDownloadUrl(token: string): Promise<string> {
+    const link = await shareLinkRepository.findByToken(token);
+    if (!link) throw ApiError.notFound('Share link not found');
+    if (!link.active) throw ApiError.forbidden('Share link has been revoked');
+    if (link.expiresAt && link.expiresAt < new Date()) throw ApiError.badRequest('Share link has expired');
+    if (link.permission === 'restricted') throw ApiError.forbidden('This link does not allow downloads');
+
+    const file = await fileRepository.findById(link.fileId.toString());
+    if (!file) throw ApiError.notFound('File not found');
+    if (file.isFolder) throw ApiError.badRequest('Cannot download folders');
+
+    return storageProvider.getFileUrl({ key: file.storageKey, expiresIn: 3600 });
+  }
+}
+
+export const shareService = new ShareService();
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\storage\providers\cloudinary.provider.ts
+==============================
+
+import { v2 as cloudinary } from 'cloudinary';
+import { Readable } from 'stream';
+import { env } from '../../config/env';
+import { IStorageProvider } from '../storage.interface';
+import {
+  UploadOptions,
+  UploadResult,
+  PresignedUrlOptions,
+  PresignedUploadResult,
+  DeleteOptions,
+  CopyOptions,
+  GetUrlOptions,
+} from '../../types/storage.types';
+import { ApiError } from '../../utils/apiError';
+import { logger } from '../../utils/logger';
+
+export class CloudinaryStorageProvider implements IStorageProvider {
+  constructor() {
+    if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) {
+      throw new Error('Cloudinary configuration is incomplete. Please check environment variables.');
+    }
+
+    cloudinary.config({
+      cloud_name: env.CLOUDINARY_CLOUD_NAME,
+      api_key: env.CLOUDINARY_API_KEY,
+      api_secret: env.CLOUDINARY_API_SECRET,
+    });
+  }
+
+  async upload(buffer: Buffer | Readable, options: UploadOptions): Promise<UploadResult> {
+    try {
+      const buf = buffer instanceof Buffer ? buffer : await this.streamToBuffer(buffer as Readable);
+
+      const result = await new Promise<{ secure_url: string; public_id: string; bytes: number }>(
+        (resolve, reject) => {
+          const uploadStream = cloudinary.uploader.upload_stream(
+            {
+              public_id: options.key.replace(/\//g, '_').replace(/\.[^.]+$/, ''),
+              resource_type: 'auto',
+              folder: 'drivex',
+            },
+            (error, result) => {
+              if (error) reject(error);
+              else resolve(result as { secure_url: string; public_id: string; bytes: number });
+            }
+          );
+          uploadStream.end(buf);
+        }
+      );
+
+      return {
+        key: result.public_id,
+        url: result.secure_url,
+        size: result.bytes,
+      };
+    } catch (error) {
+      logger.error('Cloudinary upload error:', error);
+      throw ApiError.internal('Failed to upload file to Cloudinary');
+    }
+  }
+
+  async getPresignedUploadUrl(options: PresignedUrlOptions): Promise<PresignedUploadResult> {
+    try {
+      const expiresIn = options.expiresIn || 3600;
+      const timestamp = Math.round(Date.now() / 1000) + expiresIn;
+      const signature = cloudinary.utils.api_sign_request(
+        { timestamp, folder: 'drivex' },
+        env.CLOUDINARY_API_SECRET!
+      );
+
+      const uploadUrl = `https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/auto/upload`;
+
+      return {
+        uploadUrl,
+        key: options.key,
+        expiresIn,
+        fields: {
+          api_key: env.CLOUDINARY_API_KEY!,
+          timestamp: timestamp.toString(),
+          signature,
+          folder: 'drivex',
+        },
+      };
+    } catch (error) {
+      logger.error('Cloudinary presigned URL error:', error);
+      throw ApiError.internal('Failed to generate Cloudinary upload URL');
+    }
+  }
+
+  async getFileUrl(options: GetUrlOptions): Promise<string> {
+    try {
+      const expiresIn = options.expiresIn || 3600;
+      const expireAt = Math.floor(Date.now() / 1000) + expiresIn;
+      return cloudinary.url(options.key, {
+        secure: true,
+        sign_url: true,
+        expires_at: expireAt,
+        resource_type: 'auto',
+      });
+    } catch (error) {
+      logger.error('Cloudinary get URL error:', error);
+      throw ApiError.internal('Failed to generate file URL');
+    }
+  }
+
+  async delete(options: DeleteOptions): Promise<void> {
+    try {
+      await cloudinary.uploader.destroy(options.key, { resource_type: 'auto' });
+    } catch (error) {
+      logger.error('Cloudinary delete error:', error);
+      throw ApiError.internal('Failed to delete file from Cloudinary');
+    }
+  }
+
+  async copy(options: CopyOptions): Promise<UploadResult> {
+    try {
+      // Cloudinary doesn't support direct copy; re-upload from URL
+      const sourceUrl = cloudinary.url(options.sourceKey, { secure: true, resource_type: 'auto' });
+      const result = await cloudinary.uploader.upload(sourceUrl, {
+        public_id: options.destinationKey.replace(/\//g, '_'),
+        resource_type: 'auto',
+        folder: 'drivex',
+      });
+
+      return {
+        key: result.public_id,
+        url: result.secure_url,
+        size: result.bytes,
+      };
+    } catch (error) {
+      logger.error('Cloudinary copy error:', error);
+      throw ApiError.internal('Failed to copy file in Cloudinary');
+    }
+  }
+
+  async exists(key: string): Promise<boolean> {
+    try {
+      await cloudinary.api.resource(key, { resource_type: 'auto' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async getMetadata(key: string): Promise<{ size: number; contentType: string; lastModified: Date }> {
+    try {
+      const result = await cloudinary.api.resource(key, { resource_type: 'auto' });
+      return {
+        size: result.bytes,
+        contentType: result.resource_type + '/' + result.format,
+        lastModified: new Date(result.created_at),
+      };
+    } catch (error) {
+      logger.error('Cloudinary metadata error:', error);
+      throw ApiError.notFound('File not found in Cloudinary');
+    }
+  }
+
+  private async streamToBuffer(stream: Readable): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      stream.on('end', () => resolve(Buffer.concat(chunks)));
+      stream.on('error', reject);
+    });
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\storage\providers\local.provider.ts
+==============================
+
+import fs from 'fs';
+import fsPromises from 'fs/promises';
+import path from 'path';
+import { Readable } from 'stream';
+import { env } from '../../config/env';
+import { IStorageProvider } from '../storage.interface';
+import {
+  UploadOptions,
+  UploadResult,
+  PresignedUrlOptions,
+  PresignedUploadResult,
+  DeleteOptions,
+  CopyOptions,
+  GetUrlOptions,
+} from '../../types/storage.types';
+import { ApiError } from '../../utils/apiError';
+import { logger } from '../../utils/logger';
+
+export class LocalStorageProvider implements IStorageProvider {
+  private baseDir: string;
+  private baseUrl: string;
+
+  constructor() {
+    this.baseDir = path.resolve(env.LOCAL_UPLOAD_DIR);
+    this.baseUrl = `http://localhost:${env.PORT}/uploads`;
+    this.ensureBaseDir();
+  }
+
+  private ensureBaseDir(): void {
+    if (!fs.existsSync(this.baseDir)) {
+      fs.mkdirSync(this.baseDir, { recursive: true });
+    }
+  }
+
+  private getFilePath(key: string): string {
+    return path.join(this.baseDir, key);
+  }
+
+  private async ensureDir(filePath: string): Promise<void> {
+    const dir = path.dirname(filePath);
+    await fsPromises.mkdir(dir, { recursive: true });
+  }
+
+  async upload(buffer: Buffer | Readable, options: UploadOptions): Promise<UploadResult> {
+    try {
+      const filePath = this.getFilePath(options.key);
+      await this.ensureDir(filePath);
+
+      if (buffer instanceof Buffer) {
+        await fsPromises.writeFile(filePath, buffer);
+      } else {
+        await new Promise<void>((resolve, reject) => {
+          const writeStream = fs.createWriteStream(filePath);
+          (buffer as Readable).pipe(writeStream);
+          writeStream.on('finish', resolve);
+          writeStream.on('error', reject);
+        });
+      }
+
+      const stats = await fsPromises.stat(filePath);
+      const url = `${this.baseUrl}/${options.key}`;
+
+      return {
+        key: options.key,
+        url,
+        size: stats.size,
+        metadata: options.metadata,
+      };
+    } catch (error) {
+      logger.error('Local storage upload error:', error);
+      throw ApiError.internal('Failed to upload file to local storage');
+    }
+  }
+
+  async getPresignedUploadUrl(options: PresignedUrlOptions): Promise<PresignedUploadResult> {
+    // For local storage, return a direct upload endpoint URL
+    const expiresIn = options.expiresIn || 3600;
+    const uploadUrl = `${this.baseUrl.replace('/uploads', '')}/api/v1/storage/local-upload/${encodeURIComponent(options.key)}`;
+
+    return {
+      uploadUrl,
+      key: options.key,
+      expiresIn,
+    };
+  }
+
+  async getFileUrl(options: GetUrlOptions): Promise<string> {
+    const filePath = this.getFilePath(options.key);
+    if (!fs.existsSync(filePath)) {
+      throw ApiError.notFound('File not found in local storage');
+    }
+    return `${this.baseUrl}/${options.key}`;
+  }
+
+  async delete(options: DeleteOptions): Promise<void> {
+    try {
+      const filePath = this.getFilePath(options.key);
+      if (fs.existsSync(filePath)) {
+        await fsPromises.unlink(filePath);
+      }
+    } catch (error) {
+      logger.error('Local storage delete error:', error);
+      throw ApiError.internal('Failed to delete file from local storage');
+    }
+  }
+
+  async copy(options: CopyOptions): Promise<UploadResult> {
+    try {
+      const sourcePath = this.getFilePath(options.sourceKey);
+      const destPath = this.getFilePath(options.destinationKey);
+      await this.ensureDir(destPath);
+      await fsPromises.copyFile(sourcePath, destPath);
+
+      const stats = await fsPromises.stat(destPath);
+      const url = `${this.baseUrl}/${options.destinationKey}`;
+
+      return {
+        key: options.destinationKey,
+        url,
+        size: stats.size,
+      };
+    } catch (error) {
+      logger.error('Local storage copy error:', error);
+      throw ApiError.internal('Failed to copy file in local storage');
+    }
+  }
+
+  async exists(key: string): Promise<boolean> {
+    const filePath = this.getFilePath(key);
+    return fs.existsSync(filePath);
+  }
+
+  async getMetadata(key: string): Promise<{ size: number; contentType: string; lastModified: Date }> {
+    try {
+      const filePath = this.getFilePath(key);
+      const stats = await fsPromises.stat(filePath);
+      return {
+        size: stats.size,
+        contentType: 'application/octet-stream',
+        lastModified: stats.mtime,
+      };
+    } catch {
+      throw ApiError.notFound('File not found in local storage');
+    }
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\storage\providers\s3.provider.ts
+==============================
+
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  CopyObjectCommand,
+  HeadObjectCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { Readable } from 'stream';
+import { env } from '../../config/env';
+import { IStorageProvider } from '../storage.interface';
+import {
+  UploadOptions,
+  UploadResult,
+  PresignedUrlOptions,
+  PresignedUploadResult,
+  DeleteOptions,
+  CopyOptions,
+  GetUrlOptions,
+} from '../../types/storage.types';
+import { ApiError } from '../../utils/apiError';
+import { logger } from '../../utils/logger';
+
+export class S3StorageProvider implements IStorageProvider {
+  private client: S3Client;
+  private bucket: string;
+  private region: string;
+  private endpointUrl: string | undefined;
+
+  constructor() {
+    if (!env.AWS_ACCESS_KEY_ID || !env.AWS_SECRET_ACCESS_KEY || !env.AWS_S3_BUCKET) {
+      throw new Error('AWS S3 configuration is incomplete. Please check environment variables.');
+    }
+
+    this.bucket = env.AWS_S3_BUCKET;
+    this.region = env.AWS_REGION;
+    this.endpointUrl = env.AWS_ENDPOINT_URL;
+
+    this.client = new S3Client({
+      region: this.region,
+      credentials: {
+        accessKeyId: env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
+      },
+      // Custom endpoint for Lightsail and other S3-compatible services
+      ...(this.endpointUrl && {
+        endpoint: this.endpointUrl,
+        forcePathStyle: true,
+      }),
+    });
+  }
+
+  async upload(buffer: Buffer | Readable, options: UploadOptions): Promise<UploadResult> {
+    try {
+      const body = buffer instanceof Buffer ? buffer : await this.streamToBuffer(buffer as Readable);
+
+      const command = new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: options.key,
+        Body: body,
+        ContentType: options.mimeType,
+        Metadata: options.metadata,
+      });
+
+      const result = await this.client.send(command);
+
+      const url = this.endpointUrl
+        ? `${this.endpointUrl}/${this.bucket}/${options.key}`
+        : `https://${this.bucket}.s3.${this.region}.amazonaws.com/${options.key}`;
+
+      return {
+        key: options.key,
+        url,
+        size: body.length,
+        etag: result.ETag,
+        metadata: options.metadata,
+      };
+    } catch (error) {
+      logger.error('S3 upload error:', error);
+      throw ApiError.internal('Failed to upload file to S3');
+    }
+  }
+
+  async getPresignedUploadUrl(options: PresignedUrlOptions): Promise<PresignedUploadResult> {
+    try {
+      const command = new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: options.key,
+        ContentType: options.contentType,
+      });
+
+      const expiresIn = options.expiresIn || 3600;
+      const uploadUrl = await getSignedUrl(this.client, command, { expiresIn });
+
+      return {
+        uploadUrl,
+        key: options.key,
+        expiresIn,
+      };
+    } catch (error) {
+      logger.error('S3 presigned URL error:', error);
+      throw ApiError.internal('Failed to generate presigned upload URL');
+    }
+  }
+
+  async getFileUrl(options: GetUrlOptions): Promise<string> {
+    try {
+      const expiresIn = options.expiresIn || 3600;
+      const command = new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: options.key,
+      });
+      return await getSignedUrl(this.client, command, { expiresIn });
+    } catch (error) {
+      logger.error('S3 get URL error:', error);
+      throw ApiError.internal('Failed to generate file URL');
+    }
+  }
+
+  async delete(options: DeleteOptions): Promise<void> {
+    try {
+      const command = new DeleteObjectCommand({
+        Bucket: this.bucket,
+        Key: options.key,
+      });
+      await this.client.send(command);
+    } catch (error) {
+      logger.error('S3 delete error:', error);
+      throw ApiError.internal('Failed to delete file from S3');
+    }
+  }
+
+  async copy(options: CopyOptions): Promise<UploadResult> {
+    try {
+      const command = new CopyObjectCommand({
+        Bucket: this.bucket,
+        CopySource: `${this.bucket}/${options.sourceKey}`,
+        Key: options.destinationKey,
+      });
+      await this.client.send(command);
+
+      const metadata = await this.getMetadata(options.destinationKey);
+      const url = this.endpointUrl
+        ? `${this.endpointUrl}/${this.bucket}/${options.destinationKey}`
+        : `https://${this.bucket}.s3.${this.region}.amazonaws.com/${options.destinationKey}`;
+
+      return {
+        key: options.destinationKey,
+        url,
+        size: metadata.size,
+      };
+    } catch (error) {
+      logger.error('S3 copy error:', error);
+      throw ApiError.internal('Failed to copy file in S3');
+    }
+  }
+
+  async exists(key: string): Promise<boolean> {
+    try {
+      const command = new HeadObjectCommand({ Bucket: this.bucket, Key: key });
+      await this.client.send(command);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async getMetadata(key: string): Promise<{ size: number; contentType: string; lastModified: Date }> {
+    try {
+      const command = new HeadObjectCommand({ Bucket: this.bucket, Key: key });
+      const result = await this.client.send(command);
+      return {
+        size: result.ContentLength || 0,
+        contentType: result.ContentType || 'application/octet-stream',
+        lastModified: result.LastModified || new Date(),
+      };
+    } catch (error) {
+      logger.error('S3 metadata error:', error);
+      throw ApiError.notFound('File not found in S3');
+    }
+  }
+
+  private async streamToBuffer(stream: Readable): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      stream.on('end', () => resolve(Buffer.concat(chunks)));
+      stream.on('error', reject);
+    });
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\storage\storage.factory.ts
+==============================
+
+import { env } from '../config/env';
+import { IStorageProvider } from './storage.interface';
+import { S3StorageProvider } from './providers/s3.provider';
+import { CloudinaryStorageProvider } from './providers/cloudinary.provider';
+import { LocalStorageProvider } from './providers/local.provider';
+import { StorageProviderType } from '../types/storage.types';
+import { logger } from '../utils/logger';
+
+class StorageFactory {
+  private static instance: IStorageProvider | null = null;
+
+  static create(providerType?: StorageProviderType): IStorageProvider {
+    const type = providerType || env.STORAGE_PROVIDER;
+
+    switch (type) {
+      case 's3':
+        logger.info('Using AWS S3 storage provider');
+        return new S3StorageProvider();
+      case 'lightsail':
+        logger.info('Using AWS Lightsail Object Storage provider (S3-compatible)');
+        return new S3StorageProvider();
+      case 'cloudinary':
+        logger.info('Using Cloudinary storage provider');
+        return new CloudinaryStorageProvider();
+      case 'local':
+      default:
+        logger.info('Using Local storage provider');
+        return new LocalStorageProvider();
+    }
+  }
+
+  /**
+   * Get singleton instance of the configured storage provider
+   */
+  static getInstance(): IStorageProvider {
+    if (!StorageFactory.instance) {
+      StorageFactory.instance = StorageFactory.create();
+    }
+    return StorageFactory.instance;
+  }
+
+  /**
+   * Reset instance (useful for testing)
+   */
+  static reset(): void {
+    StorageFactory.instance = null;
+  }
+}
+
+export { StorageFactory };
+
+// Export singleton instance for convenience
+export const storageProvider = StorageFactory.getInstance();
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\storage\storage.interface.ts
+==============================
+
+import { Readable } from 'stream';
+import {
+  UploadOptions,
+  UploadResult,
+  PresignedUrlOptions,
+  PresignedUploadResult,
+  DeleteOptions,
+  CopyOptions,
+  GetUrlOptions,
+} from '../types/storage.types';
+
+export interface IStorageProvider {
+  /**
+   * Upload a file buffer/stream to storage
+   */
+  upload(buffer: Buffer | Readable, options: UploadOptions): Promise<UploadResult>;
+
+  /**
+   * Generate a presigned URL for client-side direct upload
+   */
+  getPresignedUploadUrl(options: PresignedUrlOptions): Promise<PresignedUploadResult>;
+
+  /**
+   * Get a URL to access/download a file
+   */
+  getFileUrl(options: GetUrlOptions): Promise<string>;
+
+  /**
+   * Delete a file from storage
+   */
+  delete(options: DeleteOptions): Promise<void>;
+
+  /**
+   * Copy a file within storage
+   */
+  copy(options: CopyOptions): Promise<UploadResult>;
+
+  /**
+   * Check if a file exists
+   */
+  exists(key: string): Promise<boolean>;
+
+  /**
+   * Get file metadata
+   */
+  getMetadata(key: string): Promise<{ size: number; contentType: string; lastModified: Date }>;
+}
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\types\common.types.ts
+==============================
+
+export type UserRole = 'user' | 'admin';
+export type FileLabel = 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple';
+export type SortOrder = 'asc' | 'desc';
+export type SortField = 'name' | 'updatedAt' | 'size' | 'type' | 'createdAt';
+export type FilterType = 'all' | 'documents' | 'images' | 'videos' | 'audio' | 'archives' | 'other';
+export type SharePermission = 'view' | 'edit' | 'restricted';
+export type ActivityAction =
+  | 'upload'
+  | 'download'
+  | 'share'
+  | 'rename'
+  | 'move'
+  | 'delete'
+  | 'restore'
+  | 'create_folder'
+  | 'star'
+  | 'unstar'
+  | 'trash'
+  | 'copy'
+  | 'label'
+  | 'login'
+  | 'register';
+
+export interface PaginationQuery {
+  page?: number;
+  limit?: number;
+}
+
+export interface PaginationMeta extends Record<string, unknown> {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+}
+
+export interface StorageBreakdown {
+  documents: number;
+  images: number;
+  videos: number;
+  audio: number;
+  archives: number;
+  other: number;
+}
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\types\express.d.ts
+==============================
+
+import { JwtPayload } from '../utils/jwt.utils';
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: JwtPayload;
+      file?: Express.Multer.File;
+    }
+  }
+}
+
+export {};
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\types\storage.types.ts
+==============================
+
+export type StorageProviderType = 's3' | 'lightsail' | 'cloudinary' | 'local';
+
+export interface UploadOptions {
+  key: string;
+  mimeType: string;
+  size?: number;
+  metadata?: Record<string, string>;
+}
+
+export interface UploadResult {
+  key: string;
+  url: string;
+  size: number;
+  etag?: string;
+  metadata?: Record<string, string>;
+}
+
+export interface PresignedUrlOptions {
+  key: string;
+  expiresIn?: number;
+  contentType?: string;
+  contentLength?: number;
+}
+
+export interface PresignedUploadResult {
+  uploadUrl: string;
+  key: string;
+  expiresIn: number;
+  fields?: Record<string, string>;
+}
+
+export interface DeleteOptions {
+  key: string;
+}
+
+export interface CopyOptions {
+  sourceKey: string;
+  destinationKey: string;
+}
+
+export interface GetUrlOptions {
+  key: string;
+  expiresIn?: number;
+}
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\utils\apiError.ts
+==============================
+
+export class ApiError extends Error {
+  public readonly statusCode: number;
+  public readonly isOperational: boolean;
+  public readonly errors: unknown[];
+
+  constructor(
+    statusCode: number,
+    message: string,
+    errors: unknown[] = [],
+    isOperational = true
+  ) {
+    super(message);
+    this.statusCode = statusCode;
+    this.isOperational = isOperational;
+    this.errors = errors;
+    Error.captureStackTrace(this, this.constructor);
+  }
+
+  static badRequest(message: string, errors: unknown[] = []): ApiError {
+    return new ApiError(400, message, errors);
+  }
+
+  static unauthorized(message = 'Unauthorized'): ApiError {
+    return new ApiError(401, message);
+  }
+
+  static forbidden(message = 'Forbidden'): ApiError {
+    return new ApiError(403, message);
+  }
+
+  static notFound(message = 'Resource not found'): ApiError {
+    return new ApiError(404, message);
+  }
+
+  static conflict(message: string): ApiError {
+    return new ApiError(409, message);
+  }
+
+  static tooLarge(message = 'Request entity too large'): ApiError {
+    return new ApiError(413, message);
+  }
+
+  static internal(message = 'Internal server error'): ApiError {
+    return new ApiError(500, message, [], false);
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\utils\apiResponse.ts
+==============================
+
+import { Response } from 'express';
+
+export interface IApiResponse<T = null> {
+  success: boolean;
+  statusCode: number;
+  message: string;
+  data: T | null;
+  meta?: Record<string, unknown>;
+}
+
+export class ApiResponse<T = null> {
+  public readonly success: boolean;
+  public readonly statusCode: number;
+  public readonly message: string;
+  public readonly data: T | null;
+  public readonly meta?: Record<string, unknown>;
+
+  constructor(
+    statusCode: number,
+    message: string,
+    data: T | null = null,
+    meta?: Record<string, unknown>
+  ) {
+    this.success = statusCode < 400;
+    this.statusCode = statusCode;
+    this.message = message;
+    this.data = data;
+    this.meta = meta;
+  }
+
+  send(res: Response): Response {
+    return res.status(this.statusCode).json({
+      success: this.success,
+      statusCode: this.statusCode,
+      message: this.message,
+      data: this.data,
+      ...(this.meta && { meta: this.meta }),
+    });
+  }
+
+  static ok<T>(res: Response, message: string, data: T, meta?: Record<string, unknown>): Response {
+    return new ApiResponse<T>(200, message, data, meta).send(res);
+  }
+
+  static created<T>(res: Response, message: string, data: T): Response {
+    return new ApiResponse<T>(201, message, data).send(res);
+  }
+
+  static noContent(res: Response, message = 'No content'): Response {
+    return new ApiResponse(204, message).send(res);
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\utils\asyncHandler.ts
+==============================
+
+import { Request, Response, NextFunction, RequestHandler } from 'express';
+
+type AsyncRequestHandler = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => Promise<unknown>;
+
+export const asyncHandler = (fn: AsyncRequestHandler): RequestHandler => {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+};
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\utils\file.utils.ts
+==============================
+
+import path from 'path';
+import { v4 as uuidv4 } from 'uuid';
+import mime from 'mime-types';
+
+export type FileCategory = 'documents' | 'images' | 'videos' | 'audio' | 'archives' | 'other';
+
+export const MIME_TO_TYPE: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'application/msword': 'docx',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.ms-excel': 'xlsx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.ms-powerpoint': 'pptx',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/svg+xml': 'svg',
+  'video/mp4': 'mp4',
+  'audio/mpeg': 'mp3',
+  'audio/mp3': 'mp3',
+  'application/zip': 'zip',
+  'application/x-zip-compressed': 'zip',
+  'text/plain': 'txt',
+  'text/csv': 'csv',
+  'application/json': 'json',
+  'text/html': 'html',
+};
+
+export const TYPE_TO_CATEGORY: Record<string, FileCategory> = {
+  pdf: 'documents',
+  docx: 'documents',
+  xlsx: 'documents',
+  pptx: 'documents',
+  txt: 'documents',
+  csv: 'documents',
+  json: 'documents',
+  html: 'documents',
+  jpg: 'images',
+  png: 'images',
+  gif: 'images',
+  svg: 'images',
+  mp4: 'videos',
+  mp3: 'audio',
+  zip: 'archives',
+};
+
+export const getFileType = (mimeType: string, filename: string): string => {
+  if (MIME_TO_TYPE[mimeType]) return MIME_TO_TYPE[mimeType];
+  const ext = path.extname(filename).toLowerCase().replace('.', '');
+  return ext || 'other';
+};
+
+export const getFileCategory = (fileType: string): FileCategory => {
+  return TYPE_TO_CATEGORY[fileType] || 'other';
+};
+
+export const generateStorageKey = (filename: string, userId: string): string => {
+  const ext = path.extname(filename);
+  const id = uuidv4();
+  return `uploads/${userId}/${id}${ext}`;
+};
+
+export const formatFileSize = (bytes: number): string => {
+  if (bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+};
+
+export const getMimeType = (filename: string): string => {
+  return mime.lookup(filename) || 'application/octet-stream';
+};
+
+export const isImageFile = (mimeType: string): boolean => {
+  return mimeType.startsWith('image/');
+};
+
+export const sanitizeFilename = (filename: string): string => {
+  return filename.replace(/[^a-zA-Z0-9._\-\s]/g, '').trim();
+};
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\utils\jwt.utils.ts
+==============================
+
+import jwt from 'jsonwebtoken';
+import { env } from '../config/env';
+import { ApiError } from './apiError';
+
+export interface JwtPayload {
+  userId: string;
+  email: string;
+  role: 'user' | 'admin';
+  iat?: number;
+  exp?: number;
+}
+
+export const generateAccessToken = (payload: Omit<JwtPayload, 'iat' | 'exp'>): string => {
+  return jwt.sign(payload, env.JWT_SECRET, {
+    expiresIn: env.JWT_EXPIRES_IN as jwt.SignOptions['expiresIn'],
+  });
+};
+
+export const generateRefreshToken = (payload: Omit<JwtPayload, 'iat' | 'exp'>): string => {
+  const secret = env.JWT_REFRESH_SECRET || env.JWT_SECRET;
+  return jwt.sign(payload, secret, {
+    expiresIn: env.JWT_REFRESH_EXPIRES_IN as jwt.SignOptions['expiresIn'],
+  });
+};
+
+export const verifyAccessToken = (token: string): JwtPayload => {
+  try {
+    return jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+  } catch (error) {
+    if (error instanceof jwt.TokenExpiredError) {
+      throw ApiError.unauthorized('Token expired');
+    }
+    throw ApiError.unauthorized('Invalid token');
+  }
+};
+
+export const verifyRefreshToken = (token: string): JwtPayload => {
+  try {
+    const secret = env.JWT_REFRESH_SECRET || env.JWT_SECRET;
+    return jwt.verify(token, secret) as JwtPayload;
+  } catch {
+    throw ApiError.unauthorized('Invalid refresh token');
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\utils\logger.ts
+==============================
+
+import winston from 'winston';
+import DailyRotateFile from 'winston-daily-rotate-file';
+import path from 'path';
+import { env } from '../config/env';
+
+const { combine, timestamp, printf, colorize, errors } = winston.format;
+
+const logFormat = printf(({ level, message, timestamp, stack, ...meta }) => {
+  const metaStr = Object.keys(meta).length ? `\n${JSON.stringify(meta, null, 2)}` : '';
+  return `${timestamp} [${level}]: ${stack || message}${metaStr}`;
+});
+
+const transports: winston.transport[] = [
+  new winston.transports.Console({
+    format: combine(
+      colorize({ all: true }),
+      timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+      errors({ stack: true }),
+      logFormat
+    ),
+  }),
+];
+
+if (env.NODE_ENV === 'production') {
+  transports.push(
+    new DailyRotateFile({
+      filename: path.join(env.LOG_DIR, 'error-%DATE%.log'),
+      datePattern: 'YYYY-MM-DD',
+      level: 'error',
+      maxSize: '20m',
+      maxFiles: '14d',
+    }),
+    new DailyRotateFile({
+      filename: path.join(env.LOG_DIR, 'combined-%DATE%.log'),
+      datePattern: 'YYYY-MM-DD',
+      maxSize: '20m',
+      maxFiles: '14d',
+    })
+  );
+}
+
+export const logger = winston.createLogger({
+  level: env.LOG_LEVEL,
+  format: combine(
+    timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+    errors({ stack: true }),
+    logFormat
+  ),
+  transports,
+  exitOnError: false,
+});
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\utils\password.utils.ts
+==============================
+
+import bcrypt from 'bcryptjs';
+
+const SALT_ROUNDS = 12;
+
+export const hashPassword = async (password: string): Promise<string> => {
+  return bcrypt.hash(password, SALT_ROUNDS);
+};
+
+export const comparePassword = async (
+  password: string,
+  hashedPassword: string
+): Promise<boolean> => {
+  return bcrypt.compare(password, hashedPassword);
+};
+
+export const validatePasswordStrength = (password: string): boolean => {
+  // At least 8 chars, one uppercase, one lowercase, one digit
+  const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
+  return passwordRegex.test(password);
+};
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\validators\admin.validator.ts
+==============================
+
+import { z } from 'zod';
+
+export const updateUserSchema = z.object({
+  name: z.string().min(2).max(100).optional(),
+  storageQuota: z.number().positive().optional(),
+  role: z.enum(['user', 'admin']).optional(),
+});
+
+export const paginationSchema = z.object({
+  page: z.string().optional().transform((v) => (v ? parseInt(v, 10) : 1)),
+  limit: z.string().optional().transform((v) => (v ? parseInt(v, 10) : 20)),
+});
+
+export const updateSettingsSchema = z.object({
+  allowPublicSharing: z.boolean().optional(),
+  allowRegistration: z.boolean().optional(),
+  enableFileVersioning: z.boolean().optional(),
+  defaultStorageQuotaGB: z.number().int().min(1).max(1000).optional(),
+  bannerMessage: z.string().max(500).optional(),
+  showBanner: z.boolean().optional(),
+});
+
+export type UpdateUserInput = z.infer<typeof updateUserSchema>;
+export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\validators\auth.validator.ts
+==============================
+
+import { z } from 'zod';
+
+export const registerSchema = z.object({
+  name: z.string().min(2, 'Name must be at least 2 characters').max(100),
+  email: z.string().email('Invalid email address'),
+  password: z.string()
+    .min(8, 'Password must be at least 8 characters')
+    .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+    .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
+    .regex(/[0-9]/, 'Password must contain at least one number'),
+});
+
+export const loginSchema = z.object({
+  email: z.string().email('Invalid email address'),
+  password: z.string().min(1, 'Password is required'),
+});
+
+export const updateProfileSchema = z.object({
+  name: z.string().min(2).max(100).optional(),
+  avatar: z.string().url().optional(),
+});
+
+export const updateNotificationPreferencesSchema = z.object({
+  notifyUploads: z.boolean().optional(),
+  notifyShares: z.boolean().optional(),
+  notifyComments: z.boolean().optional(),
+  emailDigest: z.enum(['never', 'daily', 'weekly', 'monthly']).optional(),
+});
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'Current password is required'),
+  newPassword: z.string()
+    .min(8, 'Password must be at least 8 characters')
+    .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+    .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
+    .regex(/[0-9]/, 'Password must contain at least one number'),
+});
+
+export type RegisterInput = z.infer<typeof registerSchema>;
+export type LoginInput = z.infer<typeof loginSchema>;
+export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+export type UpdateNotificationPreferencesInput = z.infer<typeof updateNotificationPreferencesSchema>;
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\validators\file.validator.ts
+==============================
+
+import { z } from 'zod';
+
+export const createFolderSchema = z.object({
+  name: z.string().min(1, 'Folder name is required').max(255),
+  parentId: z.string().optional().nullable(),
+});
+
+export const renameSchema = z.object({
+  name: z.string().min(1, 'Name is required').max(255),
+});
+
+export const moveSchema = z.object({
+  targetFolderId: z.string().nullable(),
+});
+
+export const copySchema = z.object({
+  targetFolderId: z.string().nullable().optional(),
+});
+
+export const labelSchema = z.object({
+  label: z.enum(['red', 'orange', 'yellow', 'green', 'blue', 'purple']).nullable(),
+});
+
+export const starSchema = z.object({
+  starred: z.boolean(),
+});
+
+export const fileQuerySchema = z.object({
+  parentId: z.string().optional(),
+  search: z.string().optional(),
+  filterType: z.enum(['all', 'documents', 'images', 'videos', 'audio', 'archives', 'other']).optional(),
+  sortBy: z.enum(['name', 'updatedAt', 'size', 'type', 'createdAt']).optional(),
+  sortOrder: z.enum(['asc', 'desc']).optional(),
+});
+
+export const presignedUrlSchema = z.object({
+  filename: z.string().min(1),
+  mimeType: z.string().min(1),
+  size: z.number().positive(),
+});
+
+export type CreateFolderInput = z.infer<typeof createFolderSchema>;
+export type RenameInput = z.infer<typeof renameSchema>;
+export type MoveInput = z.infer<typeof moveSchema>;
+export type LabelInput = z.infer<typeof labelSchema>;
+export type FileQueryInput = z.infer<typeof fileQuerySchema>;
+
+
+==============================
+FILE: E:\My Projects\Drive-X\drive-X-backend\src\validators\share.validator.ts
+==============================
+
+import { z } from 'zod';
+
+export const shareWithUsersSchema = z.object({
+  emails: z.array(z.string().email()).min(1, 'At least one email is required'),
+  permission: z.enum(['viewer', 'commenter', 'editor']).default('viewer'),
+});
+
+export const generateShareLinkSchema = z.object({
+  permission: z.enum(['view', 'edit', 'restricted']).default('view'),
+  expiresAt: z.string().datetime().optional().nullable(),
+});
+
+export const updateSharedUserPermissionSchema = z.object({
+  permission: z.enum(['viewer', 'commenter', 'editor']),
+});
+
+export type ShareWithUsersInput = z.infer<typeof shareWithUsersSchema>;
+export type GenerateShareLinkInput = z.infer<typeof generateShareLinkSchema>;
+export type UpdateSharedUserPermissionInput = z.infer<typeof updateSharedUserPermissionSchema>;
