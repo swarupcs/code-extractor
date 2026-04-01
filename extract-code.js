@@ -29,11 +29,9 @@ const path = require("path");
 // const TARGET_FOLDER = String.raw`E:\My Projects\WhatsApp\WhatsApp-Frontend\src`;
 // const TARGET_FOLDER = String.raw`e:\My Projects\WhatsApp\WhatsApp-Backend\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\WhatsApp-Clone\whatsapp-frontend\src`;
-const TARGET_FOLDER = String.raw`E:\My Projects\WhatsApp-Clone\whatsapp-backend\src`;
+// const TARGET_FOLDER = String.raw`E:\My Projects\WhatsApp-Clone\whatsapp-backend\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\Drive-X\drive-X-backend\src`;
 // const TARGET_FOLDER = String.raw`E:\My Projects\Drive-X\drive-X-frontend\src`;
-
-
 
 // const TARGET_FOLDER = 'E:/My Projects/LeetLab/Algodrill/frontend/src';
 // const TARGET_FOLDER = 'E:/My Projects/LeetLab/Algodrill/frontend/src';
@@ -42,7 +40,16 @@ const TARGET_FOLDER = String.raw`E:\My Projects\WhatsApp-Clone\whatsapp-backend\
 // const TARGET_FOLDER = 'E:/My Projects/Slack Clone/Slack-Frontend/src';
 // const TARGET_FOLDER = 'E:/Web Dev Course/Coder\'s Gyan Gen AI Course/LinkedIn-Post-Writter-Reflection-Pattern/src';
 
-// 👇 Output folder name (leave empty to auto-generate from TARGET_FOLDER)
+// 👇 TARGET_FOLDERS supports one or more paths.
+//    All paths are extracted into a single combined output file.
+//    Add as many paths as needed — just separate them with commas.
+const TARGET_FOLDERS = [
+  String.raw`E:\My Projects\WhatsApp-Clone\whatsapp-backend\src`,
+  String.raw`E:\My Projects\WhatsApp-Clone\whatsapp-frontend\src`,
+];
+
+// 👇 Output folder name (leave empty to auto-generate from TARGET_FOLDERS)
+//    When multiple folders are provided, names are joined with '_and_'
 const OUTPUT_FOLDER_NAME = "";
 
 // 👇 Output file
@@ -169,29 +176,39 @@ function extractCode(dirPath, writer) {
 // RUN
 // =========================
 (function run() {
-  const sourcePath = path.resolve(TARGET_FOLDER);
-  if (!fs.existsSync(sourcePath)) {
-    console.error("❌ Target folder does not exist:", sourcePath);
-    process.exit(1);
+  // Validate all paths exist before starting
+  for (const folder of TARGET_FOLDERS) {
+    const sourcePath = path.resolve(folder);
+    if (!fs.existsSync(sourcePath)) {
+      console.error("❌ Target folder does not exist:", sourcePath);
+      process.exit(1);
+    }
   }
 
-  // 👇 Determine output folder name
-  const outputFolderName =
-    OUTPUT_FOLDER_NAME || extractOutputFolderName(TARGET_FOLDER);
+  // 👇 Iterate over all target folders and extract each into its OWN folder
+  for (const folder of TARGET_FOLDERS) {
+    const sourcePath = path.resolve(folder);
 
-  // 👇 Output always created next to extract-codes.js
-  const outputDir = path.join(__dirname, outputFolderName);
-  fs.mkdirSync(outputDir, { recursive: true });
+    // 👇 Determine output folder name per folder
+    const outputFolderName =
+      OUTPUT_FOLDER_NAME || extractOutputFolderName(folder);
 
-  const outputFilePath = path.join(outputDir, OUTPUT_FILE_NAME);
-  const writer = fs.createWriteStream(outputFilePath, { flags: "w" });
+    // 👇 Output always created next to extract-codes.js
+    const outputDir = path.join(__dirname, outputFolderName);
+    fs.mkdirSync(outputDir, { recursive: true });
 
-  extractCode(sourcePath, writer);
+    const outputFilePath = path.join(outputDir, OUTPUT_FILE_NAME);
+    const writer = fs.createWriteStream(outputFilePath, { flags: "w" });
 
-  writer.end();
+    console.log(`📂 Extracting: ${sourcePath}`);
+    extractCode(sourcePath, writer);
 
-  console.log("✅ Code extraction completed!");
-  console.log("📁 Output folder:", outputDir);
-  console.log("📄 Output file:", outputFilePath);
-  console.log("📝 Output folder name:", outputFolderName);
+    writer.end();
+
+    console.log("✅ Code extraction completed!");
+    console.log("📁 Output folder:", outputDir);
+    console.log("📄 Output file:", outputFilePath);
+    console.log("📝 Output folder name:", outputFolderName);
+    console.log("─".repeat(50));
+  }
 })();

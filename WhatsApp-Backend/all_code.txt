@@ -4,6 +4,21 @@
 FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\app.ts
 ==============================
 
+/**
+ * app.ts — Express application factory.
+ *
+ * Order of middleware matters:
+ *   1. Security (helmet, CORS)
+ *   2. Request ID attachment (for log correlation)
+ *   3. Request logger
+ *   4. Body parsers
+ *   5. Rate limiters
+ *   6. Static files
+ *   7. API routes
+ *   8. 404 handler          ← catches unmatched routes
+ *   9. Global error handler ← MUST be last, MUST have 4 params (err, req, res, next)
+ */
+
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -15,72 +30,133 @@ import {
   requestLogger,
   notFoundHandler,
   globalErrorHandler,
-} from './middleware/error.js';
+  attachRequestId,
+  requireJsonBody,
+} from './middleware/error.middleware.js';
 
 export function createApp(): express.Application {
   const app = express();
 
-  // ── Security headers ────────────────────────────────────────────────────
-  app.use(
-    helmet({
-      crossOriginResourcePolicy: { policy: 'cross-origin' }, // allow uploaded file serving
-    }),
-  );
+  // ── Security ──────────────────────────────────────────────────────────────
+  app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
-  // ── CORS ────────────────────────────────────────────────────────────────
+  // ── CORS ──────────────────────────────────────────────────────────────────
   app.use(
     cors({
       origin: env.cors.clientUrl,
       credentials: true,
       methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id'],
     }),
   );
 
-  // ── Request logger ───────────────────────────────────────────────────────
+  // ── Request correlation ID ────────────────────────────────────────────────
+  app.use(attachRequestId);
+
+  // ── Request logger ────────────────────────────────────────────────────────
   app.use(requestLogger);
 
-  // ── Body parsers ─────────────────────────────────────────────────────────
+  // ── Body parsers ──────────────────────────────────────────────────────────
+  // These throw SyntaxError on malformed JSON — caught by globalErrorHandler
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-  // ── Rate limiting ────────────────────────────────────────────────────────
+  // ── Content-Type guard (after body parsers, before routes) ────────────────
+  app.use('/api', requireJsonBody);
+
+  // ── Rate limiting ─────────────────────────────────────────────────────────
   const limiter = rateLimit({
     windowMs: env.rateLimit.windowMs,
     max: env.rateLimit.maxRequests,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { success: false, error: 'Too many requests, please try again later.' },
-    skip: (req) => req.path === '/api/health', // don't rate-limit health checks
+    // Return a proper structured error instead of a plain string
+    handler: (_req, res) => {
+      res.status(429).json({
+        success: false,
+        statusCode: 429,
+        code: 'TOO_MANY_REQUESTS',
+        message: 'Too many requests, please try again later.',
+      });
+    },
+    skip: (req) => req.path === '/api/health',
   });
   app.use('/api', limiter);
 
-  // Auth routes get a tighter limit
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 20,
-    message: { success: false, error: 'Too many auth attempts, please try again later.' },
+    handler: (_req, res) => {
+      res.status(429).json({
+        success: false,
+        statusCode: 429,
+        code: 'TOO_MANY_AUTH_ATTEMPTS',
+        message: 'Too many authentication attempts, please try again later.',
+      });
+    },
   });
   app.use('/api/auth', authLimiter);
 
-  // ── Static file serving for uploads ─────────────────────────────────────
+  // ── Static file serving ───────────────────────────────────────────────────
   app.use(
     '/uploads',
-    express.static(path.resolve(process.cwd(), env.upload.uploadDir), {
-      maxAge: '7d',
-    }),
+    express.static(path.resolve(process.cwd(), env.upload.uploadDir), { maxAge: '7d' }),
   );
 
-  // ── API routes ───────────────────────────────────────────────────────────
+  // ── API routes ────────────────────────────────────────────────────────────
   app.use('/api', apiRouter);
 
-  // ── 404 handler ──────────────────────────────────────────────────────────
+  // ── 404 handler ───────────────────────────────────────────────────────────
+  // Must come AFTER all routes
   app.use(notFoundHandler);
 
-  // ── Global error handler (must be last) ──────────────────────────────────
+  // ── Global error handler ──────────────────────────────────────────────────
+  // MUST be last and MUST have exactly 4 parameters so Express recognizes it
+  // as an error handler
   app.use(globalErrorHandler);
 
   return app;
+}
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\config\database.ts
+==============================
+
+import mongoose from 'mongoose';
+import { env } from './env.js';
+
+export async function connectDB(): Promise<void> {
+  try {
+    mongoose.set('strictQuery', false);
+
+    await mongoose.connect(env.mongodb.uri, {
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+    });
+
+    console.log(`[MongoDB] Connected: ${mongoose.connection.host}`);
+
+    mongoose.connection.on('error', (err) => {
+      console.error('[MongoDB] Connection error:', err);
+    });
+
+    mongoose.connection.on('disconnected', () => {
+      console.warn('[MongoDB] Disconnected. Attempting to reconnect...');
+    });
+
+    mongoose.connection.on('reconnected', () => {
+      console.log('[MongoDB] Reconnected');
+    });
+  } catch (err) {
+    console.error('[MongoDB] Initial connection failed:', err);
+    process.exit(1);
+  }
+}
+
+export async function disconnectDB(): Promise<void> {
+  await mongoose.disconnect();
+  console.log('[MongoDB] Disconnected gracefully');
 }
 
 
@@ -105,16 +181,44 @@ function optionalEnv(key: string, fallback: string): string {
   return process.env[key] ?? fallback;
 }
 
+const nodeEnv = optionalEnv('NODE_ENV', 'development');
+const isProd = nodeEnv === 'production';
+
+// BUG FIX 2: In production, JWT secrets MUST be provided via environment variables.
+// Using fallback dev secrets in production is a critical security vulnerability —
+// anyone who knows the default secret can forge valid JWTs for any user.
+// We use requireEnv in production and emit a loud warning in development.
+function getJwtSecret(key: string, devFallback: string): string {
+  if (isProd) {
+    return requireEnv(key);
+  }
+  const value = process.env[key];
+  if (!value) {
+    console.warn(
+      `[Security] WARNING: ${key} is not set. Using insecure dev fallback. ` +
+        `Never deploy to production without setting this variable.`,
+    );
+    return devFallback;
+  }
+  return value;
+}
+
 export const env = {
   port: parseInt(optionalEnv('PORT', '5000'), 10),
-  nodeEnv: optionalEnv('NODE_ENV', 'development'),
-  isDev: optionalEnv('NODE_ENV', 'development') === 'development',
-  isProd: optionalEnv('NODE_ENV', 'development') === 'production',
+  nodeEnv,
+  isDev: nodeEnv === 'development',
+  isProd,
+
+  mongodb: {
+    uri: isProd
+      ? requireEnv('MONGODB_URI')
+      : optionalEnv('MONGODB_URI', 'mongodb://localhost:27017/whatsapp_clone'),
+  },
 
   jwt: {
-    secret: optionalEnv('JWT_SECRET', 'dev-secret-change-in-prod'),
+    secret: getJwtSecret('JWT_SECRET', 'dev-secret-change-in-prod'),
     expiresIn: optionalEnv('JWT_EXPIRES_IN', '7d'),
-    refreshSecret: optionalEnv('JWT_REFRESH_SECRET', 'dev-refresh-secret'),
+    refreshSecret: getJwtSecret('JWT_REFRESH_SECRET', 'dev-refresh-secret'),
     refreshExpiresIn: optionalEnv('JWT_REFRESH_EXPIRES_IN', '30d'),
   },
 
@@ -132,6 +236,59 @@ export const env = {
     maxRequests: parseInt(optionalEnv('RATE_LIMIT_MAX_REQUESTS', '100'), 10),
   },
 } as const;
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\config\runtimeStore.ts
+==============================
+
+/**
+ * Runtime-only store.
+ * Socket session data is ephemeral — it lives only while the server is running.
+ * All persistent data (users, conversations, messages) lives in MongoDB.
+ */
+export const runtimeStore = {
+  /** socketId → userId */
+  socketUserMap: new Map<string, string>(),
+  /** userId → Set of socketIds (a user can have multiple tabs open) */
+  onlineSockets: new Map<string, Set<string>>(),
+};
+
+export function addSocket(socketId: string, userId: string): void {
+  runtimeStore.socketUserMap.set(socketId, userId);
+  if (!runtimeStore.onlineSockets.has(userId)) {
+    runtimeStore.onlineSockets.set(userId, new Set());
+  }
+  runtimeStore.onlineSockets.get(userId)!.add(socketId);
+}
+
+export function removeSocket(socketId: string): string | undefined {
+  const userId = runtimeStore.socketUserMap.get(socketId);
+  if (!userId) return undefined;
+
+  runtimeStore.socketUserMap.delete(socketId);
+  const sockets = runtimeStore.onlineSockets.get(userId);
+  if (sockets) {
+    sockets.delete(socketId);
+    if (sockets.size === 0) {
+      runtimeStore.onlineSockets.delete(userId);
+    }
+  }
+  return userId;
+}
+
+export function getSocketsForUser(userId: string): string[] {
+  return Array.from(runtimeStore.onlineSockets.get(userId) ?? []);
+}
+
+export function isUserOnline(userId: string): boolean {
+  const sockets = runtimeStore.onlineSockets.get(userId);
+  return !!(sockets && sockets.size > 0);
+}
+
+export function getOnlineUserIds(): string[] {
+  return Array.from(runtimeStore.onlineSockets.keys());
+}
 
 
 ==============================
@@ -599,105 +756,83 @@ export function initializeStore(): void {
 FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\controllers\auth.controller.ts
 ==============================
 
+/**
+ * auth.controller.ts — Refactored with asyncHandler + AppErrors.
+ *
+ * BEFORE:  every method had its own try/catch.
+ * AFTER:   no try/catch anywhere. asyncHandler catches every thrown error
+ *          (AppError, ZodError, Mongoose error, etc.) and forwards it to the
+ *          global error handler which produces a consistent response.
+ *
+ * Controller responsibilities:
+ *   1. Parse + validate the request            → throws ValidationError on failure
+ *   2. Call the service                        → returns data OR a discriminant string
+ *   3. Map the service result to an HTTP response (success or throw an AppError)
+ */
+
 import type { Request, Response } from 'express';
 import { authService } from '../services/auth.service.js';
 import {
-  sendSuccess,
-  sendCreated,
-  sendError,
-  sendUnauthorized,
-  sendConflict,
-  sendInternalError,
-} from '../helpers/index.js';
+  UnauthorizedError,
+  ConflictError,
+  NotFoundError,
+} from '../errors/AppError.js';
+import { sendOk, sendCreated } from '../utils/response.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
 import {
+  parseBody,
   loginSchema,
   registerSchema,
   refreshTokenSchema,
-  safeParseBody,
 } from '../helpers/validation.js';
 
 export const authController = {
-  /**
-   * POST /api/auth/login
-   */
-  async login(req: Request, res: Response): Promise<void> {
-    const parsed = safeParseBody(loginSchema, req.body);
-    if (!parsed.success) {
-      sendError(res, parsed.error);
-      return;
-    }
+  /** POST /api/auth/login */
+  login: asyncHandler(async (req: Request, res: Response) => {
+    const data = parseBody(loginSchema, req.body);
 
-    const result = await authService.login(parsed.data);
-    if (!result) {
-      sendUnauthorized(res, 'Invalid email or password');
-      return;
-    }
+    const result = await authService.login(data);
+    if (!result) throw new UnauthorizedError('Invalid email or password');
 
-    sendSuccess(res, result, 'Login successful');
-  },
+    sendOk(res, result, 'Login successful');
+  }),
 
-  /**
-   * POST /api/auth/register
-   */
-  async register(req: Request, res: Response): Promise<void> {
-    const parsed = safeParseBody(registerSchema, req.body);
-    if (!parsed.success) {
-      sendError(res, parsed.error);
-      return;
-    }
+  /** POST /api/auth/register */
+  register: asyncHandler(async (req: Request, res: Response) => {
+    const data = parseBody(registerSchema, req.body);
 
-    const result = await authService.register(parsed.data);
+    const result = await authService.register(data);
     if (result === 'email_taken') {
-      sendConflict(res, 'An account with this email already exists');
-      return;
+      throw new ConflictError('An account with this email already exists');
     }
 
     sendCreated(res, result, 'Account created successfully');
-  },
+  }),
 
-  /**
-   * POST /api/auth/refresh
-   */
-  async refresh(req: Request, res: Response): Promise<void> {
-    const parsed = safeParseBody(refreshTokenSchema, req.body);
-    if (!parsed.success) {
-      sendError(res, parsed.error);
-      return;
-    }
+  /** POST /api/auth/refresh */
+  refresh: asyncHandler(async (req: Request, res: Response) => {
+    const { refreshToken } = parseBody(refreshTokenSchema, req.body);
 
-    const tokens = await authService.refreshTokens(parsed.data.refreshToken);
-    if (!tokens) {
-      sendUnauthorized(res, 'Invalid or expired refresh token');
-      return;
-    }
+    const tokens = await authService.refreshTokens(refreshToken);
+    if (!tokens) throw new UnauthorizedError('Invalid or expired refresh token');
 
-    sendSuccess(res, tokens, 'Tokens refreshed');
-  },
+    sendOk(res, tokens, 'Tokens refreshed');
+  }),
 
-  /**
-   * POST /api/auth/logout
-   * Requires: Authorization header
-   */
-  logout(req: Request, res: Response): void {
-    const userId = req.userId!;
+  /** POST /api/auth/logout */
+  logout: asyncHandler(async (req: Request, res: Response) => {
     const { refreshToken } = req.body as { refreshToken?: string };
+    await authService.logout(req.userId!, refreshToken);
+    sendOk(res, null, 'Logged out successfully');
+  }),
 
-    authService.logout(userId, refreshToken);
-    sendSuccess(res, null, 'Logged out successfully');
-  },
+  /** GET /api/auth/me */
+  me: asyncHandler(async (req: Request, res: Response) => {
+    const user = await authService.getMe(req.userId!);
+    if (!user) throw new NotFoundError('User');
 
-  /**
-   * GET /api/auth/me
-   * Requires: Authorization header
-   */
-  me(req: Request, res: Response): void {
-    const user = authService.getMe(req.userId!);
-    if (!user) {
-      sendUnauthorized(res, 'User not found');
-      return;
-    }
-    sendSuccess(res, user);
-  },
+    sendOk(res, user);
+  }),
 };
 
 
@@ -705,142 +840,141 @@ export const authController = {
 FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\controllers\conversation.controller.ts
 ==============================
 
+/**
+ * conversation.controller.ts — Refactored with asyncHandler + AppErrors.
+ */
+
 import type { Request, Response } from 'express';
+import type { Server as SocketIOServer } from 'socket.io';
 import { conversationService } from '../services/conversation.service.js';
 import {
-  sendSuccess,
-  sendCreated,
-  sendError,
-  sendNotFound,
-  sendForbidden,
-} from '../helpers/index.js';
-import {
-  createConversationSchema,
-  createGroupSchema,
-  safeParseBody,
-} from '../helpers/validation.js';
+  NotFoundError,
+  BadRequestError,
+  ForbiddenError,
+} from '../errors/AppError.js';
+import { sendOk, sendCreated } from '../utils/response.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { parseBody, createConversationSchema, createGroupSchema } from '../helpers/validation.js';
+import { getSocketsForUser } from '../config/runtimeStore.js';
 
 export const conversationController = {
-  /**
-   * GET /api/conversations
-   */
-  list(req: Request, res: Response): void {
-    const conversations = conversationService.getConversationsForUser(req.userId!);
-    sendSuccess(res, conversations);
-  },
+  /** GET /api/conversations */
+  list: asyncHandler(async (req: Request, res: Response) => {
+    const conversations = await conversationService.getConversationsForUser(req.userId!);
+    sendOk(res, conversations);
+  }),
 
-  /**
-   * GET /api/conversations/:conversationId
-   */
-  getOne(req: Request, res: Response): void {
-    const conv = conversationService.getConversationById(
+  /** GET /api/conversations/:conversationId */
+  getOne: asyncHandler(async (req: Request, res: Response) => {
+    const conv = await conversationService.getConversationById(
       req.params['conversationId']!,
       req.userId!,
     );
-    if (!conv) {
-      sendNotFound(res, 'Conversation');
-      return;
-    }
-    sendSuccess(res, conv);
-  },
+    if (!conv) throw new NotFoundError('Conversation');
+    sendOk(res, conv);
+  }),
 
-  /**
-   * POST /api/conversations
-   * Start or return an existing 1-on-1 DM.
-   */
-  createDirect(req: Request, res: Response): void {
-    const parsed = safeParseBody(createConversationSchema, req.body);
-    if (!parsed.success) {
-      sendError(res, parsed.error);
-      return;
-    }
+  /** POST /api/conversations */
+  createDirect: asyncHandler(async (req: Request, res: Response) => {
+    const data = parseBody(createConversationSchema, req.body);
 
-    const result = conversationService.findOrCreateDirect(req.userId!, parsed.data);
+    const result = await conversationService.findOrCreateDirect(req.userId!, data);
 
-    if (result === 'user_not_found') {
-      sendNotFound(res, 'User');
-      return;
-    }
-    if (result === 'cannot_self') {
-      sendError(res, 'You cannot start a conversation with yourself');
-      return;
-    }
+    if (result === 'user_not_found') throw new NotFoundError('User');
+    if (result === 'cannot_self') throw new BadRequestError('You cannot start a conversation with yourself');
 
     sendCreated(res, result, 'Conversation ready');
-  },
 
-  /**
-   * POST /api/conversations/group
-   * Create a new group chat.
-   */
-  createGroup(req: Request, res: Response): void {
-    const parsed = safeParseBody(createGroupSchema, req.body);
-    if (!parsed.success) {
-      sendError(res, parsed.error);
-      return;
+    // Join both users' sockets to the new DM room
+    const io = req.app.locals['io'] as SocketIOServer | undefined;
+    if (io) {
+      const roomId = result.id;
+      getSocketsForUser(req.userId!).forEach((sid) => io.sockets.sockets.get(sid)?.join(roomId));
+      getSocketsForUser(data.userId).forEach((sid) => io.sockets.sockets.get(sid)?.join(roomId));
     }
+  }),
 
-    const result = conversationService.createGroup(req.userId!, parsed.data);
+  /** POST /api/conversations/group */
+  createGroup: asyncHandler(async (req: Request, res: Response) => {
+    const data = parseBody(createGroupSchema, req.body);
+
+    const result = await conversationService.createGroup(req.userId!, data);
+
     if (result === 'invalid_members') {
-      sendError(res, 'One or more specified users do not exist, or group must have at least 2 other members');
-      return;
+      throw new BadRequestError(
+        'One or more specified users do not exist, or group must have at least 2 other members',
+      );
     }
 
     sendCreated(res, result, 'Group created');
-  },
 
-  /**
-   * POST /api/conversations/:conversationId/members
-   * Add a member to a group (admin only).
-   */
-  addMember(req: Request, res: Response): void {
-    const { userId } = req.body as { userId?: string };
-    if (!userId) {
-      sendError(res, 'userId is required');
-      return;
+    // Join all members' sockets to the new group room
+    const io = req.app.locals['io'] as SocketIOServer | undefined;
+    if (io) {
+      result.users.forEach((member) => {
+        getSocketsForUser(member.id).forEach((sid) => io.sockets.sockets.get(sid)?.join(result.id));
+      });
     }
+  }),
 
-    const result = conversationService.addGroupMember(
+  /** POST /api/conversations/:conversationId/members */
+  addMember: asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.body as { userId?: string };
+    if (!userId) throw new BadRequestError('userId is required');
+
+    const result = await conversationService.addGroupMember(
       req.params['conversationId']!,
       req.userId!,
       userId,
     );
 
-    if (result === 'not_found') { sendNotFound(res, 'Conversation'); return; }
-    if (result === 'not_group') { sendError(res, 'This is not a group conversation'); return; }
-    if (result === 'not_admin') { sendForbidden(res, 'Only the group admin can add members'); return; }
-    if (result === 'already_member') { sendError(res, 'User is already a member of this group'); return; }
-    if (result === 'user_not_found') { sendNotFound(res, 'User'); return; }
+    if (result === 'not_found') throw new NotFoundError('Conversation');
+    if (result === 'not_group') throw new BadRequestError('This is not a group conversation');
+    if (result === 'not_admin') throw new ForbiddenError('Only the group admin can add members');
+    if (result === 'already_member') throw new BadRequestError('User is already a member of this group');
+    if (result === 'user_not_found') throw new NotFoundError('User');
 
-    sendSuccess(res, result, 'Member added');
-  },
+    sendOk(res, result, 'Member added');
 
-  /**
-   * DELETE /api/conversations/:conversationId/members/:userId
-   * Remove a member or leave a group.
-   */
-  removeMember(req: Request, res: Response): void {
-    const result = conversationService.removeGroupMember(
-      req.params['conversationId']!,
+    const io = req.app.locals['io'] as SocketIOServer | undefined;
+    if (io) {
+      const roomId = req.params['conversationId']!;
+      getSocketsForUser(userId).forEach((sid) => io.sockets.sockets.get(sid)?.join(roomId));
+      io.to(roomId).emit('member_added', { conversationId: roomId, userId, conversation: result });
+    }
+  }),
+
+  /** DELETE /api/conversations/:conversationId/members/:userId */
+  removeMember: asyncHandler(async (req: Request, res: Response) => {
+    const conversationId = req.params['conversationId']!;
+    const targetUserId = req.params['userId']!;
+
+    const result = await conversationService.removeGroupMember(
+      conversationId,
       req.userId!,
-      req.params['userId']!,
+      targetUserId,
     );
 
-    if (result === 'not_found') { sendNotFound(res, 'Conversation'); return; }
-    if (result === 'not_group') { sendError(res, 'This is not a group conversation'); return; }
-    if (result === 'not_admin') { sendForbidden(res, 'Only the admin can remove members'); return; }
-    if (result === 'not_member') { sendNotFound(res, 'Member'); return; }
+    if (result === 'not_found') throw new NotFoundError('Conversation');
+    if (result === 'not_group') throw new BadRequestError('This is not a group conversation');
+    if (result === 'not_admin') throw new ForbiddenError('Only the admin can remove members');
+    if (result === 'not_member') throw new NotFoundError('Member');
 
-    sendSuccess(res, result, 'Member removed');
-  },
+    sendOk(res, result, 'Member removed');
 
-  /**
-   * POST /api/conversations/:conversationId/read
-   */
-  markRead(req: Request, res: Response): void {
-    conversationService.markAsRead(req.params['conversationId']!, req.userId!);
-    sendSuccess(res, null, 'Marked as read');
-  },
+    const io = req.app.locals['io'] as SocketIOServer | undefined;
+    if (io) {
+      getSocketsForUser(targetUserId).forEach((sid) => io.sockets.sockets.get(sid)?.leave(conversationId));
+      io.to(conversationId).emit('member_removed', { conversationId, userId: targetUserId, conversation: result });
+      getSocketsForUser(targetUserId).forEach((sid) => io.to(sid).emit('removed_from_group', { conversationId }));
+    }
+  }),
+
+  /** POST /api/conversations/:conversationId/read */
+  markRead: asyncHandler(async (req: Request, res: Response) => {
+    await conversationService.markAsRead(req.params['conversationId']!, req.userId!);
+    sendOk(res, null, 'Marked as read');
+  }),
 };
 
 
@@ -848,94 +982,83 @@ export const conversationController = {
 FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\controllers\message.controller.ts
 ==============================
 
+/**
+ * message.controller.ts — Refactored with asyncHandler + AppErrors.
+ */
+
 import type { Request, Response } from 'express';
+import type { Server as SocketIOServer } from 'socket.io';
 import { messageService } from '../services/message.service.js';
+import { conversationService } from '../services/conversation.service.js';
+import { emitNewMessage } from '../socket/index.js';
 import {
-  sendSuccess,
-  sendCreated,
-  sendError,
-  sendNotFound,
-  sendForbidden,
-} from '../helpers/index.js';
+  NotFoundError,
+  ForbiddenError,
+  BadRequestError,
+} from '../errors/AppError.js';
+import { sendOk, sendCreated } from '../utils/response.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
 import {
+  parseBody,
   editMessageSchema,
   addReactionSchema,
   forwardMessageSchema,
   paginationQuerySchema,
-  safeParseBody,
 } from '../helpers/validation.js';
 import { multerFileToAttachment } from '../helpers/upload.js';
-import type { Server as SocketIOServer } from 'socket.io';
-import { conversationService } from '../services/conversation.service.js';
-import { emitNewMessage } from '../socket/index.js';
 
 export const messageController = {
-  /**
-   * GET /api/conversations/:conversationId/messages
-   */
-  list(req: Request, res: Response): void {
-    const parsed = safeParseBody(paginationQuerySchema, req.query);
-    const { page, limit } = parsed.success
-      ? parsed.data
-      : { page: 1, limit: 30 };
-
-    const result = messageService.getMessages(
+  /** GET /api/conversations/:conversationId/messages */
+  list: asyncHandler(async (req: Request, res: Response) => {
+    const { page, limit } = parseBody(paginationQuerySchema, req.query);
+    const result = await messageService.getMessages(
       req.params['conversationId']!,
       page,
       limit,
     );
-    sendSuccess(res, result);
-  },
 
-  /**
-   * GET /api/conversations/:conversationId/messages/search?q=...
-   */
-  search(req: Request, res: Response): void {
+    // ✅ Send the complete paginated response
+    sendOk(res, result, undefined, {
+      page: result.page,
+      limit: result.limit,
+      total: result.total,
+      hasMore: result.hasMore,
+      nextCursor: result.nextCursor,
+    });
+  }),
+
+  /** GET /api/conversations/:conversationId/messages/search?q=... */
+  search: asyncHandler(async (req: Request, res: Response) => {
     const q = String(req.query['q'] ?? '').trim();
-    if (!q) {
-      sendError(res, 'Search query is required');
-      return;
-    }
+    if (!q) throw new BadRequestError('Search query is required');
 
-    const results = messageService.searchMessages(
+    const results = await messageService.searchMessages(
       req.params['conversationId']!,
       q,
     );
-    sendSuccess(res, results);
-  },
+    sendOk(res, results);
+  }),
 
-  /**
-   * GET /api/messages/search?q=...
-   * Global search across all conversations the user is a member of.
-   */
-  globalSearch(req: Request, res: Response): void {
+  /** GET /api/messages/search?q=... */
+  globalSearch: asyncHandler(async (req: Request, res: Response) => {
     const q = String(req.query['q'] ?? '').trim();
-    if (q.length < 2) {
-      sendError(res, 'Search query must be at least 2 characters');
-      return;
-    }
+    if (q.length < 2)
+      throw new BadRequestError('Search query must be at least 2 characters');
 
-    const results = messageService.globalSearch(req.userId!, q);
-    sendSuccess(res, results);
-  },
+    const results = await messageService.globalSearch(req.userId!, q);
+    sendOk(res, results);
+  }),
 
-  /**
-   * POST /api/conversations/:conversationId/messages
-   * Supports optional multipart/form-data for file uploads.
-   *
-   * FIX 2: Emit the socket event BEFORE sending the HTTP response.
-   * This guarantees the broadcast always fires even if the response
-   * path exits early.  Also guard against a null conversation lookup
-   * so the emit is never skipped silently.
-   */
-  send(req: Request, res: Response): void {
+  /** POST /api/conversations/:conversationId/messages */
+  send: asyncHandler(async (req: Request, res: Response) => {
     const uploadedFiles =
       (req.files as Express.Multer.File[] | undefined) ?? [];
-
     const rawMessage = String(req.body?.['message'] ?? '').trim();
+
     if (!rawMessage && uploadedFiles.length === 0) {
-      sendError(res, 'Message text or at least one file is required');
-      return;
+      throw new BadRequestError(
+        'Message text or at least one file is required',
+      );
     }
 
     let replyTo: Parameters<typeof messageService.sendMessage>[4];
@@ -946,8 +1069,7 @@ export const messageController = {
             ? JSON.parse(req.body['replyTo'])
             : req.body['replyTo'];
       } catch {
-        sendError(res, 'Invalid replyTo format');
-        return;
+        throw new BadRequestError('Invalid replyTo format');
       }
     }
 
@@ -956,7 +1078,7 @@ export const messageController = {
       multerFileToAttachment(f, baseUrl),
     );
 
-    const result = messageService.sendMessage(
+    const result = await messageService.sendMessage(
       req.params['conversationId']!,
       req.userId!,
       rawMessage,
@@ -964,225 +1086,147 @@ export const messageController = {
       replyTo,
     );
 
-    if (result === 'conversation_not_found') {
-      sendNotFound(res, 'Conversation');
-      return;
-    }
-    if (result === 'not_member') {
-      sendForbidden(res, 'You are not a member of this conversation');
-      return;
-    }
+    if (result === 'conversation_not_found')
+      throw new NotFoundError('Conversation');
+    if (result === 'not_member')
+      throw new ForbiddenError('You are not a member of this conversation');
 
-    // FIX 2: Broadcast via Socket.IO BEFORE sending the HTTP response.
-    // app.locals.io is always the real io instance — never undefined after bootstrap.
+    // Broadcast via Socket.IO
     const io = req.app.locals['io'] as SocketIOServer | undefined;
     if (io) {
-      const conv = conversationService.getConversationById(
+      const conv = await conversationService.getConversationById(
         result.conversationId,
         req.userId!,
       );
-      // Guard: only emit if we can resolve the conversation.
-      // If getConversationById returns null for some reason the message
-      // was still saved — we simply skip the real-time push for this edge case.
-      if (conv) {
-        emitNewMessage(io, result.conversationId, result, conv);
-      } else {
-        console.warn(
-          `[Socket] Could not resolve conversation ${result.conversationId} for emit`,
-        );
-      }
+      if (conv) emitNewMessage(io, result.conversationId, result, conv);
     }
 
     sendCreated(res, result, 'Message sent');
-  },
+  }),
 
-  /**
-   * PATCH /api/conversations/:conversationId/messages/:messageId
-   */
-  edit(req: Request, res: Response): void {
-    const parsed = safeParseBody(editMessageSchema, req.body);
-    if (!parsed.success) {
-      sendError(res, parsed.error);
-      return;
-    }
+  /** PATCH /api/conversations/:conversationId/messages/:messageId */
+  edit: asyncHandler(async (req: Request, res: Response) => {
+    const { message } = parseBody(editMessageSchema, req.body);
 
-    const result = messageService.editMessage(
+    const result = await messageService.editMessage(
       req.params['conversationId']!,
       req.params['messageId']!,
       req.userId!,
-      parsed.data.message,
+      message,
     );
 
-    if (result === 'not_found') {
-      sendNotFound(res, 'Message');
-      return;
-    }
-    if (result === 'not_owner') {
-      sendForbidden(res, 'You can only edit your own messages');
-      return;
-    }
-    if (result === 'deleted') {
-      sendError(res, 'Cannot edit a deleted message');
-      return;
-    }
+    if (result === 'not_found') throw new NotFoundError('Message');
+    if (result === 'not_owner')
+      throw new ForbiddenError('You can only edit your own messages');
+    if (result === 'deleted')
+      throw new BadRequestError('Cannot edit a deleted message');
 
-    sendSuccess(res, result, 'Message edited');
-  },
+    sendOk(res, result, 'Message edited');
+  }),
 
-  /**
-   * DELETE /api/conversations/:conversationId/messages/:messageId
-   */
-  delete(req: Request, res: Response): void {
-    const result = messageService.deleteMessage(
+  /** DELETE /api/conversations/:conversationId/messages/:messageId */
+  delete: asyncHandler(async (req: Request, res: Response) => {
+    const result = await messageService.deleteMessage(
       req.params['conversationId']!,
       req.params['messageId']!,
       req.userId!,
     );
 
-    if (result === 'not_found') {
-      sendNotFound(res, 'Message');
-      return;
-    }
-    if (result === 'not_owner') {
-      sendForbidden(res, 'You can only delete your own messages');
-      return;
-    }
+    if (result === 'not_found') throw new NotFoundError('Message');
+    if (result === 'not_owner')
+      throw new ForbiddenError('You can only delete your own messages');
 
-    sendSuccess(res, result, 'Message deleted');
-  },
+    sendOk(res, result, 'Message deleted');
+  }),
 
-  /**
-   * POST /api/conversations/:conversationId/messages/:messageId/reactions
-   */
-  toggleReaction(req: Request, res: Response): void {
-    const parsed = safeParseBody(addReactionSchema, req.body);
-    if (!parsed.success) {
-      sendError(res, parsed.error);
-      return;
-    }
+  /** POST /api/conversations/:conversationId/messages/:messageId/reactions */
+  toggleReaction: asyncHandler(async (req: Request, res: Response) => {
+    const { emoji } = parseBody(addReactionSchema, req.body);
 
-    const result = messageService.toggleReaction(
+    const result = await messageService.toggleReaction(
       req.params['conversationId']!,
       req.params['messageId']!,
       req.userId!,
-      parsed.data.emoji,
+      emoji,
     );
 
-    if (result === 'not_found') {
-      sendNotFound(res, 'Message');
-      return;
-    }
-    if (result === 'deleted') {
-      sendError(res, 'Cannot react to a deleted message');
-      return;
-    }
+    if (result === 'not_found') throw new NotFoundError('Message');
+    if (result === 'deleted')
+      throw new BadRequestError('Cannot react to a deleted message');
 
-    sendSuccess(res, result);
-  },
+    sendOk(res, result);
+  }),
 
-  /**
-   * POST /api/conversations/:conversationId/messages/:messageId/pin
-   */
-  pin(req: Request, res: Response): void {
-    const result = messageService.pinMessage(
+  /** POST /api/conversations/:conversationId/messages/:messageId/pin */
+  pin: asyncHandler(async (req: Request, res: Response) => {
+    const result = await messageService.pinMessage(
       req.params['conversationId']!,
       req.params['messageId']!,
       req.userId!,
     );
 
-    if (result === 'not_found') {
-      sendNotFound(res, 'Message');
-      return;
-    }
-    if (result === 'deleted') {
-      sendError(res, 'Cannot pin a deleted message');
-      return;
-    }
+    if (result === 'not_found') throw new NotFoundError('Message');
+    if (result === 'deleted')
+      throw new BadRequestError('Cannot pin a deleted message');
 
-    sendSuccess(res, result, 'Message pinned');
-  },
+    sendOk(res, result, 'Message pinned');
+  }),
 
-  /**
-   * DELETE /api/conversations/:conversationId/messages/:messageId/pin
-   */
-  unpin(req: Request, res: Response): void {
-    const result = messageService.unpinMessage(
+  /** DELETE /api/conversations/:conversationId/messages/:messageId/pin */
+  unpin: asyncHandler(async (req: Request, res: Response) => {
+    const result = await messageService.unpinMessage(
       req.params['conversationId']!,
       req.params['messageId']!,
     );
 
-    if (result === 'not_found') {
-      sendNotFound(res, 'Message');
-      return;
-    }
-    if (result === 'deleted') {
-      sendError(res, 'Cannot unpin a deleted message');
-      return;
-    }
+    if (result === 'not_found') throw new NotFoundError('Message');
+    if (result === 'deleted')
+      throw new BadRequestError('Cannot unpin a deleted message');
 
-    sendSuccess(res, result, 'Message unpinned');
-  },
+    sendOk(res, result, 'Message unpinned');
+  }),
 
-  /**
-   * GET /api/conversations/:conversationId/messages/pinned
-   */
-  listPinned(req: Request, res: Response): void {
-    const pinned = messageService.getPinnedMessages(
+  /** GET /api/conversations/:conversationId/messages/pinned */
+  listPinned: asyncHandler(async (req: Request, res: Response) => {
+    const pinned = await messageService.getPinnedMessages(
       req.params['conversationId']!,
     );
-    sendSuccess(res, pinned);
-  },
+    sendOk(res, pinned);
+  }),
 
-  /**
-   * POST /api/conversations/:conversationId/messages/:messageId/forward
-   */
-  forward(req: Request, res: Response): void {
-    const parsed = safeParseBody(forwardMessageSchema, req.body);
-    if (!parsed.success) {
-      sendError(res, parsed.error);
-      return;
-    }
+  /** POST /api/conversations/:conversationId/messages/:messageId/forward */
+  forward: asyncHandler(async (req: Request, res: Response) => {
+    const { toConversationId } = parseBody(forwardMessageSchema, req.body);
 
-    const result = messageService.forwardMessage(
+    const result = await messageService.forwardMessage(
       req.params['messageId']!,
       req.params['conversationId']!,
-      parsed.data.toConversationId,
+      toConversationId,
       req.userId!,
     );
 
-    if (result === 'not_found') {
-      sendNotFound(res, 'Message');
-      return;
-    }
-    if (result === 'target_not_found') {
-      sendNotFound(res, 'Target conversation');
-      return;
-    }
-    if (result === 'not_member') {
-      sendForbidden(res, 'You are not a member of the target conversation');
-      return;
-    }
+    if (result === 'not_found') throw new NotFoundError('Message');
+    if (result === 'target_not_found')
+      throw new NotFoundError('Target conversation');
+    if (result === 'not_member')
+      throw new ForbiddenError(
+        'You are not a member of the target conversation',
+      );
 
     sendCreated(res, result, 'Message forwarded');
-  },
+  }),
 
-  /**
-   * POST /api/conversations/:conversationId/messages/:messageId/seen
-   */
-  markSeen(req: Request, res: Response): void {
-    const updated = messageService.markMessageSeen(
+  /** POST /api/conversations/:conversationId/messages/:messageId/seen */
+  markSeen: asyncHandler(async (req: Request, res: Response) => {
+    const updated = await messageService.markMessageSeen(
       req.params['conversationId']!,
       req.params['messageId']!,
       req.userId!,
     );
 
-    if (!updated) {
-      sendNotFound(res, 'Message');
-      return;
-    }
-
-    sendSuccess(res, updated);
-  },
+    if (!updated) throw new NotFoundError('Message');
+    sendOk(res, updated);
+  }),
 };
 
 
@@ -1190,93 +1234,228 @@ export const messageController = {
 FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\controllers\user.controller.ts
 ==============================
 
+/**
+ * user.controller.ts — Refactored with asyncHandler + AppErrors.
+ */
+
 import type { Request, Response } from 'express';
 import { userService } from '../services/user.service.js';
+import { NotFoundError, BadRequestError } from '../errors/AppError.js';
+import { sendOk } from '../utils/response.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
 import {
-  sendSuccess,
-  sendError,
-  sendNotFound,
-} from '../helpers/index.js';
-import {
+  parseBody,
   searchUsersSchema,
   updateProfileSchema,
   updateStatusSchema,
-  safeParseBody,
 } from '../helpers/validation.js';
+import { getOnlineUserIds } from '../config/runtimeStore.js';
 
 export const userController = {
-  /**
-   * GET /api/users/search?q=...
-   */
-  search(req: Request, res: Response): void {
-    const parsed = safeParseBody(searchUsersSchema, req.query);
-    if (!parsed.success) {
-      sendError(res, parsed.error);
-      return;
-    }
+  /** GET /api/users/search?q=... */
+  search: asyncHandler(async (req: Request, res: Response) => {
+    const { q } = parseBody(searchUsersSchema, req.query);
+    const results = await userService.searchUsers(q, req.userId!);
+    sendOk(res, results);
+  }),
 
-    const results = userService.searchUsers(parsed.data.q, req.userId!);
-    sendSuccess(res, results);
-  },
+  /** GET /api/users/:userId */
+  getUser: asyncHandler(async (req: Request, res: Response) => {
+    const user = await userService.getUserById(req.params['userId']!);
+    if (!user) throw new NotFoundError('User');
+    sendOk(res, user);
+  }),
 
-  /**
-   * GET /api/users/:userId
-   */
-  getUser(req: Request, res: Response): void {
-    const user = userService.getUserById(req.params['userId']!);
-    if (!user) {
-      sendNotFound(res, 'User');
-      return;
-    }
-    sendSuccess(res, user);
-  },
+  /** PATCH /api/users/me/profile */
+  updateProfile: asyncHandler(async (req: Request, res: Response) => {
+    const data = parseBody(updateProfileSchema, req.body);
+    const updated = await userService.updateProfile(req.userId!, data);
+    if (!updated) throw new NotFoundError('User');
+    sendOk(res, updated, 'Profile updated');
+  }),
 
-  /**
-   * PATCH /api/users/me/profile
-   */
-  updateProfile(req: Request, res: Response): void {
-    const parsed = safeParseBody(updateProfileSchema, req.body);
-    if (!parsed.success) {
-      sendError(res, parsed.error);
-      return;
-    }
+  /** PATCH /api/users/me/status */
+  updateStatus: asyncHandler(async (req: Request, res: Response) => {
+    const { status } = parseBody(updateStatusSchema, req.body);
+    const updated = await userService.updateStatus(req.userId!, status);
+    if (!updated) throw new NotFoundError('User');
+    sendOk(res, updated, `Status updated to ${status}`);
+  }),
 
-    const updated = userService.updateProfile(req.userId!, parsed.data);
-    if (!updated) {
-      sendNotFound(res, 'User');
-      return;
-    }
-
-    sendSuccess(res, updated, 'Profile updated');
-  },
-
-  /**
-   * PATCH /api/users/me/status
-   */
-  updateStatus(req: Request, res: Response): void {
-    const parsed = safeParseBody(updateStatusSchema, req.body);
-    if (!parsed.success) {
-      sendError(res, parsed.error);
-      return;
-    }
-
-    const updated = userService.updateStatus(req.userId!, parsed.data.status);
-    if (!updated) {
-      sendNotFound(res, 'User');
-      return;
-    }
-
-    sendSuccess(res, updated, `Status updated to ${parsed.data.status}`);
-  },
-
-  /**
-   * GET /api/users/online
-   */
-  getOnlineUsers(_req: Request, res: Response): void {
-    const ids = userService.getOnlineUserIds();
-    sendSuccess(res, ids);
-  },
+  /** GET /api/users/online */
+  getOnlineUsers: asyncHandler(async (_req: Request, res: Response) => {
+    sendOk(res, getOnlineUserIds());
+  }),
 };
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\errors\AppError.ts
+==============================
+
+/**
+ * AppError — the single source of truth for all operational errors.
+ *
+ * Every error thrown intentionally by the application should be an AppError
+ * (or a subclass). This lets the global error handler distinguish between
+ * "expected" errors (wrong password, not found, etc.) and truly unexpected
+ * ones (programming bugs, DB crashes, etc.) without any ad-hoc instanceof
+ * checks scattered through the codebase.
+ *
+ * The `isOperational` flag is the critical distinction:
+ *   - true  → safe to expose to the client; log at "warn" level
+ *   - false → internal bug; log at "error" level; generic 500 to client
+ */
+export class AppError extends Error {
+  public readonly statusCode: number;
+  public readonly code: string;
+  public readonly isOperational: boolean;
+  public readonly details?: unknown;
+
+  constructor(
+    message: string,
+    statusCode: number,
+    code: string,
+    isOperational = true,
+    details?: unknown,
+  ) {
+    super(message);
+
+    // Restores the correct prototype chain (needed when targeting ES5)
+    Object.setPrototypeOf(this, new.target.prototype);
+
+    this.name = new.target.name;
+    this.statusCode = statusCode;
+    this.code = code;
+    this.isOperational = isOperational;
+    this.details = details;
+
+    // Capture a clean stack trace that starts at the call site, not here
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, new.target);
+    }
+  }
+}
+
+// ─── 400 Bad Request ──────────────────────────────────────────────────────────
+
+export class BadRequestError extends AppError {
+  constructor(message = 'Bad request', details?: unknown) {
+    super(message, 400, 'BAD_REQUEST', true, details);
+  }
+}
+
+export class ValidationError extends AppError {
+  constructor(message: string, details?: unknown) {
+    super(message, 400, 'VALIDATION_ERROR', true, details);
+  }
+}
+
+export class InvalidIdError extends AppError {
+  constructor(message = 'Invalid ID format') {
+    super(message, 400, 'INVALID_ID', true);
+  }
+}
+
+// ─── 401 Unauthorized ────────────────────────────────────────────────────────
+
+export class UnauthorizedError extends AppError {
+  constructor(message = 'Authentication required') {
+    super(message, 401, 'UNAUTHORIZED', true);
+  }
+}
+
+export class InvalidTokenError extends AppError {
+  constructor(message = 'Invalid or expired token') {
+    super(message, 401, 'INVALID_TOKEN', true);
+  }
+}
+
+// ─── 403 Forbidden ───────────────────────────────────────────────────────────
+
+export class ForbiddenError extends AppError {
+  constructor(message = 'You do not have permission to perform this action') {
+    super(message, 403, 'FORBIDDEN', true);
+  }
+}
+
+// ─── 404 Not Found ───────────────────────────────────────────────────────────
+
+export class NotFoundError extends AppError {
+  constructor(resource = 'Resource') {
+    super(`${resource} not found`, 404, 'NOT_FOUND', true);
+  }
+}
+
+// ─── 405 Method Not Allowed ──────────────────────────────────────────────────
+
+export class MethodNotAllowedError extends AppError {
+  constructor(method: string, path: string) {
+    super(
+      `Method ${method} is not allowed on ${path}`,
+      405,
+      'METHOD_NOT_ALLOWED',
+      true,
+    );
+  }
+}
+
+// ─── 409 Conflict ────────────────────────────────────────────────────────────
+
+export class ConflictError extends AppError {
+  constructor(message: string) {
+    super(message, 409, 'CONFLICT', true);
+  }
+}
+
+// ─── 413 Payload Too Large ───────────────────────────────────────────────────
+
+export class PayloadTooLargeError extends AppError {
+  constructor(message = 'Payload too large') {
+    super(message, 413, 'PAYLOAD_TOO_LARGE', true);
+  }
+}
+
+// ─── 415 Unsupported Media Type ──────────────────────────────────────────────
+
+export class UnsupportedMediaTypeError extends AppError {
+  constructor(message = 'Content-Type must be application/json') {
+    super(message, 415, 'UNSUPPORTED_MEDIA_TYPE', true);
+  }
+}
+
+// ─── 422 Unprocessable Entity ────────────────────────────────────────────────
+
+export class UnprocessableEntityError extends AppError {
+  constructor(message: string, details?: unknown) {
+    super(message, 422, 'UNPROCESSABLE_ENTITY', true, details);
+  }
+}
+
+// ─── 429 Too Many Requests ───────────────────────────────────────────────────
+
+export class TooManyRequestsError extends AppError {
+  constructor(message = 'Too many requests, please try again later') {
+    super(message, 429, 'TOO_MANY_REQUESTS', true);
+  }
+}
+
+// ─── 500 Internal Server Error ───────────────────────────────────────────────
+
+export class InternalServerError extends AppError {
+  constructor(message = 'An unexpected error occurred') {
+    // isOperational = false → will NOT expose the real message to the client
+    super(message, 500, 'INTERNAL_SERVER_ERROR', false);
+  }
+}
+
+// ─── 503 Service Unavailable ─────────────────────────────────────────────────
+
+export class ServiceUnavailableError extends AppError {
+  constructor(message = 'Service temporarily unavailable') {
+    super(message, 503, 'SERVICE_UNAVAILABLE', false);
+  }
+}
 
 
 ==============================
@@ -1286,24 +1465,20 @@ FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\helpers\index.ts
 import type { Response } from 'express';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import { v4 as uuidv4 } from 'uuid';
 import type {
   ApiSuccess,
   ApiError,
   AuthTokenPayload,
   AuthTokens,
   PaginatedResponse,
+  PublicUser,
 } from '../types/index.js';
 import { env } from '../config/env.js';
+import type { IUserDocument } from '../models/user.model.js';
 
 // ─── Response Helpers ─────────────────────────────────────────────────────────
 
-export function sendSuccess<T>(
-  res: Response,
-  data: T,
-  message?: string,
-  statusCode = 200,
-): void {
+export function sendSuccess<T>(res: Response, data: T, message?: string, statusCode = 200): void {
   const body: ApiSuccess<T> = { success: true, data, message };
   res.status(statusCode).json(body);
 }
@@ -1312,12 +1487,7 @@ export function sendCreated<T>(res: Response, data: T, message?: string): void {
   sendSuccess(res, data, message, 201);
 }
 
-export function sendError(
-  res: Response,
-  error: string,
-  statusCode = 400,
-  details?: unknown,
-): void {
+export function sendError(res: Response, error: string, statusCode = 400, details?: unknown): void {
   const body: ApiError = { success: false, error, details };
   res.status(statusCode).json(body);
 }
@@ -1364,9 +1534,7 @@ export function verifyRefreshToken(token: string): AuthTokenPayload {
   return jwt.verify(token, env.jwt.refreshSecret) as AuthTokenPayload;
 }
 
-export function generateTokenPair(
-  payload: Omit<AuthTokenPayload, 'iat' | 'exp'>,
-): AuthTokens {
+export function generateTokenPair(payload: Omit<AuthTokenPayload, 'iat' | 'exp'>): AuthTokens {
   return {
     accessToken: signAccessToken(payload),
     refreshToken: signRefreshToken(payload),
@@ -1378,43 +1546,49 @@ export function extractBearerToken(authHeader: string | undefined): string | nul
   return authHeader.slice(7);
 }
 
+/** Parse the refresh token's expiry for TTL storage */
+export function getRefreshTokenExpiry(): Date {
+  const duration = env.jwt.refreshExpiresIn; // e.g. "30d"
+  const match = duration.match(/^(\d+)([smhd])$/);
+  if (!match) return new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+  const num = parseInt(match[1]!, 10);
+  const unit = match[2]!;
+  const multipliers: Record<string, number> = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+  };
+  return new Date(Date.now() + num * (multipliers[unit] ?? 86400000));
+}
+
 // ─── Password Helpers ─────────────────────────────────────────────────────────
 
 export async function hashPassword(plain: string): Promise<string> {
   return bcrypt.hash(plain, 12);
 }
 
-export async function comparePassword(
-  plain: string,
-  hash: string,
-): Promise<boolean> {
+export async function comparePassword(plain: string, hash: string): Promise<boolean> {
   return bcrypt.compare(plain, hash);
-}
-
-// ─── ID Helpers ───────────────────────────────────────────────────────────────
-
-export function generateId(): string {
-  return uuidv4();
-}
-
-export function generateMessageId(): string {
-  return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 // ─── Pagination Helpers ───────────────────────────────────────────────────────
 
-export function paginate<T extends { createdAt: Date }>(
+export function paginateArray<T extends { createdAt: Date }>(
   items: T[],
   page: number,
   limit: number,
+  order: 'asc' | 'desc' = 'desc',
 ): PaginatedResponse<T> {
   const safePage = Math.max(1, page);
   const safeLimit = Math.min(100, Math.max(1, limit));
   const offset = (safePage - 1) * safeLimit;
 
-  // Sort newest first
-  const sorted = [...items].sort(
-    (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+  const sorted = [...items].sort((a, b) =>
+    order === 'desc'
+      ? b.createdAt.getTime() - a.createdAt.getTime()
+      : a.createdAt.getTime() - b.createdAt.getTime(),
   );
 
   const total = sorted.length;
@@ -1431,35 +1605,18 @@ export function paginate<T extends { createdAt: Date }>(
   };
 }
 
-export function paginateMessages<T extends { createdAt: Date }>(
-  items: T[],
-  page: number,
-  limit: number,
-): PaginatedResponse<T> {
-  const safePage = Math.max(1, page);
-  const safeLimit = Math.min(100, Math.max(1, limit));
+// ─── User Helpers ─────────────────────────────────────────────────────────────
 
-  // Messages: oldest first, paginate from the end
-  const sorted = [...items].sort(
-    (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
-  );
-
-  const total = sorted.length;
-
-  // For messages we want the most recent "limit" items per page
-  // page=1 → last N messages, page=2 → second-last N, etc.
-  const end = total - (safePage - 1) * safeLimit;
-  const start = Math.max(0, end - safeLimit);
-  const data = sorted.slice(start, end);
-  const hasMore = start > 0;
-
+export function docToPublicUser(user: IUserDocument): PublicUser {
   return {
-    data,
-    total,
-    page: safePage,
-    limit: safeLimit,
-    hasMore,
-    nextCursor: hasMore ? String(safePage + 1) : undefined,
+    id: user._id.toString(),
+    name: user.name,
+    email: user.email,
+    picture: user.picture,
+    status: user.status,
+    about: user.about,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
   };
 }
 
@@ -1469,22 +1626,6 @@ export function sanitizeString(value: unknown): string {
   if (typeof value !== 'string') return '';
   return value.trim().replace(/\s+/g, ' ');
 }
-
-export function truncate(str: string, maxLen: number): string {
-  if (str.length <= maxLen) return str;
-  return str.slice(0, maxLen - 3) + '...';
-}
-
-// ─── User Helpers ─────────────────────────────────────────────────────────────
-
-export function stripPassword<T extends { passwordHash: string }>(
-  user: T,
-): Omit<T, 'passwordHash'> {
-  const { passwordHash: _ph, ...pub } = user;
-  return pub;
-}
-
-// ─── Date Helpers ─────────────────────────────────────────────────────────────
 
 export function nowDate(): Date {
   return new Date();
@@ -1502,28 +1643,21 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Request } from 'express';
 import { env } from '../config/env.js';
 
-// ─── Allowed MIME types (mirrors frontend fileUtils.ts) ───────────────────────
+// ─── Allowed MIME types ───────────────────────────────────────────────────────
 
 const ALLOWED_MIME_TYPES = new Set([
-  // Images
   'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
-  // Videos
   'video/mp4', 'video/webm', 'video/mpeg', 'video/quicktime',
-  // Audio
   'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/webm',
-  // Documents
   'application/pdf',
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'text/plain',
-  // Spreadsheets
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'text/csv',
-  // Presentations
   'application/vnd.ms-powerpoint',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  // Archives
   'application/zip',
   'application/x-rar-compressed',
   'application/x-7z-compressed',
@@ -1532,7 +1666,6 @@ const ALLOWED_MIME_TYPES = new Set([
 // ─── Ensure upload directory exists ──────────────────────────────────────────
 
 const UPLOAD_DIR = path.resolve(process.cwd(), env.upload.uploadDir);
-
 if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
@@ -1540,23 +1673,16 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 // ─── Storage engine ───────────────────────────────────────────────────────────
 
 const storage = multer.diskStorage({
-  destination(_req, _file, cb) {
-    cb(null, UPLOAD_DIR);
-  },
+  destination(_req, _file, cb) { cb(null, UPLOAD_DIR); },
   filename(_req, file, cb) {
     const ext = path.extname(file.originalname).toLowerCase();
-    const uniqueName = `${uuidv4()}${ext}`;
-    cb(null, uniqueName);
+    cb(null, `${uuidv4()}${ext}`);
   },
 });
 
 // ─── File filter ──────────────────────────────────────────────────────────────
 
-function fileFilter(
-  _req: Request,
-  file: Express.Multer.File,
-  cb: FileFilterCallback,
-): void {
+function fileFilter(_req: Request, file: Express.Multer.File, cb: FileFilterCallback): void {
   if (ALLOWED_MIME_TYPES.has(file.mimetype)) {
     cb(null, true);
   } else {
@@ -1569,19 +1695,14 @@ function fileFilter(
 export const upload = multer({
   storage,
   fileFilter,
-  limits: {
-    fileSize: env.upload.maxFileSizeMb * 1024 * 1024,
-    files: 10,
-  },
+  limits: { fileSize: env.upload.maxFileSizeMb * 1024 * 1024, files: 10 },
 });
 
-// ─── Build public URL for uploaded file ──────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 export function buildFileUrl(filename: string, baseUrl: string): string {
   return `${baseUrl}/uploads/${filename}`;
 }
-
-// ─── Remove file from disk ────────────────────────────────────────────────────
 
 export function deleteUploadedFile(filename: string): void {
   const filePath = path.join(UPLOAD_DIR, filename);
@@ -1592,12 +1713,7 @@ export function deleteUploadedFile(filename: string): void {
   });
 }
 
-// ─── Map multer file to FileAttachment shape ──────────────────────────────────
-
-export function multerFileToAttachment(
-  file: Express.Multer.File,
-  baseUrl: string,
-) {
+export function multerFileToAttachment(file: Express.Multer.File, baseUrl: string) {
   return {
     id: uuidv4(),
     name: file.originalname,
@@ -1612,7 +1728,24 @@ export function multerFileToAttachment(
 FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\helpers\validation.ts
 ==============================
 
+/**
+ * validation.ts — Zod schemas + a helper that THROWS instead of returning
+ * success/failure objects.
+ *
+ * WHY THROW?  Because validation failure is an exceptional control-flow event.
+ * With asyncHandler wrapping every route, a thrown ValidationError is caught
+ * automatically and forwarded to the global error handler — no manual `if
+ * (!parsed.success)` blocks needed in every controller.
+ *
+ * TWO HELPERS:
+ *
+ *   parseBody(schema, data)  — throws ValidationError on failure
+ *   safeParseBody(schema, data) — returns { success, data } | { success, error }
+ *                                 for cases where you want to handle errors manually
+ */
+
 import { z } from 'zod';
+import { ValidationError } from '../errors/AppError.js';
 
 // ─── Reusable field schemas ───────────────────────────────────────────────────
 
@@ -1633,22 +1766,9 @@ const nameSchema = z
   .max(60, 'Name is too long')
   .trim();
 
-const messageTextSchema = z
-  .string()
-  .max(4000, 'Message is too long')
-  .default('');
-
-const emojiSchema = z
-  .string({ required_error: 'Emoji is required' })
-  .min(1)
-  .max(8);
-
+const messageTextSchema = z.string().max(4000, 'Message is too long').default('');
+const emojiSchema = z.string({ required_error: 'Emoji is required' }).min(1).max(8);
 const uuidSchema = z.string().min(1, 'ID is required');
-
-const paginationSchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(30),
-});
 
 // ─── Auth schemas ─────────────────────────────────────────────────────────────
 
@@ -1669,9 +1789,7 @@ export const refreshTokenSchema = z.object({
 
 // ─── Conversation schemas ─────────────────────────────────────────────────────
 
-export const createConversationSchema = z.object({
-  userId: uuidSchema,
-});
+export const createConversationSchema = z.object({ userId: uuidSchema });
 
 export const createGroupSchema = z.object({
   name: z
@@ -1688,22 +1806,17 @@ export const createGroupSchema = z.object({
 
 // ─── Message schemas ──────────────────────────────────────────────────────────
 
-export const sendMessageSchema = z
-  .object({
-    message: messageTextSchema,
-    replyTo: z
-      .object({
-        messageId: uuidSchema,
-        senderId: uuidSchema,
-        senderName: z.string().min(1),
-        message: z.string().max(200),
-      })
-      .optional(),
-  })
-  .refine(
-    (data) => data.message.trim().length > 0,
-    { message: 'Message cannot be empty (files are sent via multipart)' },
-  );
+export const sendMessageSchema = z.object({
+  message: messageTextSchema,
+  replyTo: z
+    .object({
+      messageId: uuidSchema,
+      senderId: uuidSchema,
+      senderName: z.string().min(1),
+      message: z.string().max(200),
+    })
+    .optional(),
+});
 
 export const editMessageSchema = z.object({
   message: z
@@ -1713,13 +1826,8 @@ export const editMessageSchema = z.object({
     .trim(),
 });
 
-export const addReactionSchema = z.object({
-  emoji: emojiSchema,
-});
-
-export const forwardMessageSchema = z.object({
-  toConversationId: uuidSchema,
-});
+export const addReactionSchema = z.object({ emoji: emojiSchema });
+export const forwardMessageSchema = z.object({ toConversationId: uuidSchema });
 
 // ─── Profile schemas ──────────────────────────────────────────────────────────
 
@@ -1746,22 +1854,59 @@ export const searchUsersSchema = z.object({
     .trim(),
 });
 
-export const paginationQuerySchema = paginationSchema;
+export const paginationQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+});
 
-// ─── Utility: parse + throw on error ─────────────────────────────────────────
+// ─── Utilities ────────────────────────────────────────────────────────────────
 
+/**
+ * parseBody — Parse and validate `data` against `schema`.
+ * THROWS a ValidationError (→ caught by asyncHandler → global error handler)
+ * with human-readable field-level details on failure.
+ *
+ * Prefer this in controllers so there is NO error-branch boilerplate.
+ */
 export function parseBody<T>(schema: z.ZodSchema<T>, data: unknown): T {
-  return schema.parse(data);
+  const result = schema.safeParse(data);
+
+  if (result.success) return result.data;
+
+  const details = result.error.errors.map((e) => ({
+    field: e.path.join('.') || 'root',
+    message: e.message,
+    code: e.code,
+  }));
+
+  // The first error message is used as the top-level message for brevity
+  const message = result.error.errors[0]?.message ?? 'Validation failed';
+
+  throw new ValidationError(message, details);
 }
 
+/**
+ * safeParseBody — Non-throwing variant for the rare cases where validation
+ * failure needs custom handling (e.g., branching on optional fields).
+ */
 export function safeParseBody<T>(
   schema: z.ZodSchema<T>,
   data: unknown,
-): { success: true; data: T } | { success: false; error: string } {
+): { success: true; data: T } | { success: false; error: string; details: unknown[] } {
   const result = schema.safeParse(data);
   if (result.success) return { success: true, data: result.data };
-  const messages = result.error.errors.map((e) => e.message).join(', ');
-  return { success: false, error: messages };
+
+  const details = result.error.errors.map((e) => ({
+    field: e.path.join('.') || 'root',
+    message: e.message,
+    code: e.code,
+  }));
+
+  return {
+    success: false,
+    error: result.error.errors[0]?.message ?? 'Validation failed',
+    details,
+  };
 }
 
 
@@ -1769,73 +1914,233 @@ export function safeParseBody<T>(
 FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\index.ts
 ==============================
 
+/**
+ * index.ts — Application entry point + process-level error guards.
+ *
+ * Process-level guards are the LAST line of defence. They should almost never
+ * fire in a correctly-written application because:
+ *
+ *   - Every async route is wrapped in asyncHandler
+ *   - Every thrown error is forwarded to globalErrorHandler
+ *
+ * But they exist because no application is perfect:
+ *   - Third-party libraries may emit uncaught rejections
+ *   - Bugs in middleware that isn't wrapped in asyncHandler can escape
+ *
+ * Strategy:
+ *   - unhandledRejection: log + exit(1) in production; log only in dev
+ *     (exiting in prod avoids running in a corrupted/unknown state)
+ *   - uncaughtException: ALWAYS exit(1) — the process state is undefined
+ */
+
 import { createServer } from 'http';
 import { createApp } from './app.js';
 import { initSocket } from './socket/index.js';
-import { initializeStore } from './config/store.js';
+import { connectDB, disconnectDB } from './config/database.js';
 import { env } from './config/env.js';
+import { logger } from './utils/logger.js';
 
 async function bootstrap(): Promise<void> {
-  // 1. Seed in-memory store
-  initializeStore();
+  // 1. Connect to MongoDB
+  await connectDB();
 
   // 2. Create Express app
   const app = createApp();
 
-  // 3. Wrap in HTTP server (required for Socket.IO)
+  // 3. Wrap in HTTP server
   const httpServer = createServer(app);
 
   // 4. Attach Socket.IO
   const io = initSocket(httpServer);
-
-  app.locals.io = io; // For use in routes
+  app.locals['io'] = io;
 
   // 5. Start listening
-  httpServer.listen(env.port, () => {
-    console.log('');
-    console.log('  ██╗    ██╗██╗  ██╗ █████╗ ████████╗███████╗██╗   ██╗██████╗ ');
-    console.log('  ██║    ██║██║  ██║██╔══██╗╚══██╔══╝██╔════╝██║   ██║██╔══██╗');
-    console.log('  ██║ █╗ ██║███████║███████║   ██║   ███████╗██║   ██║██████╔╝');
-    console.log('  ██║███╗██║██╔══██║██╔══██║   ██║   ╚════██║██║   ██║██╔═══╝ ');
-    console.log('  ╚███╔███╔╝██║  ██║██║  ██║   ██║   ███████║╚██████╔╝██║     ');
-    console.log('   ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ╚══════╝ ╚═════╝ ╚═╝     ');
-    console.log('');
-    console.log(`  🚀 Server running on http://localhost:${env.port}`);
-    console.log(`  🌍 Environment : ${env.nodeEnv}`);
-    console.log(`  📡 Socket.IO   : enabled`);
-    console.log(`  🔗 CORS origin : ${env.cors.clientUrl}`);
-    console.log('');
+  await new Promise<void>((resolve) => {
+    httpServer.listen(env.port, resolve);
+  });
+
+  logger.info(`🚀 Server running on http://localhost:${env.port}`, {
+    environment: env.nodeEnv,
+    corsOrigin: env.cors.clientUrl,
   });
 
   // 6. Graceful shutdown
-  const shutdown = (signal: string) => {
-    console.log(`\n[Server] ${signal} received. Shutting down gracefully...`);
-    httpServer.close(() => {
-      console.log('[Server] HTTP server closed.');
-      process.exit(0);
+  const shutdown = async (signal: string): Promise<void> => {
+    logger.info(`${signal} received — shutting down gracefully`);
+
+    // Stop accepting new connections
+    httpServer.close(async () => {
+      try {
+        await disconnectDB();
+        logger.info('HTTP server and DB connection closed cleanly');
+        process.exit(0);
+      } catch (err) {
+        logger.error(err instanceof Error ? err : new Error(String(err)), {
+          context: 'shutdown',
+        });
+        process.exit(1);
+      }
     });
 
-    // Force close after 10s
+    // Force exit if graceful shutdown takes too long
     setTimeout(() => {
-      console.error('[Server] Forced shutdown after timeout.');
+      logger.error(new Error('Forced shutdown after timeout'));
       process.exit(1);
-    }, 10_000);
+    }, 10_000).unref(); // .unref() prevents this timer from keeping the event loop alive
   };
 
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
-
-  process.on('unhandledRejection', (reason) => {
-    console.error('[Server] Unhandled rejection:', reason);
-  });
-
-  process.on('uncaughtException', (err) => {
-    console.error('[Server] Uncaught exception:', err);
-    process.exit(1);
-  });
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 }
 
-bootstrap();
+// ─── Process-level error guards ───────────────────────────────────────────────
+
+/**
+ * Unhandled promise rejection — a promise was rejected and nothing caught it.
+ * This should NOT happen with asyncHandler wrapping all routes, but third-party
+ * libraries or bugs in non-route code can still cause this.
+ */
+process.on('unhandledRejection', (reason: unknown) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  logger.error(err, { context: 'unhandledRejection' });
+
+  // In production, exit so the process manager (PM2, Docker, k8s) can restart
+  // in a clean state. In development, just log so the server stays up for debugging.
+  if (env.isProd) {
+    process.exit(1);
+  }
+});
+
+/**
+ * Uncaught exception — a synchronous throw escaped all try/catch blocks.
+ * The process state is undefined at this point — always exit.
+ */
+process.on('uncaughtException', (err: Error) => {
+  logger.error(err, { context: 'uncaughtException' });
+  // Give the logger time to flush before exiting
+  setTimeout(() => process.exit(1), 500);
+});
+
+// ─── Bootstrap ────────────────────────────────────────────────────────────────
+
+bootstrap().catch((err: unknown) => {
+  const error = err instanceof Error ? err : new Error(String(err));
+  logger.error(error, { context: 'bootstrap' });
+  process.exit(1);
+});
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\middleware\auth.middleware.ts
+==============================
+
+/**
+ * auth.middleware.ts — Refactored with AppErrors + asyncHandler.
+ *
+ * Throwing AppErrors here is safe because:
+ *   - For synchronous middleware (requireAuth), Express's error-handling chain
+ *     is triggered when we call next(new AppError(...)).
+ *   - For async middleware wrapped in asyncHandler, a throw is caught and
+ *     forwarded to next() automatically.
+ */
+
+import type { Request, Response, NextFunction } from 'express';
+import {
+  extractBearerToken,
+  verifyAccessToken,
+} from '../helpers/index.js';
+import {
+  UnauthorizedError,
+  InvalidTokenError,
+  ForbiddenError,
+  NotFoundError,
+} from '../errors/AppError.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { Conversation } from '../models/conversation.model.js';
+import { Message } from '../models/message.model.js';
+
+// ─── Augment Express Request ──────────────────────────────────────────────────
+
+declare global {
+  namespace Express {
+    interface Request {
+      userId?: string;
+      userEmail?: string;
+      requestId?: string;
+    }
+  }
+}
+
+// ─── requireAuth ──────────────────────────────────────────────────────────────
+/**
+ * Synchronous JWT guard. Calls next(err) on failure — compatible with Express
+ * error-handling chain without needing asyncHandler.
+ */
+export function requireAuth(req: Request, _res: Response, next: NextFunction): void {
+  const token = extractBearerToken(req.headers.authorization);
+
+  if (!token) {
+    next(new UnauthorizedError('No authentication token provided'));
+    return;
+  }
+
+  try {
+    const payload = verifyAccessToken(token);
+    req.userId = payload.userId;
+    req.userEmail = payload.email;
+    next();
+  } catch (err) {
+    const jwtErr = err as { name?: string };
+
+    if (jwtErr?.name === 'TokenExpiredError') {
+      next(new InvalidTokenError('Access token has expired'));
+    } else {
+      next(new InvalidTokenError('Invalid access token'));
+    }
+  }
+}
+
+// ─── requireConversationMember ────────────────────────────────────────────────
+/**
+ * Async middleware — wrapped in asyncHandler so DB errors are forwarded to
+ * the global error handler instead of crashing the request.
+ */
+export const requireConversationMember = asyncHandler(
+  async (req: Request, _res: Response, next: NextFunction) => {
+    const { conversationId } = req.params;
+    const userId = req.userId!;
+
+    const conv = await Conversation.findById(conversationId);
+
+    if (!conv) throw new NotFoundError('Conversation');
+
+    const isMember = conv.members.some((m) => m.toString() === userId);
+    if (!isMember) throw new ForbiddenError('You are not a member of this conversation');
+
+    next();
+  },
+);
+
+// ─── requireMessageOwner ──────────────────────────────────────────────────────
+/**
+ * Async middleware — verifies the requesting user owns the target message.
+ */
+export const requireMessageOwner = asyncHandler(
+  async (req: Request, _res: Response, next: NextFunction) => {
+    const { conversationId, messageId } = req.params;
+    const userId = req.userId!;
+
+    const message = await Message.findOne({ _id: messageId, conversationId });
+
+    if (!message) throw new NotFoundError('Message');
+
+    if (message.senderId.toString() !== userId) {
+      throw new ForbiddenError('You can only modify your own messages');
+    }
+
+    next();
+  },
+);
 
 
 ==============================
@@ -1849,7 +2154,9 @@ import {
   sendUnauthorized,
   sendForbidden,
 } from '../helpers/index.js';
-import { store } from '../config/store.js';
+import { userService } from '../services/user.service.js';
+import { Conversation } from '../models/conversation.model.js';
+import { Message } from '../models/message.model.js';
 
 // ─── Augment Express Request ──────────────────────────────────────────────────
 
@@ -1862,13 +2169,9 @@ declare global {
   }
 }
 
-// ─── requireAuth: blocks unauthenticated requests ────────────────────────────
+// ─── requireAuth ──────────────────────────────────────────────────────────────
 
-export function requireAuth(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): void {
+export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   const token = extractBearerToken(req.headers.authorization);
 
   if (!token) {
@@ -1878,13 +2181,6 @@ export function requireAuth(
 
   try {
     const payload = verifyAccessToken(token);
-
-    // Verify user still exists in store
-    if (!store.users.has(payload.userId)) {
-      sendUnauthorized(res, 'User no longer exists');
-      return;
-    }
-
     req.userId = payload.userId;
     req.userEmail = payload.email;
     next();
@@ -1893,79 +2189,333 @@ export function requireAuth(
   }
 }
 
-// ─── optionalAuth: sets userId if token present, but doesn't block ────────────
+// ─── requireConversationMember ────────────────────────────────────────────────
 
-export function optionalAuth(
-  req: Request,
-  _res: Response,
-  next: NextFunction,
-): void {
-  const token = extractBearerToken(req.headers.authorization);
-
-  if (token) {
-    try {
-      const payload = verifyAccessToken(token);
-      req.userId = payload.userId;
-      req.userEmail = payload.email;
-    } catch {
-      // Token invalid — proceed without userId
-    }
-  }
-
-  next();
-}
-
-// ─── requireConversationMember: verifies the user belongs to a conversation ───
-
-export function requireConversationMember(
+export async function requireConversationMember(
   req: Request,
   res: Response,
   next: NextFunction,
-): void {
+): Promise<void> {
   const { conversationId } = req.params;
   const userId = req.userId!;
 
-  const conversation = store.conversations.get(conversationId);
+  try {
+    const conv = await Conversation.findById(conversationId);
 
-  if (!conversation) {
-    res.status(404).json({ success: false, error: 'Conversation not found' });
-    return;
+    if (!conv) {
+      res.status(404).json({ success: false, error: 'Conversation not found' });
+      return;
+    }
+
+    const isMember = conv.members.some((m) => m.toString() === userId);
+    if (!isMember) {
+      sendForbidden(res, 'You are not a member of this conversation');
+      return;
+    }
+
+    next();
+  } catch {
+    res.status(500).json({ success: false, error: 'Internal server error' });
   }
-
-  const isMember = conversation.users.some((u) => u.id === userId);
-
-  if (!isMember) {
-    sendForbidden(res, 'You are not a member of this conversation');
-    return;
-  }
-
-  next();
 }
 
-// ─── requireMessageOwner: verifies the user owns a message ───────────────────
+// ─── requireMessageOwner ──────────────────────────────────────────────────────
 
-export function requireMessageOwner(
+export async function requireMessageOwner(
   req: Request,
   res: Response,
   next: NextFunction,
-): void {
+): Promise<void> {
   const { conversationId, messageId } = req.params;
   const userId = req.userId!;
 
-  const messages = store.messages.get(conversationId) ?? [];
-  const message = messages.find((m) => m.id === messageId);
+  try {
+    const message = await Message.findOne({ _id: messageId, conversationId });
 
-  if (!message) {
-    res.status(404).json({ success: false, error: 'Message not found' });
-    return;
+    if (!message) {
+      res.status(404).json({ success: false, error: 'Message not found' });
+      return;
+    }
+
+    if (message.senderId.toString() !== userId) {
+      sendForbidden(res, 'You can only modify your own messages');
+      return;
+    }
+
+    next();
+  } catch {
+    res.status(500).json({ success: false, error: 'Internal server error' });
   }
+}
 
-  if (message.senderId !== userId) {
-    sendForbidden(res, 'You can only modify your own messages');
-    return;
-  }
 
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\middleware\error.middleware.ts
+==============================
+
+/**
+ * error.middleware.ts — Global error handling middleware.
+ *
+ * This file is the SINGLE place where all errors in the application are
+ * caught, classified, logged, and transformed into a consistent HTTP
+ * response. It handles:
+ *
+ *   1. Our own AppError subclasses           → use their statusCode / code
+ *   2. Mongoose errors                        → map to appropriate HTTP codes
+ *   3. Zod validation errors                  → 400 with field details
+ *   4. JWT errors                             → 401
+ *   5. Multer upload errors                   → 400/413
+ *   6. Express body-parser errors             → 400
+ *   7. Unknown / programming errors           → 500 (generic message to client)
+ *
+ * THE GOLDEN RULE: never let a request hang. Every code path in this handler
+ * must call res.json() (via sendErrorResponse) exactly once.
+ */
+
+import type { Request, Response, NextFunction } from 'express';
+import { MulterError } from 'multer';
+import { ZodError } from 'zod';
+import mongoose from 'mongoose';
+import morgan from 'morgan';
+import { AppError } from '../errors/AppError.js';
+import { sendErrorResponse } from '../utils/response.js';
+import { logger } from '../utils/logger.js';
+import { env } from '../config/env.js';
+
+// ─── Request logger ───────────────────────────────────────────────────────────
+
+export const requestLogger = morgan(env.isDev ? 'dev' : 'combined');
+
+// ─── Request ID middleware ────────────────────────────────────────────────────
+/**
+ * Attaches a unique ID to every request so that logs and error responses can
+ * be correlated. The ID comes from the upstream proxy header if present,
+ * otherwise a simple timestamp+random combination.
+ */
+export function attachRequestId(req: Request, _res: Response, next: NextFunction): void {
+  req.requestId =
+    (req.headers['x-request-id'] as string | undefined) ??
+    `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   next();
+}
+
+// ─── 404 handler ─────────────────────────────────────────────────────────────
+
+export function notFoundHandler(req: Request, res: Response): void {
+  sendErrorResponse(
+    res,
+    404,
+    'NOT_FOUND',
+    `Route ${req.method} ${req.path} not found`,
+    undefined,
+    req.requestId,
+  );
+}
+
+// ─── Global error handler ─────────────────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function globalErrorHandler(
+  err: unknown,
+  req: Request,
+  res: Response,
+  _next: NextFunction, // must be declared even if unused — Express uses arity
+): void {
+  // ── 1. Our own operational errors ──────────────────────────────────────────
+  if (err instanceof AppError) {
+    // Operational errors are expected — log at warn unless it's a 5xx
+    if (err.statusCode >= 500) {
+      logger.error(err, { requestId: req.requestId, path: req.path });
+    } else {
+      logger.warn(err.message, {
+        code: err.code,
+        statusCode: err.statusCode,
+        path: req.path,
+        requestId: req.requestId,
+      });
+    }
+
+    sendErrorResponse(
+      res,
+      err.statusCode,
+      err.code,
+      // For non-operational 5xx errors, never leak internal details to client
+      err.isOperational ? err.message : 'An unexpected error occurred',
+      err.details,
+      req.requestId,
+    );
+    return;
+  }
+
+  // ── 2. Zod validation errors ───────────────────────────────────────────────
+  if (err instanceof ZodError) {
+    const details = err.errors.map((e) => ({
+      field: e.path.join('.'),
+      message: e.message,
+      code: e.code,
+    }));
+
+    logger.warn('Validation failed', {
+      path: req.path,
+      requestId: req.requestId,
+      issues: details,
+    });
+
+    sendErrorResponse(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      'Request validation failed',
+      details,
+      req.requestId,
+    );
+    return;
+  }
+
+  // ── 3. Mongoose errors ─────────────────────────────────────────────────────
+  if (err instanceof mongoose.Error.CastError) {
+    logger.warn('Invalid ObjectId', { path: req.path, requestId: req.requestId });
+    sendErrorResponse(res, 400, 'INVALID_ID', 'Invalid ID format', undefined, req.requestId);
+    return;
+  }
+
+  if (err instanceof mongoose.Error.ValidationError) {
+    const details = Object.values(err.errors).map((e) => ({
+      field: e.path,
+      message: e.message,
+    }));
+    logger.warn('Mongoose validation error', { path: req.path, requestId: req.requestId });
+    sendErrorResponse(res, 400, 'VALIDATION_ERROR', err.message, details, req.requestId);
+    return;
+  }
+
+  // Mongoose duplicate key (code 11000)
+  const mongoErr = err as { code?: number; keyValue?: Record<string, unknown> };
+  if (mongoErr?.code === 11000) {
+    const field = Object.keys(mongoErr.keyValue ?? {})[0] ?? 'field';
+    logger.warn('Duplicate key error', {
+      field,
+      path: req.path,
+      requestId: req.requestId,
+    });
+    sendErrorResponse(
+      res,
+      409,
+      'DUPLICATE_KEY',
+      `A record with that ${field} already exists`,
+      undefined,
+      req.requestId,
+    );
+    return;
+  }
+
+  // ── 4. JWT errors ──────────────────────────────────────────────────────────
+  const jwtErr = err as { name?: string; message?: string };
+  if (jwtErr?.name === 'JsonWebTokenError') {
+    sendErrorResponse(res, 401, 'INVALID_TOKEN', 'Invalid token', undefined, req.requestId);
+    return;
+  }
+
+  if (jwtErr?.name === 'TokenExpiredError') {
+    sendErrorResponse(res, 401, 'TOKEN_EXPIRED', 'Token has expired', undefined, req.requestId);
+    return;
+  }
+
+  if (jwtErr?.name === 'NotBeforeError') {
+    sendErrorResponse(res, 401, 'TOKEN_NOT_ACTIVE', 'Token is not yet active', undefined, req.requestId);
+    return;
+  }
+
+  // ── 5. Multer upload errors ────────────────────────────────────────────────
+  if (err instanceof MulterError) {
+    const errorMap: Record<string, { statusCode: number; message: string }> = {
+      LIMIT_FILE_SIZE: {
+        statusCode: 413,
+        message: `File is too large. Maximum size is ${env.upload.maxFileSizeMb}MB`,
+      },
+      LIMIT_FILE_COUNT: {
+        statusCode: 400,
+        message: 'Too many files. Maximum is 10 files per upload',
+      },
+      LIMIT_UNEXPECTED_FILE: {
+        statusCode: 400,
+        message: 'Unexpected file field name',
+      },
+      LIMIT_PART_COUNT: {
+        statusCode: 400,
+        message: 'Too many form parts',
+      },
+    };
+
+    const mapped = errorMap[err.code];
+    if (mapped) {
+      sendErrorResponse(res, mapped.statusCode, err.code, mapped.message, undefined, req.requestId);
+      return;
+    }
+
+    sendErrorResponse(res, 400, 'UPLOAD_ERROR', err.message, undefined, req.requestId);
+    return;
+  }
+
+  // Multer file-type rejection (comes as a plain Error with a specific message)
+  const plainErr = err as { message?: string };
+  if (typeof plainErr?.message === 'string' && plainErr.message.startsWith('File type')) {
+    sendErrorResponse(res, 400, 'UNSUPPORTED_FILE_TYPE', plainErr.message, undefined, req.requestId);
+    return;
+  }
+
+  // ── 6. Express body-parser / JSON parse errors ────────────────────────────
+  if (
+    typeof plainErr?.message === 'string' &&
+    (plainErr.message.includes('JSON') ||
+      (err as { type?: string })?.type === 'entity.parse.failed')
+  ) {
+    sendErrorResponse(res, 400, 'INVALID_JSON', 'Request body contains invalid JSON', undefined, req.requestId);
+    return;
+  }
+
+  // ── 7. Unknown / programming errors ───────────────────────────────────────
+  // ALWAYS log the full error for debugging. NEVER expose internals to client.
+  logger.error(err instanceof Error ? err : new Error(String(err)), {
+    requestId: req.requestId,
+    path: req.path,
+    method: req.method,
+  });
+
+  // In development, surface the real message to speed up debugging
+  const message = env.isDev && err instanceof Error
+    ? err.message
+    : 'An unexpected error occurred. Please try again later.';
+
+  sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', message, undefined, req.requestId);
+}
+
+// ─── Content-Type guard ───────────────────────────────────────────────────────
+
+/**
+ * Reject non-JSON requests on mutation endpoints (POST, PUT, PATCH).
+ * multipart/form-data is allowed for file uploads.
+ */
+export function requireJsonBody(req: Request, res: Response, next: NextFunction): void {
+  const skipMethods = ['GET', 'DELETE', 'HEAD', 'OPTIONS'];
+  if (skipMethods.includes(req.method)) {
+    next();
+    return;
+  }
+
+  if (req.is('application/json') || req.is('multipart/form-data')) {
+    next();
+    return;
+  }
+
+  sendErrorResponse(
+    res,
+    415,
+    'UNSUPPORTED_MEDIA_TYPE',
+    'Content-Type must be application/json or multipart/form-data',
+    undefined,
+    req.requestId,
+  );
 }
 
 
@@ -1979,11 +2529,7 @@ import { env } from '../config/env.js';
 import { sendInternalError } from '../helpers/index.js';
 import { MulterError } from 'multer';
 
-// ─── Request logger ───────────────────────────────────────────────────────────
-
 export const requestLogger = morgan(env.isDev ? 'dev' : 'combined');
-
-// ─── 404 handler ─────────────────────────────────────────────────────────────
 
 export function notFoundHandler(req: Request, res: Response): void {
   res.status(404).json({
@@ -1992,79 +2538,468 @@ export function notFoundHandler(req: Request, res: Response): void {
   });
 }
 
-// ─── Global error handler ─────────────────────────────────────────────────────
-
 export function globalErrorHandler(
   err: Error,
   _req: Request,
   res: Response,
   _next: NextFunction,
 ): void {
-  // Multer errors (file upload)
   if (err instanceof MulterError) {
     let message = 'File upload error';
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      message = `File is too large. Maximum size is ${env.upload.maxFileSizeMb}MB`;
-    } else if (err.code === 'LIMIT_FILE_COUNT') {
-      message = 'Too many files. Maximum is 10 files per upload';
-    } else if (err.code === 'LIMIT_UNEXPECTED_FILE') {
-      message = 'Unexpected file field';
-    }
+    if (err.code === 'LIMIT_FILE_SIZE') message = `File is too large. Maximum size is ${env.upload.maxFileSizeMb}MB`;
+    else if (err.code === 'LIMIT_FILE_COUNT') message = 'Too many files. Maximum is 10 files per upload';
+    else if (err.code === 'LIMIT_UNEXPECTED_FILE') message = 'Unexpected file field';
     res.status(400).json({ success: false, error: message });
     return;
   }
 
-  // Custom multer file-type errors
   if (err.message?.startsWith('File type')) {
     res.status(400).json({ success: false, error: err.message });
     return;
   }
 
-  // Zod validation errors bubble up as Error with "parse" issues
   if (err.name === 'ZodError') {
     res.status(400).json({ success: false, error: err.message });
     return;
   }
 
-  // JWT errors
   if (err.name === 'JsonWebTokenError') {
     res.status(401).json({ success: false, error: 'Invalid token' });
     return;
   }
+
   if (err.name === 'TokenExpiredError') {
     res.status(401).json({ success: false, error: 'Token expired' });
     return;
   }
 
-  // Unknown errors
-  if (env.isDev) {
-    console.error('[Error]', err);
+  // CastError from mongoose (invalid ObjectId)
+  if (err.name === 'CastError') {
+    res.status(400).json({ success: false, error: 'Invalid ID format' });
+    return;
   }
+
+  // Mongoose duplicate key
+  if ((err as NodeJS.ErrnoException).code === '11000') {
+    res.status(409).json({ success: false, error: 'Duplicate key error' });
+    return;
+  }
+
+  if (env.isDev) console.error('[Error]', err);
 
   sendInternalError(res);
 }
 
-// ─── Validate JSON body middleware ────────────────────────────────────────────
-
-export function requireJsonBody(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): void {
+export function requireJsonBody(req: Request, res: Response, next: NextFunction): void {
   if (
     req.method !== 'GET' &&
     req.method !== 'DELETE' &&
     !req.is('application/json') &&
     !req.is('multipart/form-data')
   ) {
-    res.status(415).json({
-      success: false,
-      error: 'Content-Type must be application/json',
-    });
+    res.status(415).json({ success: false, error: 'Content-Type must be application/json' });
     return;
   }
   next();
 }
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\models\conversation.model.ts
+==============================
+
+import mongoose, { type Document, type Model, Schema } from 'mongoose';
+
+// ─── Interface ────────────────────────────────────────────────────────────────
+
+export interface IConversation {
+  name: string;
+  picture: string;
+  isGroup: boolean;
+  members: mongoose.Types.ObjectId[];
+  adminId?: mongoose.Types.ObjectId;
+  latestMessage?: mongoose.Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IConversationDocument extends IConversation, Document {
+  _id: mongoose.Types.ObjectId;
+}
+
+// ─── Schema ───────────────────────────────────────────────────────────────────
+
+const conversationSchema = new Schema<IConversationDocument>(
+  {
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 80,
+    },
+    picture: {
+      type: String,
+      default: '',
+    },
+    isGroup: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    members: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: 'User',
+        required: true,
+      },
+    ],
+    adminId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+    },
+    latestMessage: {
+      type: Schema.Types.ObjectId,
+      ref: 'Message',
+    },
+  },
+  {
+    timestamps: true,
+    toJSON: {
+      virtuals: true,
+      transform(_doc, ret) {
+        ret['id'] = ret['_id'].toString();
+        delete ret['_id'];
+        delete ret['__v'];
+        return ret;
+      },
+    },
+    toObject: { virtuals: true },
+  },
+);
+
+// ─── Indexes ──────────────────────────────────────────────────────────────────
+
+// Fast lookup: "all conversations containing this user"
+conversationSchema.index({ members: 1, updatedAt: -1 });
+
+// Unique DM: prevent duplicate 1-on-1 conversations
+// (enforced in service layer, not DB, due to variable-length array)
+
+// ─── Model ────────────────────────────────────────────────────────────────────
+
+export const Conversation: Model<IConversationDocument> =
+  mongoose.models['Conversation'] ??
+  mongoose.model<IConversationDocument>('Conversation', conversationSchema);
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\models\message.model.ts
+==============================
+
+import mongoose, { type Document, type Model, Schema } from 'mongoose';
+
+// ─── Sub-document interfaces ──────────────────────────────────────────────────
+
+export interface IReaction {
+  emoji: string;
+  userId: mongoose.Types.ObjectId;
+  createdAt: Date;
+}
+
+export interface IFileAttachment {
+  attachmentId: string;
+  name: string;
+  type: string;
+  url: string;
+  size: number;
+}
+
+export interface IReplyTo {
+  messageId: mongoose.Types.ObjectId;
+  senderId: mongoose.Types.ObjectId;
+  senderName: string;
+  message: string;
+}
+
+// ─── Main interface ───────────────────────────────────────────────────────────
+
+export interface IMessage {
+  conversationId: mongoose.Types.ObjectId;
+  senderId: mongoose.Types.ObjectId;
+  message: string;
+  files?: IFileAttachment[];
+  reactions: IReaction[];
+  replyTo?: IReplyTo;
+  seenBy: mongoose.Types.ObjectId[];
+  isEdited: boolean;
+  editedAt?: Date;
+  isDeleted: boolean;
+  deletedAt?: Date;
+  isPinned: boolean;
+  pinnedAt?: Date;
+  pinnedBy?: mongoose.Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IMessageDocument extends IMessage, Document {
+  _id: mongoose.Types.ObjectId;
+}
+
+// ─── Sub-schemas ──────────────────────────────────────────────────────────────
+
+const reactionSchema = new Schema<IReaction>(
+  {
+    emoji: { type: String, required: true, maxlength: 8 },
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false },
+);
+
+const fileAttachmentSchema = new Schema<IFileAttachment>(
+  {
+    attachmentId: { type: String, required: true },
+    name: { type: String, required: true },
+    type: { type: String, required: true },
+    url: { type: String, required: true },
+    size: { type: Number, required: true },
+  },
+  { _id: false },
+);
+
+const replyToSchema = new Schema<IReplyTo>(
+  {
+    messageId: { type: Schema.Types.ObjectId, ref: 'Message', required: true },
+    senderId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    senderName: { type: String, required: true },
+    message: { type: String, required: true, maxlength: 200 },
+  },
+  { _id: false },
+);
+
+// ─── Main schema ──────────────────────────────────────────────────────────────
+
+const messageSchema = new Schema<IMessageDocument>(
+  {
+    conversationId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Conversation',
+      required: true,
+      index: true,
+    },
+    senderId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    message: {
+      type: String,
+      default: '',
+      maxlength: 4000,
+    },
+    files: [fileAttachmentSchema],
+    reactions: [reactionSchema],
+    replyTo: replyToSchema,
+    seenBy: [{ type: Schema.Types.ObjectId, ref: 'User' }],
+    isEdited: { type: Boolean, default: false },
+    editedAt: Date,
+    isDeleted: { type: Boolean, default: false, index: true },
+    deletedAt: Date,
+    isPinned: { type: Boolean, default: false, index: true },
+    pinnedAt: Date,
+    pinnedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  },
+  {
+    timestamps: true,
+    toJSON: {
+      virtuals: true,
+      transform(_doc, ret) {
+        ret['id'] = ret['_id'].toString();
+        delete ret['_id'];
+        delete ret['__v'];
+        // Normalize ObjectId refs to strings for the frontend
+        if (ret['senderId']?._id) ret['senderId'] = ret['senderId'].id;
+        if (ret['conversationId']?._id) ret['conversationId'] = ret['conversationId'].id;
+        if (ret['pinnedBy']?._id) ret['pinnedBy'] = ret['pinnedBy'].id;
+        if (Array.isArray(ret['seenBy'])) {
+          ret['seenBy'] = ret['seenBy'].map((s: unknown) =>
+            typeof s === 'object' && s !== null && '_id' in s
+              ? (s as { _id: { toString(): string } })._id.toString()
+              : String(s),
+          );
+        }
+        if (Array.isArray(ret['reactions'])) {
+          ret['reactions'] = ret['reactions'].map((r: Record<string, unknown>) => ({
+            ...r,
+            userId:
+              r['userId'] && typeof r['userId'] === 'object' && '_id' in r['userId']
+                ? (r['userId'] as { _id: { toString(): string } })._id.toString()
+                : String(r['userId']),
+          }));
+        }
+        return ret;
+      },
+    },
+    toObject: { virtuals: true },
+  },
+);
+
+// ─── Indexes ──────────────────────────────────────────────────────────────────
+
+messageSchema.index({ conversationId: 1, createdAt: 1 });
+messageSchema.index({ conversationId: 1, isPinned: 1 });
+messageSchema.index({ conversationId: 1, message: 'text' });
+
+// ─── Model ────────────────────────────────────────────────────────────────────
+
+export const Message: Model<IMessageDocument> =
+  mongoose.models['Message'] ??
+  mongoose.model<IMessageDocument>('Message', messageSchema);
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\models\refreshToken.model.ts
+==============================
+
+import mongoose, { type Document, type Model, Schema } from 'mongoose';
+
+// ─── Interface ────────────────────────────────────────────────────────────────
+
+export interface IRefreshToken {
+  token: string;
+  userId: mongoose.Types.ObjectId;
+  expiresAt: Date;
+  createdAt: Date;
+}
+
+export interface IRefreshTokenDocument extends IRefreshToken, Document {}
+
+// ─── Schema ───────────────────────────────────────────────────────────────────
+
+const refreshTokenSchema = new Schema<IRefreshTokenDocument>(
+  {
+    token: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+    },
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true,
+    },
+    expiresAt: {
+      type: Date,
+      required: true,
+    },
+  },
+  {
+    timestamps: true,
+  },
+);
+
+// Auto-delete expired tokens via TTL index
+refreshTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+// ─── Model ────────────────────────────────────────────────────────────────────
+
+export const RefreshToken: Model<IRefreshTokenDocument> =
+  mongoose.models['RefreshToken'] ??
+  mongoose.model<IRefreshTokenDocument>('RefreshToken', refreshTokenSchema);
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\models\user.model.ts
+==============================
+
+import mongoose, { type Document, type Model, Schema } from 'mongoose';
+
+// ─── Interface ────────────────────────────────────────────────────────────────
+
+export type UserStatus = 'online' | 'offline' | 'away';
+
+export interface IUser {
+  name: string;
+  email: string;
+  passwordHash: string;
+  picture: string;
+  status: UserStatus;
+  about: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IUserDocument extends IUser, Document {
+  _id: mongoose.Types.ObjectId;
+}
+
+export type IUserPublic = Omit<IUser, 'passwordHash'> & { id: string };
+
+// ─── Schema ───────────────────────────────────────────────────────────────────
+
+const userSchema = new Schema<IUserDocument>(
+  {
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+      minlength: 2,
+      maxlength: 60,
+    },
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+      index: true,
+    },
+    passwordHash: {
+      type: String,
+      required: true,
+    },
+    picture: {
+      type: String,
+      default: '',
+    },
+    status: {
+      type: String,
+      enum: ['online', 'offline', 'away'],
+      default: 'offline',
+    },
+    about: {
+      type: String,
+      default: 'Hey there! I am using WhatsUp',
+      maxlength: 200,
+    },
+  },
+  {
+    timestamps: true,
+    toJSON: {
+      virtuals: true,
+      transform(_doc, ret) {
+        ret['id'] = ret['_id'].toString();
+        delete ret['_id'];
+        delete ret['__v'];
+        delete ret['passwordHash'];
+        return ret;
+      },
+    },
+    toObject: { virtuals: true },
+  },
+);
+
+// ─── Indexes ──────────────────────────────────────────────────────────────────
+
+userSchema.index({ name: 'text', email: 'text' });
+
+// ─── Model ────────────────────────────────────────────────────────────────────
+
+export const User: Model<IUserDocument> =
+  mongoose.models['User'] ?? mongoose.model<IUserDocument>('User', userSchema);
 
 
 ==============================
@@ -2077,12 +3012,9 @@ import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
-// Public routes
 router.post('/login', authController.login);
 router.post('/register', authController.register);
 router.post('/refresh', authController.refresh);
-
-// Protected routes
 router.post('/logout', requireAuth, authController.logout);
 router.get('/me', requireAuth, authController.me);
 
@@ -2101,20 +3033,13 @@ const router = Router();
 
 router.use(requireAuth);
 
-// List all conversations for current user
 router.get('/', conversationController.list);
-
-// Create a 1-on-1 DM
 router.post('/', conversationController.createDirect);
-
-// Create a group
 router.post('/group', conversationController.createGroup);
 
-// Single conversation (membership verified by middleware)
 router.get('/:conversationId', requireConversationMember, conversationController.getOne);
 router.post('/:conversationId/read', requireConversationMember, conversationController.markRead);
 
-// Group member management
 router.post('/:conversationId/members', requireConversationMember, conversationController.addMember);
 router.delete('/:conversationId/members/:userId', requireConversationMember, conversationController.removeMember);
 
@@ -2135,7 +3060,6 @@ import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
-// Health check
 router.get('/health', (_req, res) => {
   res.json({
     success: true,
@@ -2147,18 +3071,10 @@ router.get('/health', (_req, res) => {
   });
 });
 
-// Mount routes
 router.use('/auth', authRoutes);
 router.use('/users', userRoutes);
 router.use('/conversations', conversationRoutes);
-
-// Message routes are nested under conversations
-router.use(
-  '/conversations/:conversationId/messages',
-  messageRoutes,
-);
-
-// Global message search (across all conversations)
+router.use('/conversations/:conversationId/messages', messageRoutes);
 router.get('/messages/search', requireAuth, messageController.globalSearch);
 
 export default router;
@@ -2178,29 +3094,21 @@ const router = Router({ mergeParams: true });
 router.use(requireAuth);
 router.use(requireConversationMember);
 
-// List + search messages
 router.get('/', messageController.list);
 router.get('/search', messageController.search);
 router.get('/pinned', messageController.listPinned);
 
-// Send message (supports multipart/form-data for file uploads)
 router.post('/', upload.array('files', 10), messageController.send);
 
-// Single message actions
 router.patch('/:messageId', messageController.edit);
 router.delete('/:messageId', messageController.delete);
 
-// Reactions
 router.post('/:messageId/reactions', messageController.toggleReaction);
 
-// Pin / Unpin
 router.post('/:messageId/pin', messageController.pin);
 router.delete('/:messageId/pin', messageController.unpin);
 
-// Forward
 router.post('/:messageId/forward', messageController.forward);
-
-// Seen receipt
 router.post('/:messageId/seen', messageController.markSeen);
 
 export default router;
@@ -2216,7 +3124,6 @@ import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
-// All user routes require auth
 router.use(requireAuth);
 
 router.get('/search', userController.search);
@@ -2229,29 +3136,258 @@ export default router;
 
 
 ==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\scripts\seed.ts
+==============================
+
+/**
+ * Seed script — run once to populate MongoDB with demo data.
+ * Usage: npx tsx src/scripts/seed.ts
+ */
+import dotenv from 'dotenv';
+import path from 'path';
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+
+import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
+import { User } from '../models/user.model.js';
+import { Conversation } from '../models/conversation.model.js';
+import { Message } from '../models/message.model.js';
+import { env } from '../config/env.js';
+
+const SEED_PASSWORD_HASH = bcrypt.hashSync('password123', 10);
+
+async function seed(): Promise<void> {
+  await mongoose.connect(env.mongodb.uri);
+  console.log('[Seed] Connected to MongoDB');
+
+  // ── Wipe existing seed data ──────────────────────────────────────────────
+  await User.deleteMany({});
+  await Conversation.deleteMany({});
+  await Message.deleteMany({});
+  console.log('[Seed] Cleared existing data');
+
+  // ── Users ────────────────────────────────────────────────────────────────
+  const userData = [
+    { name: 'John Doe',     email: 'john@example.com',  picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=john',  about: 'Hey there! I am using WhatsUp', status: 'offline' },
+    { name: 'Jane Smith',   email: 'jane@example.com',  picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=jane',  about: 'Available',    status: 'offline' },
+    { name: 'Mike Johnson', email: 'mike@example.com',  picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=mike',  about: 'Busy',         status: 'offline' },
+    { name: 'Sarah Wilson', email: 'sarah@example.com', picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=sarah', about: 'At work',      status: 'offline' },
+    { name: 'Alex Brown',   email: 'alex@example.com',  picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=alex',  about: 'Hello!',       status: 'offline' },
+    { name: 'Emily Davis',  email: 'emily@example.com', picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=emily', about: 'Living life',  status: 'offline' },
+    { name: 'Chris Lee',    email: 'chris@example.com', picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=chris', about: 'Away',         status: 'offline' },
+    { name: 'David Miller', email: 'david@example.com', picture: 'https://api.dicebear.com/7.x/avataaars/svg?seed=david', about: 'Happy to connect!', status: 'offline' },
+  ] as const;
+
+  const users = await User.insertMany(
+    userData.map((u) => ({ ...u, passwordHash: SEED_PASSWORD_HASH })),
+  );
+
+  const [john, jane, mike, sarah, alex, emily, chris, david] = users as typeof users & { length: 8 };
+  console.log(`[Seed] Created ${users.length} users`);
+
+  // ── Conversations ────────────────────────────────────────────────────────
+  const conv1 = await Conversation.create({
+    name: jane!.name,
+    picture: jane!.picture,
+    isGroup: false,
+    members: [john!._id, jane!._id],
+  });
+
+  const conv2 = await Conversation.create({
+    name: mike!.name,
+    picture: mike!.picture,
+    isGroup: false,
+    members: [john!._id, mike!._id],
+  });
+
+  const conv3 = await Conversation.create({
+    name: sarah!.name,
+    picture: sarah!.picture,
+    isGroup: false,
+    members: [john!._id, sarah!._id],
+  });
+
+  const conv4 = await Conversation.create({
+    name: alex!.name,
+    picture: alex!.picture,
+    isGroup: false,
+    members: [john!._id, alex!._id],
+  });
+
+  const group1 = await Conversation.create({
+    name: '🚀 Project Alpha Team',
+    picture: 'https://api.dicebear.com/7.x/shapes/svg?seed=project-alpha',
+    isGroup: true,
+    members: [john!._id, jane!._id, mike!._id, sarah!._id],
+    adminId: john!._id,
+  });
+
+  const group2 = await Conversation.create({
+    name: '🎮 Gaming Squad',
+    picture: 'https://api.dicebear.com/7.x/shapes/svg?seed=gaming-squad',
+    isGroup: true,
+    members: [john!._id, alex!._id, emily!._id, chris!._id, david!._id],
+    adminId: alex!._id,
+  });
+
+  const group3 = await Conversation.create({
+    name: '💼 Work Buddies',
+    picture: 'https://api.dicebear.com/7.x/shapes/svg?seed=work-buddies',
+    isGroup: true,
+    members: [john!._id, jane!._id, sarah!._id, emily!._id],
+    adminId: jane!._id,
+  });
+
+  const group4 = await Conversation.create({
+    name: '📚 Book Club',
+    picture: 'https://api.dicebear.com/7.x/shapes/svg?seed=book-club',
+    isGroup: true,
+    members: [john!._id, mike!._id, emily!._id, chris!._id],
+    adminId: mike!._id,
+  });
+
+  console.log('[Seed] Created conversations');
+
+  // ── Messages ─────────────────────────────────────────────────────────────
+  const now = Date.now();
+
+  // conv1: John ↔ Jane
+  const m1 = await Message.create({
+    conversationId: conv1._id, senderId: jane!._id,
+    message: "Hey! How's it going? 👋",
+    seenBy: [john!._id], reactions: [{ emoji: '👋', userId: john!._id, createdAt: new Date(now - 3500000) }],
+    createdAt: new Date(now - 3600000 * 2), updatedAt: new Date(now - 3600000 * 2),
+  });
+  const m2 = await Message.create({
+    conversationId: conv1._id, senderId: john!._id,
+    message: "Hey! I'm doing great! Just finished working on the new project.",
+    seenBy: [jane!._id], reactions: [{ emoji: '👍', userId: jane!._id, createdAt: new Date(now - 3400000) }],
+    createdAt: new Date(now - 3600000 * 1.9), updatedAt: new Date(now - 3600000 * 1.9),
+  });
+  const m3 = await Message.create({
+    conversationId: conv1._id, senderId: jane!._id,
+    message: "That's awesome! Is it the chat app?",
+    seenBy: [john!._id],
+    createdAt: new Date(now - 3600000 * 1.8), updatedAt: new Date(now - 3600000 * 1.8),
+  });
+  const m4 = await Message.create({
+    conversationId: conv1._id, senderId: john!._id,
+    message: 'Yes! Real-time messaging, emoji reactions, file sharing, and group chats. Pretty proud of it! 🚀',
+    seenBy: [jane!._id], reactions: [{ emoji: '🚀', userId: jane!._id, createdAt: new Date(now - 3000000) }],
+    createdAt: new Date(now - 3600000 * 1.7), updatedAt: new Date(now - 3600000 * 1.7),
+  });
+  const m5 = await Message.create({
+    conversationId: conv1._id, senderId: jane!._id,
+    message: 'Absolutely! Count me in. This is going to be great! 🎉',
+    seenBy: [], createdAt: new Date(now - 300000), updatedAt: new Date(now - 300000),
+  });
+  await Conversation.findByIdAndUpdate(conv1._id, { latestMessage: m5._id, updatedAt: new Date(now - 300000) });
+
+  // group1: Project Alpha
+  const gm1 = await Message.create({
+    conversationId: group1._id, senderId: jane!._id,
+    message: 'Hey team! Quick standup reminder for tomorrow at 9 AM 📅',
+    seenBy: [john!._id, jane!._id, mike!._id, sarah!._id], isPinned: true, pinnedBy: john!._id, pinnedAt: new Date(now - 79000000),
+    reactions: [{ emoji: '👍', userId: john!._id, createdAt: new Date() }, { emoji: '✅', userId: mike!._id, createdAt: new Date() }],
+    createdAt: new Date(now - 86400000), updatedAt: new Date(now - 86400000),
+  });
+  const gm2 = await Message.create({
+    conversationId: group1._id, senderId: john!._id,
+    message: "Got it! I'll have the sprint review ready by then.",
+    seenBy: [jane!._id, mike!._id, sarah!._id],
+    createdAt: new Date(now - 82800000), updatedAt: new Date(now - 82800000),
+  });
+  const gm3 = await Message.create({
+    conversationId: group1._id, senderId: mike!._id,
+    message: 'Great progress on the sprint! 🎉', seenBy: [],
+    createdAt: new Date(now - 1800000), updatedAt: new Date(now - 1800000),
+  });
+  await Conversation.findByIdAndUpdate(group1._id, { latestMessage: gm3._id, updatedAt: new Date(now - 1800000) });
+
+  // group2: Gaming Squad
+  const gg1 = await Message.create({
+    conversationId: group2._id, senderId: alex!._id,
+    message: "Who's online for some games tonight? 🎮",
+    seenBy: [john!._id, alex!._id, emily!._id, chris!._id, david!._id],
+    reactions: [{ emoji: '🙋', userId: john!._id, createdAt: new Date() }, { emoji: '🙋', userId: emily!._id, createdAt: new Date() }],
+    createdAt: new Date(now - 28800000), updatedAt: new Date(now - 28800000),
+  });
+  const gg2 = await Message.create({
+    conversationId: group2._id, senderId: emily!._id,
+    message: 'Anyone up for ranked tonight? 🎮', seenBy: [],
+    createdAt: new Date(now - 600000), updatedAt: new Date(now - 600000),
+  });
+  await Conversation.findByIdAndUpdate(group2._id, { latestMessage: gg2._id, updatedAt: new Date(now - 600000) });
+
+  // conv2
+  const c2m = await Message.create({
+    conversationId: conv2._id, senderId: mike!._id,
+    message: 'Did you see the meeting notes?', seenBy: [john!._id],
+    createdAt: new Date(now - 7200000), updatedAt: new Date(now - 7200000),
+  });
+  await Conversation.findByIdAndUpdate(conv2._id, { latestMessage: c2m._id, updatedAt: new Date(now - 7200000) });
+
+  // conv3
+  const c3m = await Message.create({
+    conversationId: conv3._id, senderId: john!._id,
+    message: 'Let me check...', seenBy: [sarah!._id],
+    createdAt: new Date(now - 3600000), updatedAt: new Date(now - 3600000),
+  });
+  await Conversation.findByIdAndUpdate(conv3._id, { latestMessage: c3m._id, updatedAt: new Date(now - 3600000) });
+
+  // group3
+  const g3m = await Message.create({
+    conversationId: group3._id, senderId: john!._id,
+    message: 'Lunch at 12:30? 🍕', seenBy: [jane!._id, sarah!._id, emily!._id],
+    createdAt: new Date(now - 7200000), updatedAt: new Date(now - 7200000),
+  });
+  await Conversation.findByIdAndUpdate(group3._id, { latestMessage: g3m._id, updatedAt: new Date(now - 7200000) });
+
+  // group4
+  const g4m = await Message.create({
+    conversationId: group4._id, senderId: chris!._id,
+    message: 'Just finished chapter 5, mind-blowing twist! 🤯', seenBy: [],
+    createdAt: new Date(now - 3600000), updatedAt: new Date(now - 3600000),
+  });
+  await Conversation.findByIdAndUpdate(group4._id, { latestMessage: g4m._id, updatedAt: new Date(now - 3600000) });
+
+  console.log('[Seed] Created messages');
+  console.log('\n✅  Seed complete!');
+  console.log('\n   Test credentials (all share the same password):');
+  users.forEach((u) => console.log(`   ${u.email}  /  password123`));
+  console.log('');
+
+  await mongoose.disconnect();
+}
+
+seed().catch((err) => {
+  console.error('[Seed] Error:', err);
+  process.exit(1);
+});
+
+
+==============================
 FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\services\auth.service.ts
 ==============================
 
-import { v4 as uuidv4 } from 'uuid';
-import { store } from '../config/store.js';
+import mongoose from 'mongoose';
+import { User } from '../models/user.model.js';
+import { RefreshToken } from '../models/refreshToken.model.js';
 import {
   hashPassword,
   comparePassword,
   generateTokenPair,
   verifyRefreshToken,
-  generateId,
-  stripPassword,
+  docToPublicUser,
   nowDate,
+  getRefreshTokenExpiry,
 } from '../helpers/index.js';
 import type {
   LoginRequest,
   RegisterRequest,
   AuthTokens,
   PublicUser,
-  User,
 } from '../types/index.js';
-
-// ─── Result types ─────────────────────────────────────────────────────────────
 
 export interface LoginResult {
   user: PublicUser;
@@ -2263,732 +3399,848 @@ export interface RegisterResult {
   tokens: AuthTokens;
 }
 
-// ─── Auth Service ─────────────────────────────────────────────────────────────
-
 export const authService = {
-  /**
-   * Authenticate a user with email + password.
-   * Returns user (without password) and JWT token pair.
-   */
   async login(data: LoginRequest): Promise<LoginResult | null> {
-    const user = findUserByEmail(data.email);
+    const user = await User.findOne({ email: data.email.toLowerCase().trim() });
     if (!user) return null;
 
-    const passwordMatch = await comparePassword(data.password, user.passwordHash);
+    const passwordMatch = await comparePassword(
+      data.password,
+      user.passwordHash,
+    );
     if (!passwordMatch) return null;
 
-    // Mark user as online
     user.status = 'online';
     user.updatedAt = nowDate();
-    store.users.set(user.id, user);
-    store.onlineUsers.add(user.id);
+    await user.save();
 
-    const tokens = generateTokenPair({ userId: user.id, email: user.email });
-    store.refreshTokens.add(tokens.refreshToken);
+    const tokens = generateTokenPair({
+      userId: user._id.toString(),
+      email: user.email,
+    });
 
-    return { user: stripPassword(user), tokens };
+    await RefreshToken.create({
+      token: tokens.refreshToken,
+      userId: user._id,
+      expiresAt: getRefreshTokenExpiry(),
+    });
+
+    return { user: docToPublicUser(user), tokens };
   },
 
-  /**
-   * Register a new user account.
-   */
-  async register(data: RegisterRequest): Promise<RegisterResult | 'email_taken'> {
-    const existing = findUserByEmail(data.email);
-    if (existing) return 'email_taken';
+  async register(
+    data: RegisterRequest,
+  ): Promise<RegisterResult | 'email_taken'> {
+    const exists = await User.findOne({
+      email: data.email.toLowerCase().trim(),
+    });
+    if (exists) return 'email_taken';
 
     const passwordHash = await hashPassword(data.password);
-    const now = nowDate();
 
-    const newUser: User = {
-      id: generateId(),
+    const newUser = await User.create({
       name: data.name.trim(),
       email: data.email.toLowerCase().trim(),
       passwordHash,
       picture: `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(data.email)}`,
       status: 'online',
       about: 'Hey there! I am using WhatsUp',
-      createdAt: now,
-      updatedAt: now,
-    };
+    });
 
-    store.users.set(newUser.id, newUser);
-    store.onlineUsers.add(newUser.id);
+    const tokens = generateTokenPair({
+      userId: newUser._id.toString(),
+      email: newUser.email,
+    });
 
-    const tokens = generateTokenPair({ userId: newUser.id, email: newUser.email });
-    store.refreshTokens.add(tokens.refreshToken);
+    await RefreshToken.create({
+      token: tokens.refreshToken,
+      userId: newUser._id,
+      expiresAt: getRefreshTokenExpiry(),
+    });
 
-    return { user: stripPassword(newUser), tokens };
+    return { user: docToPublicUser(newUser), tokens };
   },
 
   /**
-   * Refresh access token using a valid refresh token.
+   * BUG FIX 3: Atomic refresh token rotation using findOneAndDelete.
+   *
+   * Old code did findOne → verify → deleteOne in separate steps.
+   * Two concurrent refresh requests with the same token would BOTH pass the
+   * findOne check before either deleteOne ran, resulting in two new token pairs
+   * being issued for the same refresh token (classic token replay attack window).
+   *
+   * findOneAndDelete is atomic at the DB level — only ONE request will find and
+   * delete the document; the concurrent one gets null and returns early.
    */
   async refreshTokens(refreshToken: string): Promise<AuthTokens | null> {
-    if (!store.refreshTokens.has(refreshToken)) return null;
+    // Atomically find AND delete in one operation
+    const stored = await RefreshToken.findOneAndDelete({ token: refreshToken });
+    if (!stored) return null; // Already used or doesn't exist
 
     try {
       const payload = verifyRefreshToken(refreshToken);
-      const user = store.users.get(payload.userId);
-      if (!user) return null;
+      const user = await User.findById(payload.userId);
+      if (!user) return null; // User deleted — don't re-create the token
 
-      // Rotate: remove old, issue new
-      store.refreshTokens.delete(refreshToken);
-      const tokens = generateTokenPair({ userId: user.id, email: user.email });
-      store.refreshTokens.add(tokens.refreshToken);
+      // Issue new token pair
+      const tokens = generateTokenPair({
+        userId: user._id.toString(),
+        email: user.email,
+      });
+
+      await RefreshToken.create({
+        token: tokens.refreshToken,
+        userId: user._id,
+        expiresAt: getRefreshTokenExpiry(),
+      });
 
       return tokens;
     } catch {
-      store.refreshTokens.delete(refreshToken);
+      // JWT verification failed (tampered/expired token) — stored doc already deleted above
       return null;
     }
   },
 
-  /**
-   * Invalidate refresh token on logout and set user offline.
-   */
-  logout(userId: string, refreshToken?: string): void {
+  async logout(userId: string, refreshToken?: string): Promise<void> {
     if (refreshToken) {
-      store.refreshTokens.delete(refreshToken);
+      await RefreshToken.deleteOne({ token: refreshToken });
     }
-
-    const user = store.users.get(userId);
-    if (user) {
-      user.status = 'offline';
-      user.updatedAt = nowDate();
-      store.users.set(userId, user);
-    }
-
-    store.onlineUsers.delete(userId);
+    await User.findByIdAndUpdate(userId, {
+      status: 'offline',
+      updatedAt: nowDate(),
+    });
   },
 
-  /**
-   * Get currently authenticated user.
-   */
-  getMe(userId: string): PublicUser | null {
-    const user = store.users.get(userId);
+  async getMe(userId: string): Promise<PublicUser | null> {
+    const user = await User.findById(userId);
     if (!user) return null;
-    return stripPassword(user);
+    return docToPublicUser(user);
   },
 };
-
-// ─── Private helpers ──────────────────────────────────────────────────────────
-
-function findUserByEmail(email: string): User | undefined {
-  const normalized = email.toLowerCase().trim();
-  for (const user of store.users.values()) {
-    if (user.email === normalized) return user;
-  }
-  return undefined;
-}
 
 
 ==============================
 FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\services\conversation.service.ts
 ==============================
 
-import { store } from '../config/store.js';
-import { generateId, stripPassword, nowDate } from '../helpers/index.js';
+import mongoose from 'mongoose';
+import { Conversation } from '../models/conversation.model.js';
+import { Message } from '../models/message.model.js';
+import { User } from '../models/user.model.js';
+import { docToPublicUser, nowDate } from '../helpers/index.js';
+import { isUserOnline, getSocketsForUser } from '../config/runtimeStore.js';
 import type {
-  Conversation,
+  Conversation as ConversationType,
+  PublicUser,
   CreateConversationRequest,
   CreateGroupRequest,
-  PublicUser,
+  Message as MessageType,
 } from '../types/index.js';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function docToMessage(doc: InstanceType<typeof Message>): MessageType {
+  const obj = doc.toObject({ virtuals: true }) as Record<string, unknown>;
+  return {
+    id: String(obj['id'] ?? obj['_id']),
+    conversationId: String(obj['conversationId']),
+    senderId: String(obj['senderId']),
+    message: String(obj['message'] ?? ''),
+    files: (
+      obj['files'] as
+        | {
+            attachmentId: string;
+            name: string;
+            type: string;
+            url: string;
+            size: number;
+          }[]
+        | undefined
+    )?.map((f) => ({
+      id: f.attachmentId,
+      name: f.name,
+      type: f.type,
+      url: f.url,
+      size: f.size,
+    })),
+    reactions: ((obj['reactions'] as unknown[]) ?? []).map((r) => {
+      const reaction = r as Record<string, unknown>;
+      return {
+        emoji: String(reaction['emoji']),
+        userId: String(reaction['userId']),
+        createdAt: reaction['createdAt'] as Date,
+      };
+    }),
+    replyTo: obj['replyTo'] as MessageType['replyTo'],
+    seenBy: ((obj['seenBy'] as unknown[]) ?? []).map(String),
+    isEdited: Boolean(obj['isEdited']),
+    editedAt: obj['editedAt'] as Date | undefined,
+    isDeleted: Boolean(obj['isDeleted']),
+    deletedAt: obj['deletedAt'] as Date | undefined,
+    isPinned: Boolean(obj['isPinned']),
+    pinnedAt: obj['pinnedAt'] as Date | undefined,
+    pinnedBy: obj['pinnedBy'] ? String(obj['pinnedBy']) : undefined,
+    createdAt: obj['createdAt'] as Date,
+    updatedAt: obj['updatedAt'] as Date,
+  };
+}
+
+async function buildConversationDto(
+  conv: InstanceType<typeof Conversation>,
+  requestingUserId: string,
+): Promise<ConversationType> {
+  // Populate members
+  const memberDocs = await User.find({ _id: { $in: conv.members } });
+  const users: PublicUser[] = memberDocs.map((u) => ({
+    ...docToPublicUser(u),
+    status: isUserOnline(u._id.toString()) ? 'online' : u.status,
+  }));
+
+  // BUG FIX 1: For DM conversations, show the OTHER person's name/picture
+  // relative to the requesting user, not the stored name (which is from creator's POV)
+  let displayName = conv.name;
+  let displayPicture = conv.picture;
+
+  if (!conv.isGroup) {
+    const otherUser = memberDocs.find(
+      (u) => u._id.toString() !== requestingUserId,
+    );
+    if (otherUser) {
+      displayName = otherUser.name;
+      displayPicture = otherUser.picture;
+    }
+  }
+
+  // Unread count: messages not sent by me, not deleted, not seen by me
+  const unreadCount = await Message.countDocuments({
+    conversationId: conv._id,
+    senderId: { $ne: new mongoose.Types.ObjectId(requestingUserId) },
+    isDeleted: false,
+    seenBy: { $nin: [new mongoose.Types.ObjectId(requestingUserId)] },
+  });
+
+  // Latest message
+  let latestMessage: MessageType | undefined;
+  if (conv.latestMessage) {
+    const latestDoc = await Message.findById(conv.latestMessage);
+    if (latestDoc) latestMessage = docToMessage(latestDoc);
+  }
+
+  return {
+    id: conv._id.toString(),
+    name: displayName,
+    picture: displayPicture,
+    isGroup: conv.isGroup,
+    users,
+    adminId: conv.adminId?.toString(),
+    latestMessage,
+    unreadCount,
+    createdAt: conv.createdAt,
+    updatedAt: conv.updatedAt,
+  };
+}
+
+// ─── Service ──────────────────────────────────────────────────────────────────
 
 export const conversationService = {
   /**
    * Get all conversations for a user, sorted by latest activity.
    */
-  getConversationsForUser(userId: string): Conversation[] {
-    const results: Conversation[] = [];
-
-    for (const conv of store.conversations.values()) {
-      const isMember = conv.users.some((u) => u.id === userId);
-      if (isMember) {
-        results.push(withUnreadCount(conv, userId));
-      }
-    }
-
-    return results.sort((a, b) => {
-      const aTime = a.latestMessage?.createdAt.getTime() ?? a.createdAt.getTime();
-      const bTime = b.latestMessage?.createdAt.getTime() ?? b.createdAt.getTime();
-      return bTime - aTime;
+  async getConversationsForUser(userId: string): Promise<ConversationType[]> {
+    const convs = await Conversation.find({ members: userId }).sort({
+      updatedAt: -1,
     });
+    return Promise.all(convs.map((c) => buildConversationDto(c, userId)));
   },
 
   /**
-   * Get a single conversation by ID (only if user is a member).
+   * Get a single conversation (only if user is a member).
    */
-  getConversationById(
+  async getConversationById(
     conversationId: string,
     userId: string,
-  ): Conversation | null {
-    const conv = store.conversations.get(conversationId);
+  ): Promise<ConversationType | null> {
+    if (!mongoose.Types.ObjectId.isValid(conversationId)) return null;
+    const conv = await Conversation.findOne({
+      _id: conversationId,
+      members: userId,
+    });
     if (!conv) return null;
-    const isMember = conv.users.some((u) => u.id === userId);
-    if (!isMember) return null;
-    return withUnreadCount(conv, userId);
+    return buildConversationDto(conv, userId);
   },
 
   /**
-   * Start or return an existing 1-on-1 conversation between two users.
+   * Start or return an existing 1-on-1 DM.
    */
-  findOrCreateDirect(
+  async findOrCreateDirect(
     requesterId: string,
     data: CreateConversationRequest,
-  ): Conversation | 'user_not_found' | 'cannot_self' {
+  ): Promise<ConversationType | 'user_not_found' | 'cannot_self'> {
     const { userId: targetId } = data;
 
     if (targetId === requesterId) return 'cannot_self';
 
-    const targetUser = store.users.get(targetId);
+    const targetUser = await User.findById(targetId);
     if (!targetUser) return 'user_not_found';
 
-    // Check if a DM already exists between these two users
-    for (const conv of store.conversations.values()) {
-      if (
-        !conv.isGroup &&
-        conv.users.length === 2 &&
-        conv.users.some((u) => u.id === requesterId) &&
-        conv.users.some((u) => u.id === targetId)
-      ) {
-        return withUnreadCount(conv, requesterId);
-      }
-    }
+    // Check if DM already exists
+    const existing = await Conversation.findOne({
+      isGroup: false,
+      members: { $all: [requesterId, targetId], $size: 2 },
+    });
 
-    const requester = store.users.get(requesterId)!;
-    const now = nowDate();
+    if (existing) return buildConversationDto(existing, requesterId);
 
-    const newConv: Conversation = {
-      id: generateId(),
+    const requester = await User.findById(requesterId);
+    if (!requester) return 'user_not_found';
+
+    // BUG FIX 1: Store the target user's name/picture so that when the target
+    // views this conversation, buildConversationDto will swap it to the requester's
+    // name/picture for them (since we now derive name from the other member).
+    const newConv = await Conversation.create({
       name: targetUser.name,
       picture: targetUser.picture,
       isGroup: false,
-      users: [stripPassword(requester), stripPassword(targetUser)],
-      unreadCount: 0,
-      createdAt: now,
-      updatedAt: now,
-    };
+      members: [requesterId, targetId],
+    });
 
-    store.conversations.set(newConv.id, newConv);
-    store.messages.set(newConv.id, []);
-
-    return newConv;
+    return buildConversationDto(newConv, requesterId);
   },
 
   /**
    * Create a new group conversation.
    */
-  createGroup(
+  async createGroup(
     creatorId: string,
     data: CreateGroupRequest,
-  ): Conversation | 'invalid_members' {
-    const creator = store.users.get(creatorId);
-    if (!creator) return 'invalid_members';
+  ): Promise<ConversationType | 'invalid_members'> {
+    // Deduplicate and ensure creator is always included
+    const uniqueUserIds = [
+      ...new Set(data.userIds.filter((id) => id !== creatorId)),
+    ];
+    const memberIds = [creatorId, ...uniqueUserIds];
 
-    const members: PublicUser[] = [stripPassword(creator)];
+    // Group needs creator + at least 2 others
+    if (memberIds.length < 3) return 'invalid_members';
 
-    for (const uid of data.userIds) {
-      if (uid === creatorId) continue; // Don't add creator twice
-      const user = store.users.get(uid);
-      if (!user) return 'invalid_members';
-      members.push(stripPassword(user));
-    }
+    // Verify all users exist
+    const count = await User.countDocuments({ _id: { $in: memberIds } });
+    if (count !== memberIds.length) return 'invalid_members';
 
-    if (members.length < 3) return 'invalid_members'; // creator + at least 2
-
-    const now = nowDate();
-    const newGroup: Conversation = {
-      id: generateId(),
+    const newGroup = await Conversation.create({
       name: data.name.trim(),
       picture:
         data.picture ??
         `https://api.dicebear.com/7.x/shapes/svg?seed=${encodeURIComponent(data.name)}`,
       isGroup: true,
-      users: members,
+      members: memberIds,
       adminId: creatorId,
-      unreadCount: 0,
-      createdAt: now,
-      updatedAt: now,
-    };
+    });
 
-    store.conversations.set(newGroup.id, newGroup);
-    store.messages.set(newGroup.id, []);
-
-    return newGroup;
+    return buildConversationDto(newGroup, creatorId);
   },
 
   /**
    * Add a member to a group (admin only).
+   * Returns the updated conversation DTO AND the new member's socket IDs
+   * so the caller (controller) can join them to the socket room.
    */
-  addGroupMember(
+  async addGroupMember(
     conversationId: string,
     requesterId: string,
     targetUserId: string,
-  ): Conversation | 'not_found' | 'not_group' | 'not_admin' | 'already_member' | 'user_not_found' {
-    const conv = store.conversations.get(conversationId);
+  ): Promise<
+    | ConversationType
+    | 'not_found'
+    | 'not_group'
+    | 'not_admin'
+    | 'already_member'
+    | 'user_not_found'
+  > {
+    const conv = await Conversation.findById(conversationId);
     if (!conv) return 'not_found';
     if (!conv.isGroup) return 'not_group';
-    if (conv.adminId !== requesterId) return 'not_admin';
+    if (conv.adminId?.toString() !== requesterId) return 'not_admin';
 
-    const alreadyMember = conv.users.some((u) => u.id === targetUserId);
+    const alreadyMember = conv.members.some(
+      (m) => m.toString() === targetUserId,
+    );
     if (alreadyMember) return 'already_member';
 
-    const targetUser = store.users.get(targetUserId);
+    const targetUser = await User.findById(targetUserId);
     if (!targetUser) return 'user_not_found';
 
-    const updated: Conversation = {
-      ...conv,
-      users: [...conv.users, stripPassword(targetUser)],
-      updatedAt: nowDate(),
-    };
+    conv.members.push(new mongoose.Types.ObjectId(targetUserId));
+    conv.updatedAt = nowDate();
+    await conv.save();
 
-    store.conversations.set(conversationId, updated);
-    return updated;
+    return buildConversationDto(conv, requesterId);
   },
 
   /**
    * Remove a member from a group (admin only, or self-leave).
+   * Returns the updated conversation DTO.
    */
-  removeGroupMember(
+  async removeGroupMember(
     conversationId: string,
     requesterId: string,
     targetUserId: string,
-  ): Conversation | 'not_found' | 'not_group' | 'not_admin' | 'not_member' {
-    const conv = store.conversations.get(conversationId);
+  ): Promise<
+    ConversationType | 'not_found' | 'not_group' | 'not_admin' | 'not_member'
+  > {
+    const conv = await Conversation.findById(conversationId);
     if (!conv) return 'not_found';
     if (!conv.isGroup) return 'not_group';
 
     const isSelf = requesterId === targetUserId;
-    if (!isSelf && conv.adminId !== requesterId) return 'not_admin';
+    if (!isSelf && conv.adminId?.toString() !== requesterId) return 'not_admin';
 
-    const isMember = conv.users.some((u) => u.id === targetUserId);
+    const isMember = conv.members.some((m) => m.toString() === targetUserId);
     if (!isMember) return 'not_member';
 
-    const updated: Conversation = {
-      ...conv,
-      users: conv.users.filter((u) => u.id !== targetUserId),
-      updatedAt: nowDate(),
-    };
+    conv.members = conv.members.filter((m) => m.toString() !== targetUserId);
+    conv.updatedAt = nowDate();
+    await conv.save();
 
-    store.conversations.set(conversationId, updated);
-    return updated;
+    return buildConversationDto(conv, requesterId);
   },
 
   /**
    * Mark all messages in a conversation as read for a user.
    */
-  markAsRead(conversationId: string, userId: string): void {
-    const messages = store.messages.get(conversationId);
-    if (!messages) return;
-
-    const updated = messages.map((msg) => {
-      if (msg.senderId === userId) return msg;
-      const alreadySeen = msg.seenBy?.includes(userId);
-      if (alreadySeen) return msg;
-      return {
-        ...msg,
-        seenBy: [...(msg.seenBy ?? []), userId],
-        read: true,
-      };
-    });
-
-    store.messages.set(conversationId, updated);
+  async markAsRead(conversationId: string, userId: string): Promise<void> {
+    const objectId = new mongoose.Types.ObjectId(userId);
+    await Message.updateMany(
+      {
+        conversationId,
+        senderId: { $ne: objectId },
+        seenBy: { $nin: [objectId] },
+      },
+      { $addToSet: { seenBy: objectId } },
+    );
   },
 };
-
-// ─── Private helpers ──────────────────────────────────────────────────────────
-
-function withUnreadCount(conv: Conversation, userId: string): Conversation {
-  const messages = store.messages.get(conv.id) ?? [];
-  const unreadCount = messages.filter(
-    (m) =>
-      m.senderId !== userId &&
-      !m.isDeleted &&
-      !(m.seenBy ?? []).includes(userId),
-  ).length;
-
-  return { ...conv, unreadCount };
-}
 
 
 ==============================
 FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\services\message.service.ts
 ==============================
 
-import { store } from '../config/store.js';
-import { generateMessageId, generateId, nowDate } from '../helpers/index.js';
-import { paginateMessages } from '../helpers/index.js';
+import mongoose from 'mongoose';
+import { Message } from '../models/message.model.js';
+import { Conversation } from '../models/conversation.model.js';
+import { nowDate } from '../helpers/index.js';
 import type {
-  Message,
+  Message as MessageType,
   FileAttachment,
   ReplyTo,
   PaginatedResponse,
   Reaction,
 } from '../types/index.js';
 
+// ─── Helper: map Mongoose doc → plain DTO ────────────────────────────────────
+
+function toDto(doc: InstanceType<typeof Message>): MessageType {
+  const o = doc.toObject({ virtuals: true }) as Record<string, unknown>;
+
+  const toStr = (v: unknown): string => {
+    if (!v) return '';
+    if (typeof v === 'string') return v;
+    if (v instanceof mongoose.Types.ObjectId) return v.toString();
+    if (typeof v === 'object' && v !== null && '_id' in v)
+      return (v as { _id: mongoose.Types.ObjectId })._id.toString();
+    return String(v);
+  };
+
+  return {
+    id: toStr(o['id'] ?? o['_id']),
+    conversationId: toStr(o['conversationId']),
+    senderId: toStr(o['senderId']),
+    message: String(o['message'] ?? ''),
+    files: (o['files'] as { attachmentId: string; name: string; type: string; url: string; size: number }[] | undefined)?.map((f) => ({
+      id: f.attachmentId,
+      name: f.name,
+      type: f.type,
+      url: f.url,
+      size: f.size,
+    })),
+    reactions: ((o['reactions'] as unknown[]) ?? []).map((r) => {
+      const rr = r as Record<string, unknown>;
+      return {
+        emoji: String(rr['emoji']),
+        userId: toStr(rr['userId']),
+        createdAt: rr['createdAt'] as Date,
+      } as Reaction;
+    }),
+    replyTo: o['replyTo']
+      ? {
+          messageId: toStr((o['replyTo'] as Record<string, unknown>)['messageId']),
+          senderId: toStr((o['replyTo'] as Record<string, unknown>)['senderId']),
+          senderName: String((o['replyTo'] as Record<string, unknown>)['senderName']),
+          message: String((o['replyTo'] as Record<string, unknown>)['message']),
+        }
+      : undefined,
+    seenBy: ((o['seenBy'] as unknown[]) ?? []).map(toStr),
+    isEdited: Boolean(o['isEdited']),
+    editedAt: o['editedAt'] as Date | undefined,
+    isDeleted: Boolean(o['isDeleted']),
+    deletedAt: o['deletedAt'] as Date | undefined,
+    isPinned: Boolean(o['isPinned']),
+    pinnedAt: o['pinnedAt'] as Date | undefined,
+    pinnedBy: o['pinnedBy'] ? toStr(o['pinnedBy']) : undefined,
+    createdAt: o['createdAt'] as Date,
+    updatedAt: o['updatedAt'] as Date,
+  };
+}
+
+// ─── Service ──────────────────────────────────────────────────────────────────
+
 export const messageService = {
   /**
-   * Fetch paginated messages for a conversation (newest-first pagination,
-   * but returned in chronological order per page).
+   * Paginated messages for a conversation (cursor = page number, newest page first).
+   * Messages within a page are returned in chronological order.
    */
-  getMessages(
+  async getMessages(
     conversationId: string,
     page: number,
     limit: number,
-  ): PaginatedResponse<Message> {
-    const allMessages = store.messages.get(conversationId) ?? [];
-    // Exclude hard-deleted (we keep soft-deleted so the UI can show "deleted")
-    return paginateMessages(allMessages, page, limit);
+  ): Promise<PaginatedResponse<MessageType>> {
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.min(100, Math.max(1, limit));
+
+    const total = await Message.countDocuments({ conversationId });
+
+    // Newest-first pagination: skip from the end
+    const skip = Math.max(0, total - safePage * safeLimit);
+    const take = Math.min(safeLimit, total - (safePage - 1) * safeLimit);
+
+    const docs = await Message.find({ conversationId })
+      .sort({ createdAt: 1 })
+      .skip(skip)
+      .limit(take);
+
+    const hasMore = skip > 0;
+
+    return {
+      data: docs.map(toDto),
+      total,
+      page: safePage,
+      limit: safeLimit,
+      hasMore,
+      nextCursor: hasMore ? String(safePage + 1) : undefined,
+    };
   },
 
   /**
-   * Search messages in a conversation by text content.
+   * Search messages in a conversation by text.
    */
-  searchMessages(conversationId: string, query: string): Message[] {
-    const allMessages = store.messages.get(conversationId) ?? [];
-    const q = query.toLowerCase();
-    return allMessages
-      .filter((m) => !m.isDeleted && m.message.toLowerCase().includes(q))
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(0, 50);
+  async searchMessages(conversationId: string, query: string): Promise<MessageType[]> {
+    const docs = await Message.find({
+      conversationId,
+      isDeleted: false,
+      message: { $regex: query, $options: 'i' },
+    })
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    return docs.map(toDto);
   },
 
   /**
-   * Search messages across ALL conversations the user is a member of.
+   * Search messages across all conversations the user is a member of.
    */
-  globalSearch(userId: string, query: string): Message[] {
-    const results: Message[] = [];
-    const q = query.toLowerCase();
+  async globalSearch(userId: string, query: string): Promise<MessageType[]> {
+    // Find all conversation IDs the user belongs to
+    const convs = await Conversation.find({ members: userId }, '_id');
+    const convIds = convs.map((c) => c._id);
 
-    for (const [convId, conv] of store.conversations.entries()) {
-      const isMember = conv.users.some((u) => u.id === userId);
-      if (!isMember) continue;
+    const docs = await Message.find({
+      conversationId: { $in: convIds },
+      isDeleted: false,
+      message: { $regex: query, $options: 'i' },
+    })
+      .sort({ createdAt: -1 })
+      .limit(100);
 
-      const messages = store.messages.get(convId) ?? [];
-      for (const msg of messages) {
-        if (!msg.isDeleted && msg.message.toLowerCase().includes(q)) {
-          results.push(msg);
-        }
-      }
-    }
-
-    return results
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(0, 100);
+    return docs.map(toDto);
   },
 
   /**
-   * Send a new message. Accepts optional files and replyTo context.
+   * Send a new message.
    */
-  sendMessage(
+  async sendMessage(
     conversationId: string,
     senderId: string,
     text: string,
     files?: FileAttachment[],
     replyTo?: ReplyTo,
-  ): Message | 'conversation_not_found' | 'not_member' {
-    const conv = store.conversations.get(conversationId);
+  ): Promise<MessageType | 'conversation_not_found' | 'not_member'> {
+    const conv = await Conversation.findById(conversationId);
     if (!conv) return 'conversation_not_found';
 
-    const isMember = conv.users.some((u) => u.id === senderId);
+    const isMember = conv.members.some((m) => m.toString() === senderId);
     if (!isMember) return 'not_member';
 
     const now = nowDate();
-    const newMessage: Message = {
-      id: generateMessageId(),
+
+    const newDoc = await Message.create({
       conversationId,
       senderId,
       message: text,
-      files: files && files.length > 0 ? files : undefined,
-      replyTo,
+      files: files?.map((f) => ({
+        attachmentId: f.id,
+        name: f.name,
+        type: f.type,
+        url: f.url,
+        size: f.size,
+      })),
+      replyTo: replyTo
+        ? {
+            messageId: replyTo.messageId,
+            senderId: replyTo.senderId,
+            senderName: replyTo.senderName,
+            message: replyTo.message,
+          }
+        : undefined,
       reactions: [],
-      seenBy: [senderId], // sender has "seen" their own message
+      seenBy: [new mongoose.Types.ObjectId(senderId)],
       isEdited: false,
       isDeleted: false,
       isPinned: false,
       createdAt: now,
       updatedAt: now,
-    };
+    });
 
-    const messages = store.messages.get(conversationId) ?? [];
-    messages.push(newMessage);
-    store.messages.set(conversationId, messages);
-
-    // Update conversation's latest message and updatedAt
-    store.conversations.set(conversationId, {
-      ...conv,
-      latestMessage: newMessage,
+    // Update conversation's latest message timestamp
+    await Conversation.findByIdAndUpdate(conversationId, {
+      latestMessage: newDoc._id,
       updatedAt: now,
     });
 
-    return newMessage;
+    return toDto(newDoc);
   },
 
   /**
-   * Edit a message. Only the sender can edit.
+   * Edit a message (sender only).
    */
-  editMessage(
+  async editMessage(
     conversationId: string,
     messageId: string,
     senderId: string,
     newText: string,
-  ): Message | 'not_found' | 'not_owner' | 'deleted' {
-    const messages = store.messages.get(conversationId) ?? [];
-    const idx = messages.findIndex((m) => m.id === messageId);
-
-    if (idx === -1) return 'not_found';
-
-    const msg = messages[idx]!;
-    if (msg.senderId !== senderId) return 'not_owner';
+  ): Promise<MessageType | 'not_found' | 'not_owner' | 'deleted'> {
+    const msg = await Message.findOne({ _id: messageId, conversationId });
+    if (!msg) return 'not_found';
+    if (msg.senderId.toString() !== senderId) return 'not_owner';
     if (msg.isDeleted) return 'deleted';
 
-    const updated: Message = {
-      ...msg,
-      message: newText,
-      isEdited: true,
-      editedAt: nowDate(),
-      updatedAt: nowDate(),
-    };
+    const now = nowDate();
+    msg.message = newText;
+    msg.isEdited = true;
+    msg.editedAt = now;
+    msg.updatedAt = now;
+    await msg.save();
 
-    messages[idx] = updated;
-    store.messages.set(conversationId, messages);
+    // Refresh latestMessage if this was the latest
+    await refreshLatestMessage(conversationId);
 
-    // Refresh latest message if this was it
-    refreshLatestMessage(conversationId);
-
-    return updated;
+    return toDto(msg);
   },
 
   /**
-   * Soft-delete a message. Only the sender can delete.
+   * Soft-delete a message (sender only).
    */
-  deleteMessage(
+  async deleteMessage(
     conversationId: string,
     messageId: string,
     senderId: string,
-  ): Message | 'not_found' | 'not_owner' {
-    const messages = store.messages.get(conversationId) ?? [];
-    const idx = messages.findIndex((m) => m.id === messageId);
+  ): Promise<MessageType | 'not_found' | 'not_owner'> {
+    const msg = await Message.findOne({ _id: messageId, conversationId });
+    if (!msg) return 'not_found';
+    if (msg.senderId.toString() !== senderId) return 'not_owner';
 
-    if (idx === -1) return 'not_found';
+    const now = nowDate();
+    msg.isDeleted = true;
+    msg.deletedAt = now;
+    msg.message = '';
+    msg.updatedAt = now;
+    await msg.save();
 
-    const msg = messages[idx]!;
-    if (msg.senderId !== senderId) return 'not_owner';
+    await refreshLatestMessage(conversationId);
 
-    const updated: Message = {
-      ...msg,
-      isDeleted: true,
-      deletedAt: nowDate(),
-      updatedAt: nowDate(),
-      message: '', // Clear content on delete
-    };
-
-    messages[idx] = updated;
-    store.messages.set(conversationId, messages);
-    refreshLatestMessage(conversationId);
-
-    return updated;
+    return toDto(msg);
   },
 
   /**
    * Toggle a reaction on a message.
-   * Adding an existing reaction removes it (toggle behavior).
    */
-  toggleReaction(
+  async toggleReaction(
     conversationId: string,
     messageId: string,
     userId: string,
     emoji: string,
-  ): Message | 'not_found' | 'deleted' {
-    const messages = store.messages.get(conversationId) ?? [];
-    const idx = messages.findIndex((m) => m.id === messageId);
-
-    if (idx === -1) return 'not_found';
-
-    const msg = messages[idx]!;
+  ): Promise<MessageType | 'not_found' | 'deleted'> {
+    const msg = await Message.findOne({ _id: messageId, conversationId });
+    if (!msg) return 'not_found';
     if (msg.isDeleted) return 'deleted';
 
-    const reactions = msg.reactions ?? [];
-    const existingIdx = reactions.findIndex(
-      (r) => r.emoji === emoji && r.userId === userId,
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+    const existingIdx = msg.reactions.findIndex(
+      (r) => r.emoji === emoji && r.userId.toString() === userId,
     );
 
-    let updatedReactions: Reaction[];
     if (existingIdx !== -1) {
       // Remove reaction
-      updatedReactions = reactions.filter((_, i) => i !== existingIdx);
+      msg.reactions.splice(existingIdx, 1);
     } else {
       // Add reaction
-      updatedReactions = [
-        ...reactions,
-        { emoji, userId, createdAt: nowDate() },
-      ];
+      msg.reactions.push({ emoji, userId: userObjectId, createdAt: nowDate() });
     }
 
-    const updated: Message = {
-      ...msg,
-      reactions: updatedReactions,
-      updatedAt: nowDate(),
-    };
+    msg.updatedAt = nowDate();
+    await msg.save();
 
-    messages[idx] = updated;
-    store.messages.set(conversationId, messages);
-
-    return updated;
+    return toDto(msg);
   },
 
   /**
-   * Pin a message in a conversation.
+   * Pin a message.
    */
-  pinMessage(
+  async pinMessage(
     conversationId: string,
     messageId: string,
     pinnedBy: string,
-  ): Message | 'not_found' | 'deleted' {
-    return togglePin(conversationId, messageId, true, pinnedBy);
+  ): Promise<MessageType | 'not_found' | 'deleted'> {
+    const msg = await Message.findOne({ _id: messageId, conversationId });
+    if (!msg) return 'not_found';
+    if (msg.isDeleted) return 'deleted';
+
+    const now = nowDate();
+    msg.isPinned = true;
+    msg.pinnedAt = now;
+    msg.pinnedBy = new mongoose.Types.ObjectId(pinnedBy);
+    msg.updatedAt = now;
+    await msg.save();
+
+    return toDto(msg);
   },
 
   /**
    * Unpin a message.
    */
-  unpinMessage(
+  async unpinMessage(
     conversationId: string,
     messageId: string,
-  ): Message | 'not_found' | 'deleted' {
-    return togglePin(conversationId, messageId, false);
+  ): Promise<MessageType | 'not_found' | 'deleted'> {
+    const msg = await Message.findOne({ _id: messageId, conversationId });
+    if (!msg) return 'not_found';
+    if (msg.isDeleted) return 'deleted';
+
+    msg.isPinned = false;
+    msg.pinnedAt = undefined;
+    msg.pinnedBy = undefined;
+    msg.updatedAt = nowDate();
+    await msg.save();
+
+    return toDto(msg);
   },
 
   /**
    * Get all pinned messages in a conversation.
    */
-  getPinnedMessages(conversationId: string): Message[] {
-    const messages = store.messages.get(conversationId) ?? [];
-    return messages
-      .filter((m) => m.isPinned && !m.isDeleted)
-      .sort((a, b) => (b.pinnedAt?.getTime() ?? 0) - (a.pinnedAt?.getTime() ?? 0));
+  async getPinnedMessages(conversationId: string): Promise<MessageType[]> {
+    const docs = await Message.find({
+      conversationId,
+      isPinned: true,
+      isDeleted: false,
+    }).sort({ pinnedAt: -1 });
+
+    return docs.map(toDto);
   },
 
   /**
    * Forward a message to another conversation.
    */
-  forwardMessage(
+  async forwardMessage(
     messageId: string,
     fromConversationId: string,
     toConversationId: string,
     senderId: string,
-  ): Message | 'not_found' | 'target_not_found' | 'not_member' {
-    // Find source message
-    const fromMessages = store.messages.get(fromConversationId) ?? [];
-    const sourceMsg = fromMessages.find((m) => m.id === messageId);
-    if (!sourceMsg || sourceMsg.isDeleted) return 'not_found';
+  ): Promise<MessageType | 'not_found' | 'target_not_found' | 'not_member'> {
+    const sourceMsg = await Message.findOne({
+      _id: messageId,
+      conversationId: fromConversationId,
+      isDeleted: false,
+    });
+    if (!sourceMsg) return 'not_found';
 
-    // Verify target conversation
-    const targetConv = store.conversations.get(toConversationId);
+    const targetConv = await Conversation.findById(toConversationId);
     if (!targetConv) return 'target_not_found';
 
-    const isMember = targetConv.users.some((u) => u.id === senderId);
+    const isMember = targetConv.members.some((m) => m.toString() === senderId);
     if (!isMember) return 'not_member';
 
     const now = nowDate();
-    const forwarded: Message = {
-      id: generateMessageId(),
+    const forwarded = await Message.create({
       conversationId: toConversationId,
       senderId,
       message: sourceMsg.message,
       files: sourceMsg.files,
       reactions: [],
-      seenBy: [senderId],
+      seenBy: [new mongoose.Types.ObjectId(senderId)],
       isEdited: false,
       isDeleted: false,
       isPinned: false,
       createdAt: now,
       updatedAt: now,
-    };
+    });
 
-    const toMessages = store.messages.get(toConversationId) ?? [];
-    toMessages.push(forwarded);
-    store.messages.set(toConversationId, toMessages);
-
-    store.conversations.set(toConversationId, {
-      ...targetConv,
-      latestMessage: forwarded,
+    await Conversation.findByIdAndUpdate(toConversationId, {
+      latestMessage: forwarded._id,
       updatedAt: now,
     });
 
-    return forwarded;
+    return toDto(forwarded);
   },
 
   /**
    * Mark a single message as seen by a user.
    */
-  markMessageSeen(
+  async markMessageSeen(
     conversationId: string,
     messageId: string,
     userId: string,
-  ): Message | null {
-    const messages = store.messages.get(conversationId) ?? [];
-    const idx = messages.findIndex((m) => m.id === messageId);
-    if (idx === -1) return null;
+  ): Promise<MessageType | null> {
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+    const msg = await Message.findOneAndUpdate(
+      {
+        _id: messageId,
+        conversationId,
+        seenBy: { $nin: [userObjectId] },
+      },
+      { $addToSet: { seenBy: userObjectId } },
+      { new: true },
+    );
 
-    const msg = messages[idx]!;
-    if ((msg.seenBy ?? []).includes(userId)) return msg; // Already seen
+    if (!msg) {
+      // May already be seen — return the message anyway
+      const existing = await Message.findOne({ _id: messageId, conversationId });
+      return existing ? toDto(existing) : null;
+    }
 
-    const updated: Message = {
-      ...msg,
-      seenBy: [...(msg.seenBy ?? []), userId],
-      read: true,
-      updatedAt: nowDate(),
-    };
-
-    messages[idx] = updated;
-    store.messages.set(conversationId, messages);
-
-    return updated;
+    return toDto(msg);
   },
 };
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
-function togglePin(
-  conversationId: string,
-  messageId: string,
-  pin: boolean,
-  pinnedBy?: string,
-): Message | 'not_found' | 'deleted' {
-  const messages = store.messages.get(conversationId) ?? [];
-  const idx = messages.findIndex((m) => m.id === messageId);
+async function refreshLatestMessage(conversationId: string): Promise<void> {
+  const latest = await Message.findOne({ conversationId, isDeleted: false })
+    .sort({ createdAt: -1 })
+    .select('_id');
 
-  if (idx === -1) return 'not_found';
-
-  const msg = messages[idx]!;
-  if (msg.isDeleted) return 'deleted';
-
-  const updated: Message = {
-    ...msg,
-    isPinned: pin,
-    pinnedAt: pin ? nowDate() : undefined,
-    pinnedBy: pin ? pinnedBy : undefined,
-    updatedAt: nowDate(),
-  };
-
-  messages[idx] = updated;
-  store.messages.set(conversationId, messages);
-
-  return updated;
-}
-
-function refreshLatestMessage(conversationId: string): void {
-  const conv = store.conversations.get(conversationId);
-  if (!conv) return;
-
-  const messages = store.messages.get(conversationId) ?? [];
-  const visible = messages.filter((m) => !m.isDeleted);
-  const latest = visible[visible.length - 1];
-
-  store.conversations.set(conversationId, {
-    ...conv,
-    latestMessage: latest,
+  await Conversation.findByIdAndUpdate(conversationId, {
+    latestMessage: latest?._id ?? null,
     updatedAt: nowDate(),
   });
 }
@@ -2998,107 +4250,79 @@ function refreshLatestMessage(conversationId: string): void {
 FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\services\user.service.ts
 ==============================
 
-import { store } from '../config/store.js';
-import { stripPassword, nowDate } from '../helpers/index.js';
+import { User } from '../models/user.model.js';
+import { docToPublicUser, nowDate } from '../helpers/index.js';
+import { isUserOnline } from '../config/runtimeStore.js';
 import type { PublicUser, UpdateProfileRequest, UserStatus } from '../types/index.js';
 
 export const userService = {
   /**
    * Search users by name or email, excluding the requesting user.
    */
-  searchUsers(query: string, excludeUserId: string): PublicUser[] {
-    const q = query.toLowerCase().trim();
-    const results: PublicUser[] = [];
+  async searchUsers(query: string, excludeUserId: string): Promise<PublicUser[]> {
+    const q = query.trim();
+    const users = await User.find({
+      _id: { $ne: excludeUserId },
+      $or: [
+        { name: { $regex: q, $options: 'i' } },
+        { email: { $regex: q, $options: 'i' } },
+      ],
+    }).limit(20);
 
-    for (const user of store.users.values()) {
-      if (user.id === excludeUserId) continue;
-      if (
-        user.name.toLowerCase().includes(q) ||
-        user.email.toLowerCase().includes(q)
-      ) {
-        results.push(stripPassword(user));
-      }
-    }
-
-    return results.slice(0, 20); // Cap at 20 results
+    return users.map((u) => ({
+      ...docToPublicUser(u),
+      status: isUserOnline(u._id.toString()) ? 'online' : u.status,
+    }));
   },
 
   /**
    * Get a single user by ID.
    */
-  getUserById(userId: string): PublicUser | null {
-    const user = store.users.get(userId);
-    return user ? stripPassword(user) : null;
+  async getUserById(userId: string): Promise<PublicUser | null> {
+    const user = await User.findById(userId);
+    if (!user) return null;
+    return {
+      ...docToPublicUser(user),
+      status: isUserOnline(userId) ? 'online' : user.status,
+    };
   },
 
   /**
    * Update user profile fields.
    */
-  updateProfile(
-    userId: string,
-    updates: UpdateProfileRequest,
-  ): PublicUser | null {
-    const user = store.users.get(userId);
-    if (!user) return null;
-
-    const updated = {
-      ...user,
-      ...(updates.name !== undefined && { name: updates.name.trim() }),
-      ...(updates.about !== undefined && { about: updates.about.trim() }),
-      ...(updates.picture !== undefined && { picture: updates.picture }),
+  async updateProfile(userId: string, updates: UpdateProfileRequest): Promise<PublicUser | null> {
+    const patch: Partial<{ name: string; about: string; picture: string; updatedAt: Date }> = {
       updatedAt: nowDate(),
     };
+    if (updates.name !== undefined) patch.name = updates.name.trim();
+    if (updates.about !== undefined) patch.about = updates.about.trim();
+    if (updates.picture !== undefined) patch.picture = updates.picture;
 
-    store.users.set(userId, updated);
-
-    // Reflect updated user inside any conversations they're part of
-    for (const [convId, conv] of store.conversations.entries()) {
-      const isMember = conv.users.some((u) => u.id === userId);
-      if (isMember) {
-        const updatedConv = {
-          ...conv,
-          users: conv.users.map((u) =>
-            u.id === userId ? stripPassword(updated) : u,
-          ),
-        };
-        store.conversations.set(convId, updatedConv);
-      }
-    }
-
-    return stripPassword(updated);
+    const updated = await User.findByIdAndUpdate(userId, patch, { new: true });
+    if (!updated) return null;
+    return docToPublicUser(updated);
   },
 
   /**
-   * Update user online status.
+   * Update user online status in DB.
+   * The real-time "online" state is tracked in runtimeStore.
    */
-  updateStatus(userId: string, status: UserStatus): PublicUser | null {
-    const user = store.users.get(userId);
-    if (!user) return null;
-
-    const updated = { ...user, status, updatedAt: nowDate() };
-    store.users.set(userId, updated);
-
-    if (status === 'online') {
-      store.onlineUsers.add(userId);
-    } else {
-      store.onlineUsers.delete(userId);
-    }
-
-    return stripPassword(updated);
+  async updateStatus(userId: string, status: UserStatus): Promise<PublicUser | null> {
+    const updated = await User.findByIdAndUpdate(
+      userId,
+      { status, updatedAt: nowDate() },
+      { new: true },
+    );
+    if (!updated) return null;
+    return docToPublicUser(updated);
   },
 
   /**
-   * Get the set of currently online user IDs.
+   * Verify a user exists (used in auth middleware).
    */
-  getOnlineUserIds(): string[] {
-    return Array.from(store.onlineUsers);
-  },
-
-  /**
-   * Check if a user is online.
-   */
-  isOnline(userId: string): boolean {
-    return store.onlineUsers.has(userId);
+  async exists(userId: string): Promise<boolean> {
+    const count = await User.countDocuments({ _id: userId });
+    return count > 0;
   },
 };
 
@@ -3110,69 +4334,56 @@ FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\socket\index.ts
 import type { Server as HttpServer } from 'http';
 import { Server as SocketIOServer, type Socket } from 'socket.io';
 import { env } from '../config/env.js';
-import { store } from '../config/store.js';
+import {
+  addSocket,
+  removeSocket,
+  getSocketsForUser,
+  isUserOnline,
+  getOnlineUserIds,
+} from '../config/runtimeStore.js';
 import { verifyAccessToken } from '../helpers/index.js';
 import { userService } from '../services/user.service.js';
 import { messageService } from '../services/message.service.js';
-import { conversationService } from '../services/conversation.service.js';
-import type {
-  SocketTypingPayload,
-  SocketCallPayload,
-} from '../types/index.js';
-
-// ─── Socket event name constants ──────────────────────────────────────────────
+import { Conversation } from '../models/conversation.model.js';
+import type { SocketTypingPayload, SocketCallPayload } from '../types/index.js';
 
 export const SOCKET_EVENTS = {
-  // Connection
   CONNECT: 'connect',
   DISCONNECT: 'disconnect',
   ERROR: 'error',
-
-  // Auth
   JOIN: 'join',
   JOINED: 'joined',
-
-  // Messaging
   SEND_MESSAGE: 'send_message',
   NEW_MESSAGE: 'new_message',
   EDIT_MESSAGE: 'edit_message',
   MESSAGE_EDITED: 'message_edited',
   DELETE_MESSAGE: 'delete_message',
   MESSAGE_DELETED: 'message_deleted',
-
-  // Reactions
   TOGGLE_REACTION: 'toggle_reaction',
   REACTION_UPDATED: 'reaction_updated',
-
-  // Read receipts
   MARK_SEEN: 'mark_seen',
   MESSAGE_SEEN: 'message_seen',
-
-  // Typing
   TYPING_START: 'typing',
   TYPING_STOP: 'stop_typing',
-
-  // Online status
   USER_ONLINE: 'user_online',
   USER_OFFLINE: 'user_offline',
   ONLINE_USERS: 'online_users',
-
-  // Calls
   INITIATE_CALL: 'initiate_call',
   INCOMING_CALL: 'incoming_call',
   CALL_ACCEPTED: 'call_accepted',
   CALL_REJECTED: 'call_rejected',
   CALL_ENDED: 'call_ended',
   CALL_SIGNAL: 'call_signal',
-
-  // Pin
   PIN_MESSAGE: 'pin_message',
   MESSAGE_PINNED: 'message_pinned',
   UNPIN_MESSAGE: 'unpin_message',
   MESSAGE_UNPINNED: 'message_unpinned',
 } as const;
 
-// ─── Initialise Socket.IO ──────────────────────────────────────────────────────
+interface AuthenticatedSocket extends Socket {
+  userId: string;
+  userEmail: string;
+}
 
 export function initSocket(httpServer: HttpServer): SocketIOServer {
   const io = new SocketIOServer(httpServer, {
@@ -3185,17 +4396,14 @@ export function initSocket(httpServer: HttpServer): SocketIOServer {
     pingInterval: 25000,
   });
 
-  // ── Auth middleware: verify JWT on handshake ──────────────────────────────
   io.use((socket, next) => {
     const token =
-      socket.handshake.auth?.['token'] as string | undefined ??
+      (socket.handshake.auth?.['token'] as string | undefined) ??
       (socket.handshake.headers.authorization?.startsWith('Bearer ')
         ? socket.handshake.headers.authorization.slice(7)
         : undefined);
 
-    if (!token) {
-      return next(new Error('Authentication token required'));
-    }
+    if (!token) return next(new Error('Authentication token required'));
 
     try {
       const payload = verifyAccessToken(token);
@@ -3212,14 +4420,15 @@ export function initSocket(httpServer: HttpServer): SocketIOServer {
     const userId = authedSocket.userId;
 
     console.log(`[Socket] Connected: ${userId} (${socket.id})`);
+    addSocket(socket.id, userId);
 
-    // Track socket → user mapping
-    store.socketUserMap.set(socket.id, userId);
-
-    // Mark user online and join their conversation rooms
-    handleUserOnline(io, socket, userId);
-
-    // ── Event handlers ──────────────────────────────────────────────────────
+    // BUG FIX 8: handleUserOnline is async — wrap in .catch() so a failure
+    // (e.g. DB error looking up conversations) results in an error log instead
+    // of a silent unhandled promise rejection. The connection stays alive but
+    // we log the failure so it can be investigated.
+    handleUserOnline(io, socket, userId).catch((err) => {
+      console.error(`[Socket] handleUserOnline failed for ${userId}:`, err);
+    });
 
     socket.on(SOCKET_EVENTS.TYPING_START, (data: SocketTypingPayload) => {
       handleTyping(socket, data, true);
@@ -3229,81 +4438,109 @@ export function initSocket(httpServer: HttpServer): SocketIOServer {
       handleTyping(socket, data, false);
     });
 
-    socket.on(SOCKET_EVENTS.MARK_SEEN, (data: { conversationId: string; messageId: string }) => {
-      handleMarkSeen(io, socket, userId, data);
-    });
+    socket.on(
+      SOCKET_EVENTS.MARK_SEEN,
+      (data: { conversationId: string; messageId: string }) => {
+        void handleMarkSeen(io, userId, data);
+      },
+    );
 
-    socket.on(SOCKET_EVENTS.TOGGLE_REACTION, (data: { conversationId: string; messageId: string; emoji: string }) => {
-      handleToggleReaction(io, socket, userId, data);
-    });
+    socket.on(
+      SOCKET_EVENTS.TOGGLE_REACTION,
+      (data: { conversationId: string; messageId: string; emoji: string }) => {
+        void handleToggleReaction(io, userId, data);
+      },
+    );
 
-    socket.on(SOCKET_EVENTS.PIN_MESSAGE, (data: { conversationId: string; messageId: string }) => {
-      handlePin(io, socket, userId, data, true);
-    });
+    socket.on(
+      SOCKET_EVENTS.PIN_MESSAGE,
+      (data: { conversationId: string; messageId: string }) => {
+        void handlePin(io, userId, data, true);
+      },
+    );
 
-    socket.on(SOCKET_EVENTS.UNPIN_MESSAGE, (data: { conversationId: string; messageId: string }) => {
-      handlePin(io, socket, userId, data, false);
-    });
+    socket.on(
+      SOCKET_EVENTS.UNPIN_MESSAGE,
+      (data: { conversationId: string; messageId: string }) => {
+        void handlePin(io, userId, data, false);
+      },
+    );
 
     socket.on(SOCKET_EVENTS.INITIATE_CALL, (data: SocketCallPayload) => {
-      handleInitiateCall(io, socket, userId, data);
+      void handleInitiateCall(io, socket, userId, data);
     });
 
-    socket.on(SOCKET_EVENTS.CALL_ACCEPTED, (data: { callerId: string; conversationId: string; signal?: unknown }) => {
-      handleCallAccepted(io, userId, data);
-    });
+    socket.on(
+      SOCKET_EVENTS.CALL_ACCEPTED,
+      (data: {
+        callerId: string;
+        conversationId: string;
+        signal?: unknown;
+      }) => {
+        handleCallAccepted(io, userId, data);
+      },
+    );
 
-    socket.on(SOCKET_EVENTS.CALL_REJECTED, (data: { callerId: string; conversationId: string }) => {
-      handleCallRejected(io, userId, data);
-    });
+    socket.on(
+      SOCKET_EVENTS.CALL_REJECTED,
+      (data: { callerId: string; conversationId: string }) => {
+        handleCallRejected(io, userId, data);
+      },
+    );
 
-    socket.on(SOCKET_EVENTS.CALL_ENDED, (data: { conversationId: string; otherUserId: string }) => {
-      handleCallEnded(io, userId, data);
-    });
+    socket.on(
+      SOCKET_EVENTS.CALL_ENDED,
+      (data: { conversationId: string; otherUserId: string }) => {
+        handleCallEnded(io, userId, data);
+      },
+    );
 
-    socket.on(SOCKET_EVENTS.CALL_SIGNAL, (data: { toUserId: string; signal: unknown }) => {
-      handleCallSignal(io, userId, data);
-    });
-
-    // ── Disconnect ───────────────────────────────────────────────────────────
+    socket.on(
+      SOCKET_EVENTS.CALL_SIGNAL,
+      (data: { toUserId: string; signal: unknown }) => {
+        handleCallSignal(io, userId, data);
+      },
+    );
 
     socket.on('disconnect', () => {
       console.log(`[Socket] Disconnected: ${userId} (${socket.id})`);
-      store.socketUserMap.delete(socket.id);
-      handleUserOffline(io, socket, userId);
+      const uid = removeSocket(socket.id);
+      if (uid) {
+        handleUserOffline(io, uid).catch((err) => {
+          console.error(`[Socket] handleUserOffline failed for ${uid}:`, err);
+        });
+      }
     });
   });
 
   return io;
 }
 
-// ─── Handler functions ────────────────────────────────────────────────────────
+// ─── Handlers ─────────────────────────────────────────────────────────────────
 
-function handleUserOnline(io: SocketIOServer, socket: Socket, userId: string): void {
-  userService.updateStatus(userId, 'online');
+async function handleUserOnline(
+  io: SocketIOServer,
+  socket: Socket,
+  userId: string,
+): Promise<void> {
+  await userService.updateStatus(userId, 'online');
 
-  // Join all conversation rooms the user is part of
-  for (const [convId, conv] of store.conversations.entries()) {
-    if (conv.users.some((u) => u.id === userId)) {
-      socket.join(convId);
-    }
-  }
-
-  // Broadcast to everyone that this user is online
-  socket.broadcast.emit(SOCKET_EVENTS.USER_ONLINE, { userId });
-
-  // Send the current online users list back to just this socket
-  socket.emit(SOCKET_EVENTS.ONLINE_USERS, {
-    userIds: userService.getOnlineUserIds(),
+  const convs = await Conversation.find({ members: userId }, '_id');
+  convs.forEach((c) => {
+    const roomId = c._id.toString();
+    socket.join(roomId);
   });
+
+  socket.broadcast.emit(SOCKET_EVENTS.USER_ONLINE, { userId });
+  socket.emit(SOCKET_EVENTS.ONLINE_USERS, { userIds: getOnlineUserIds() });
 }
 
-function handleUserOffline(io: SocketIOServer, socket: Socket, userId: string): void {
-  // Only mark offline if the user has no other active sockets
-  const hasOtherSocket = Array.from(store.socketUserMap.values()).includes(userId);
-
-  if (!hasOtherSocket) {
-    userService.updateStatus(userId, 'offline');
+async function handleUserOffline(
+  io: SocketIOServer,
+  userId: string,
+): Promise<void> {
+  if (!isUserOnline(userId)) {
+    await userService.updateStatus(userId, 'offline');
     io.emit(SOCKET_EVENTS.USER_OFFLINE, { userId });
   }
 }
@@ -3313,28 +4550,32 @@ function handleTyping(
   data: SocketTypingPayload,
   isTyping: boolean,
 ): void {
-  const { conversationId, userId, userName } = data;
-  if (!conversationId) return;
-
-  const event = isTyping ? SOCKET_EVENTS.TYPING_START : SOCKET_EVENTS.TYPING_STOP;
-
-  // Broadcast to everyone else in the conversation room
-  socket.to(conversationId).emit(event, { conversationId, userId, userName });
+  if (!data.conversationId) return;
+  const event = isTyping
+    ? SOCKET_EVENTS.TYPING_START
+    : SOCKET_EVENTS.TYPING_STOP;
+  socket.to(data.conversationId).emit(event, {
+    conversationId: data.conversationId,
+    userId: data.userId,
+    userName: data.userName,
+  });
 }
 
-function handleMarkSeen(
+async function handleMarkSeen(
   io: SocketIOServer,
-  socket: Socket,
   userId: string,
   data: { conversationId: string; messageId: string },
-): void {
+): Promise<void> {
   const { conversationId, messageId } = data;
   if (!conversationId || !messageId) return;
 
-  const updated = messageService.markMessageSeen(conversationId, messageId, userId);
+  const updated = await messageService.markMessageSeen(
+    conversationId,
+    messageId,
+    userId,
+  );
   if (!updated) return;
 
-  // Broadcast to all conversation members
   io.to(conversationId).emit(SOCKET_EVENTS.MESSAGE_SEEN, {
     conversationId,
     messageId,
@@ -3343,17 +4584,21 @@ function handleMarkSeen(
   });
 }
 
-function handleToggleReaction(
+async function handleToggleReaction(
   io: SocketIOServer,
-  socket: Socket,
   userId: string,
   data: { conversationId: string; messageId: string; emoji: string },
-): void {
+): Promise<void> {
   const { conversationId, messageId, emoji } = data;
   if (!conversationId || !messageId || !emoji) return;
 
-  const updated = messageService.toggleReaction(conversationId, messageId, userId, emoji);
-  if (typeof updated === 'string') return; // error string
+  const updated = await messageService.toggleReaction(
+    conversationId,
+    messageId,
+    userId,
+    emoji,
+  );
+  if (typeof updated === 'string') return;
 
   io.to(conversationId).emit(SOCKET_EVENTS.REACTION_UPDATED, {
     conversationId,
@@ -3362,42 +4607,39 @@ function handleToggleReaction(
   });
 }
 
-function handlePin(
+async function handlePin(
   io: SocketIOServer,
-  socket: Socket,
   userId: string,
   data: { conversationId: string; messageId: string },
   pin: boolean,
-): void {
+): Promise<void> {
   const { conversationId, messageId } = data;
   if (!conversationId || !messageId) return;
 
   const result = pin
-    ? messageService.pinMessage(conversationId, messageId, userId)
-    : messageService.unpinMessage(conversationId, messageId);
+    ? await messageService.pinMessage(conversationId, messageId, userId)
+    : await messageService.unpinMessage(conversationId, messageId);
 
   if (typeof result === 'string') return;
 
-  const event = pin ? SOCKET_EVENTS.MESSAGE_PINNED : SOCKET_EVENTS.MESSAGE_UNPINNED;
+  const event = pin
+    ? SOCKET_EVENTS.MESSAGE_PINNED
+    : SOCKET_EVENTS.MESSAGE_UNPINNED;
   io.to(conversationId).emit(event, { conversationId, message: result });
 }
 
-function handleInitiateCall(
+async function handleInitiateCall(
   io: SocketIOServer,
   socket: Socket,
   callerId: string,
   data: SocketCallPayload,
-): void {
+): Promise<void> {
   const { conversationId, callType } = data;
   if (!conversationId) return;
 
-  const caller = userService.getUserById(callerId);
+  const caller = await userService.getUserById(callerId);
   if (!caller) return;
 
-  const conv = store.conversations.get(conversationId);
-  if (!conv) return;
-
-  // Notify all other members of the conversation
   socket.to(conversationId).emit(SOCKET_EVENTS.INCOMING_CALL, {
     callerId,
     caller,
@@ -3411,15 +4653,11 @@ function handleCallAccepted(
   acceptorId: string,
   data: { callerId: string; conversationId: string; signal?: unknown },
 ): void {
-  const { callerId, conversationId, signal } = data;
-
-  // Find caller's socket(s) and notify them
-  const callerSocketIds = getSocketsForUser(callerId);
-  callerSocketIds.forEach((socketId) => {
+  getSocketsForUser(data.callerId).forEach((socketId) => {
     io.to(socketId).emit(SOCKET_EVENTS.CALL_ACCEPTED, {
       acceptorId,
-      conversationId,
-      signal,
+      conversationId: data.conversationId,
+      signal: data.signal,
     });
   });
 }
@@ -3429,13 +4667,10 @@ function handleCallRejected(
   rejectorId: string,
   data: { callerId: string; conversationId: string },
 ): void {
-  const { callerId, conversationId } = data;
-
-  const callerSocketIds = getSocketsForUser(callerId);
-  callerSocketIds.forEach((socketId) => {
+  getSocketsForUser(data.callerId).forEach((socketId) => {
     io.to(socketId).emit(SOCKET_EVENTS.CALL_REJECTED, {
       rejectorId,
-      conversationId,
+      conversationId: data.conversationId,
     });
   });
 }
@@ -3445,13 +4680,10 @@ function handleCallEnded(
   enderId: string,
   data: { conversationId: string; otherUserId: string },
 ): void {
-  const { conversationId, otherUserId } = data;
-
-  const otherSocketIds = getSocketsForUser(otherUserId);
-  otherSocketIds.forEach((socketId) => {
+  getSocketsForUser(data.otherUserId).forEach((socketId) => {
     io.to(socketId).emit(SOCKET_EVENTS.CALL_ENDED, {
       enderId,
-      conversationId,
+      conversationId: data.conversationId,
     });
   });
 }
@@ -3461,18 +4693,13 @@ function handleCallSignal(
   fromUserId: string,
   data: { toUserId: string; signal: unknown },
 ): void {
-  const { toUserId, signal } = data;
-
-  const targetSocketIds = getSocketsForUser(toUserId);
-  targetSocketIds.forEach((socketId) => {
+  getSocketsForUser(data.toUserId).forEach((socketId) => {
     io.to(socketId).emit(SOCKET_EVENTS.CALL_SIGNAL, {
       fromUserId,
-      signal,
+      signal: data.signal,
     });
   });
 }
-
-// ─── Utility: emit new message to a conversation room ─────────────────────────
 
 export function emitNewMessage(
   io: SocketIOServer,
@@ -3486,21 +4713,23 @@ export function emitNewMessage(
   });
 }
 
-// ─── Utility: get all socket IDs for a user ───────────────────────────────────
-
-function getSocketsForUser(userId: string): string[] {
-  const socketIds: string[] = [];
-  for (const [socketId, uid] of store.socketUserMap.entries()) {
-    if (uid === userId) socketIds.push(socketId);
-  }
-  return socketIds;
+export function emitMessageEdited(
+  io: SocketIOServer,
+  conversationId: string,
+  message: unknown,
+): void {
+  io.to(conversationId).emit(SOCKET_EVENTS.MESSAGE_EDITED, { message });
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface AuthenticatedSocket extends Socket {
-  userId: string;
-  userEmail: string;
+export function emitMessageDeleted(
+  io: SocketIOServer,
+  conversationId: string,
+  messageId: string,
+): void {
+  io.to(conversationId).emit(SOCKET_EVENTS.MESSAGE_DELETED, {
+    messageId,
+    conversationId,
+  });
 }
 
 
@@ -3508,25 +4737,22 @@ interface AuthenticatedSocket extends Socket {
 FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\types\index.ts
 ==============================
 
+import type mongoose from 'mongoose';
+
 // ─── User ────────────────────────────────────────────────────────────────────
 
 export type UserStatus = 'online' | 'offline' | 'away';
 
-export interface User {
+export interface PublicUser {
   id: string;
   name: string;
   email: string;
-  passwordHash: string;
   picture: string;
   status: UserStatus;
   about: string;
   createdAt: Date;
   updatedAt: Date;
 }
-
-export type PublicUser = Omit<User, 'passwordHash'>;
-
-export type UserWithoutPassword = PublicUser;
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
@@ -3553,8 +4779,53 @@ export interface RegisterRequest {
   password: string;
 }
 
-export interface RefreshTokenRequest {
-  refreshToken: string;
+// ─── Reaction ─────────────────────────────────────────────────────────────────
+
+export interface Reaction {
+  emoji: string;
+  userId: string;
+  createdAt: Date;
+}
+
+// ─── File Attachment ──────────────────────────────────────────────────────────
+
+export interface FileAttachment {
+  id: string;
+  name: string;
+  type: string;
+  url: string;
+  size: number;
+}
+
+// ─── Reply context ────────────────────────────────────────────────────────────
+
+export interface ReplyTo {
+  messageId: string;
+  senderId: string;
+  senderName: string;
+  message: string;
+}
+
+// ─── Message ──────────────────────────────────────────────────────────────────
+
+export interface Message {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  message: string;
+  files?: FileAttachment[];
+  reactions: Reaction[];
+  replyTo?: ReplyTo;
+  seenBy: string[];
+  isEdited: boolean;
+  editedAt?: Date;
+  isDeleted: boolean;
+  deletedAt?: Date;
+  isPinned: boolean;
+  pinnedAt?: Date;
+  pinnedBy?: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 // ─── Conversation ─────────────────────────────────────────────────────────────
@@ -3572,8 +4843,10 @@ export interface Conversation {
   updatedAt: Date;
 }
 
+// ─── Request payloads ─────────────────────────────────────────────────────────
+
 export interface CreateConversationRequest {
-  userId: string; // The other user to start DM with
+  userId: string;
 }
 
 export interface CreateGroupRequest {
@@ -3582,51 +4855,7 @@ export interface CreateGroupRequest {
   picture?: string;
 }
 
-// ─── Message ──────────────────────────────────────────────────────────────────
-
-export interface Reaction {
-  emoji: string;
-  userId: string;
-  createdAt: Date;
-}
-
-export interface FileAttachment {
-  id: string;
-  name: string;
-  type: string;
-  url: string;
-  size: number;
-}
-
-export interface ReplyTo {
-  messageId: string;
-  senderId: string;
-  senderName: string;
-  message: string;
-}
-
-export interface Message {
-  id: string;
-  conversationId: string;
-  senderId: string;
-  message: string;
-  files?: FileAttachment[];
-  reactions?: Reaction[];
-  replyTo?: ReplyTo;
-  seenBy?: string[];
-  isEdited: boolean;
-  editedAt?: Date;
-  isDeleted: boolean;
-  deletedAt?: Date;
-  isPinned: boolean;
-  pinnedAt?: Date;
-  pinnedBy?: string;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
 export interface SendMessageRequest {
-  conversationId: string;
   message: string;
   replyTo?: ReplyTo;
 }
@@ -3634,22 +4863,6 @@ export interface SendMessageRequest {
 export interface EditMessageRequest {
   message: string;
 }
-
-export interface AddReactionRequest {
-  emoji: string;
-}
-
-export interface ForwardMessageRequest {
-  toConversationId: string;
-}
-
-// ─── User Search ──────────────────────────────────────────────────────────────
-
-export interface SearchUsersQuery {
-  q: string;
-}
-
-// ─── Profile Update ───────────────────────────────────────────────────────────
 
 export interface UpdateProfileRequest {
   name?: string;
@@ -3662,12 +4875,6 @@ export interface UpdateStatusRequest {
 }
 
 // ─── Pagination ───────────────────────────────────────────────────────────────
-
-export interface PaginationQuery {
-  page?: number;
-  limit?: number;
-  cursor?: string;
-}
 
 export interface PaginatedResponse<T> {
   data: T[];
@@ -3696,32 +4903,10 @@ export type ApiResponse<T = unknown> = ApiSuccess<T> | ApiError;
 
 // ─── Socket Events ────────────────────────────────────────────────────────────
 
-export interface SocketUserJoinPayload {
-  userId: string;
-}
-
 export interface SocketTypingPayload {
   conversationId: string;
   userId: string;
   userName: string;
-}
-
-export interface SocketMessagePayload {
-  message: Message;
-  conversation: Conversation;
-}
-
-export interface SocketReactionPayload {
-  messageId: string;
-  conversationId: string;
-  reaction: Reaction;
-  action: 'add' | 'remove';
-}
-
-export interface SocketSeenPayload {
-  conversationId: string;
-  messageId: string;
-  userId: string;
 }
 
 export interface SocketCallPayload {
@@ -3732,13 +4917,283 @@ export interface SocketCallPayload {
   signal?: unknown;
 }
 
-// ─── In-memory store types ────────────────────────────────────────────────────
 
-export interface InMemoryStore {
-  users: Map<string, User>;
-  conversations: Map<string, Conversation>;
-  messages: Map<string, Message[]>; // conversationId → messages
-  refreshTokens: Set<string>;
-  onlineUsers: Set<string>;
-  socketUserMap: Map<string, string>; // socketId → userId
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\utils\asyncHandler.ts
+==============================
+
+/**
+ * asyncHandler — eliminate try/catch boilerplate in every route handler.
+ *
+ * PROBLEM: Without this, every async controller must wrap its body in
+ * try/catch and call next(err) manually.  Miss ONE and an unhandled
+ * promise rejection crashes the request (and in older Node versions, the
+ * entire process).
+ *
+ * SOLUTION: Wrap the handler.  Any thrown error — AppError, Zod error,
+ * Mongoose error, programming bug — is forwarded to next(), which routes
+ * it to the global error handler.
+ *
+ * Usage:
+ *   router.get('/users', asyncHandler(userController.list));
+ *
+ * Works with:
+ *   - Express RequestHandler   (req, res, next)
+ *   - Express ErrorRequestHandler  (err, req, res, next)
+ */
+
+import type { Request, Response, NextFunction, RequestHandler } from 'express';
+
+type AsyncRequestHandler = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => Promise<unknown>;
+
+/**
+ * Wraps an async Express route handler so that any thrown error or rejected
+ * promise is automatically forwarded to Express's next(err) instead of
+ * causing an unhandled rejection.
+ */
+export function asyncHandler(fn: AsyncRequestHandler): RequestHandler {
+  return function asyncHandlerWrapper(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): void {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\utils\logger.ts
+==============================
+
+/**
+ * logger.ts — Structured, leveled logger.
+ *
+ * In production, log lines are JSON (machine-parseable by Datadog, CloudWatch,
+ * Loki, etc.).  In development they're human-friendly colored text.
+ *
+ * Levels: error > warn > info > http > debug
+ *
+ * Usage:
+ *   logger.info('Server started', { port: 5000 });
+ *   logger.warn('Rate limit hit', { ip: req.ip });
+ *   logger.error(err, { requestId: '...' });
+ */
+
+import { env } from '../config/env.js';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type LogLevel = 'debug' | 'http' | 'info' | 'warn' | 'error';
+
+interface LogEntry {
+  level: LogLevel;
+  timestamp: string;
+  message: string;
+  [key: string]: unknown;
+}
+
+// ─── ANSI colour helpers (dev only) ──────────────────────────────────────────
+
+const COLOURS: Record<LogLevel, string> = {
+  debug: '\x1b[37m', // white
+  http: '\x1b[36m',  // cyan
+  info: '\x1b[32m',  // green
+  warn: '\x1b[33m',  // yellow
+  error: '\x1b[31m', // red
+};
+const RESET = '\x1b[0m';
+
+// ─── Level priority (higher = more severe) ───────────────────────────────────
+
+const LEVEL_PRIORITY: Record<LogLevel, number> = {
+  debug: 0,
+  http: 1,
+  info: 2,
+  warn: 3,
+  error: 4,
+};
+
+const ACTIVE_LEVEL: LogLevel = (process.env['LOG_LEVEL'] as LogLevel | undefined) ?? (env.isDev ? 'debug' : 'info');
+
+// ─── Core log function ────────────────────────────────────────────────────────
+
+function log(level: LogLevel, messageOrError: string | Error, meta: Record<string, unknown> = {}): void {
+  if (LEVEL_PRIORITY[level] < LEVEL_PRIORITY[ACTIVE_LEVEL]) return;
+
+  const message =
+    messageOrError instanceof Error ? messageOrError.message : messageOrError;
+
+  const extra: Record<string, unknown> = {
+    ...meta,
+  };
+
+  // Include stack trace for errors in development
+  if (messageOrError instanceof Error) {
+    extra['name'] = messageOrError.name;
+    if (env.isDev && messageOrError.stack) {
+      extra['stack'] = messageOrError.stack;
+    }
+  }
+
+  if (env.isDev) {
+    const colour = COLOURS[level];
+    const prefix = `${colour}[${level.toUpperCase().padEnd(5)}]${RESET}`;
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 23);
+    const metaStr = Object.keys(extra).length > 0 ? ` ${JSON.stringify(extra)}` : '';
+    process.stdout.write(`${ts} ${prefix} ${message}${metaStr}\n`);
+    return;
+  }
+
+  // Production: structured JSON
+  const entry: LogEntry = {
+    level,
+    timestamp: new Date().toISOString(),
+    message,
+    ...extra,
+  };
+
+  // error goes to stderr, everything else stdout
+  const stream = level === 'error' ? process.stderr : process.stdout;
+  stream.write(JSON.stringify(entry) + '\n');
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+export const logger = {
+  debug: (msg: string, meta?: Record<string, unknown>) => log('debug', msg, meta),
+  http: (msg: string, meta?: Record<string, unknown>) => log('http', msg, meta),
+  info: (msg: string, meta?: Record<string, unknown>) => log('info', msg, meta),
+  warn: (msg: string, meta?: Record<string, unknown>) => log('warn', msg, meta),
+  error: (err: Error | string, meta?: Record<string, unknown>) => log('error', err, meta),
+};
+
+
+==============================
+FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\utils\response.ts
+==============================
+
+/**
+ * response.ts — Structured, consistent API response helpers.
+ *
+ * Every API response follows one shape:
+ *
+ *  SUCCESS
+ *  {
+ *    "success": true,
+ *    "statusCode": 200,
+ *    "message": "...",        ← optional human-readable note
+ *    "data": { ... },
+ *    "meta": { ... }          ← optional pagination / extra context
+ *  }
+ *
+ *  ERROR
+ *  {
+ *    "success": false,
+ *    "statusCode": 400,
+ *    "code": "VALIDATION_ERROR",
+ *    "message": "...",
+ *    "details": [ ... ]       ← only in development OR for validation errors
+ *  }
+ *
+ * WHY: A consistent envelope means the client NEVER needs to guess the shape.
+ * It also makes logging / monitoring far easier because every response has
+ * a predictable structure.
+ */
+
+import type { Response } from 'express';
+import { env } from '../config/env.js';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface ApiMeta {
+  page?: number;
+  limit?: number;
+  total?: number;
+  hasMore?: boolean;
+  nextCursor?: string;
+  [key: string]: unknown;
+}
+
+export interface SuccessPayload<T = unknown> {
+  success: true;
+  statusCode: number;
+  message?: string;
+  data: T;
+  meta?: ApiMeta;
+}
+
+export interface ErrorPayload {
+  success: false;
+  statusCode: number;
+  code: string;
+  message: string;
+  details?: unknown;
+  /** Request correlation id — set by requestId middleware */
+  requestId?: string;
+}
+
+export type ApiResponse<T = unknown> = SuccessPayload<T> | ErrorPayload;
+
+// ─── Success helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Generic success — caller controls status code.
+ */
+export function sendSuccess<T>(
+  res: Response,
+  data: T,
+  message?: string,
+  statusCode = 200,
+  meta?: ApiMeta,
+): void {
+  const body: SuccessPayload<T> = { success: true, statusCode, data };
+  if (message) body.message = message;
+  if (meta) body.meta = meta;
+  res.status(statusCode).json(body);
+}
+
+/** 200 OK */
+export function sendOk<T>(res: Response, data: T, message?: string, meta?: ApiMeta): void {
+  sendSuccess(res, data, message, 200, meta);
+}
+
+/** 201 Created */
+export function sendCreated<T>(res: Response, data: T, message?: string): void {
+  sendSuccess(res, data, message, 201);
+}
+
+/** 204 No Content — data is null */
+export function sendNoContent(res: Response): void {
+  res.status(204).end();
+}
+
+// ─── Error helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Core error responder — used internally by the global error handler.
+ * Callers should throw AppError subclasses instead of calling this directly.
+ */
+export function sendErrorResponse(
+  res: Response,
+  statusCode: number,
+  code: string,
+  message: string,
+  details?: unknown,
+  requestId?: string,
+): void {
+  const body: ErrorPayload = { success: false, statusCode, code, message };
+
+  // Only attach `details` for validation errors or in development
+  if (details !== undefined && (statusCode === 400 || statusCode === 422 || env.isDev)) {
+    body.details = details;
+  }
+
+  if (requestId) body.requestId = requestId;
+
+  res.status(statusCode).json(body);
 }
