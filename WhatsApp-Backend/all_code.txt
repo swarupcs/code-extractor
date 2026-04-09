@@ -854,13 +854,19 @@ import {
 } from '../errors/AppError.js';
 import { sendOk, sendCreated } from '../utils/response.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { parseBody, createConversationSchema, createGroupSchema } from '../helpers/validation.js';
+import {
+  parseBody,
+  createConversationSchema,
+  createGroupSchema,
+} from '../helpers/validation.js';
 import { getSocketsForUser } from '../config/runtimeStore.js';
 
 export const conversationController = {
   /** GET /api/conversations */
   list: asyncHandler(async (req: Request, res: Response) => {
-    const conversations = await conversationService.getConversationsForUser(req.userId!);
+    const conversations = await conversationService.getConversationsForUser(
+      req.userId!,
+    );
     sendOk(res, conversations);
   }),
 
@@ -878,10 +884,16 @@ export const conversationController = {
   createDirect: asyncHandler(async (req: Request, res: Response) => {
     const data = parseBody(createConversationSchema, req.body);
 
-    const result = await conversationService.findOrCreateDirect(req.userId!, data);
+    const result = await conversationService.findOrCreateDirect(
+      req.userId!,
+      data,
+    );
 
     if (result === 'user_not_found') throw new NotFoundError('User');
-    if (result === 'cannot_self') throw new BadRequestError('You cannot start a conversation with yourself');
+    if (result === 'cannot_self')
+      throw new BadRequestError(
+        'You cannot start a conversation with yourself',
+      );
 
     sendCreated(res, result, 'Conversation ready');
 
@@ -889,8 +901,12 @@ export const conversationController = {
     const io = req.app.locals['io'] as SocketIOServer | undefined;
     if (io) {
       const roomId = result.id;
-      getSocketsForUser(req.userId!).forEach((sid) => io.sockets.sockets.get(sid)?.join(roomId));
-      getSocketsForUser(data.userId).forEach((sid) => io.sockets.sockets.get(sid)?.join(roomId));
+      getSocketsForUser(req.userId!).forEach((sid) =>
+        io.sockets.sockets.get(sid)?.join(roomId),
+      );
+      getSocketsForUser(data.userId).forEach((sid) =>
+        io.sockets.sockets.get(sid)?.join(roomId),
+      );
     }
   }),
 
@@ -912,7 +928,9 @@ export const conversationController = {
     const io = req.app.locals['io'] as SocketIOServer | undefined;
     if (io) {
       result.users.forEach((member) => {
-        getSocketsForUser(member.id).forEach((sid) => io.sockets.sockets.get(sid)?.join(result.id));
+        getSocketsForUser(member.id).forEach((sid) =>
+          io.sockets.sockets.get(sid)?.join(result.id),
+        );
       });
     }
   }),
@@ -929,9 +947,12 @@ export const conversationController = {
     );
 
     if (result === 'not_found') throw new NotFoundError('Conversation');
-    if (result === 'not_group') throw new BadRequestError('This is not a group conversation');
-    if (result === 'not_admin') throw new ForbiddenError('Only the group admin can add members');
-    if (result === 'already_member') throw new BadRequestError('User is already a member of this group');
+    if (result === 'not_group')
+      throw new BadRequestError('This is not a group conversation');
+    if (result === 'not_admin')
+      throw new ForbiddenError('Only the group admin can add members');
+    if (result === 'already_member')
+      throw new BadRequestError('User is already a member of this group');
     if (result === 'user_not_found') throw new NotFoundError('User');
 
     sendOk(res, result, 'Member added');
@@ -939,8 +960,14 @@ export const conversationController = {
     const io = req.app.locals['io'] as SocketIOServer | undefined;
     if (io) {
       const roomId = req.params['conversationId']!;
-      getSocketsForUser(userId).forEach((sid) => io.sockets.sockets.get(sid)?.join(roomId));
-      io.to(roomId).emit('member_added', { conversationId: roomId, userId, conversation: result });
+      getSocketsForUser(userId).forEach((sid) =>
+        io.sockets.sockets.get(sid)?.join(roomId),
+      );
+      io.to(roomId).emit('member_added', {
+        conversationId: roomId,
+        userId,
+        conversation: result,
+      });
     }
   }),
 
@@ -949,6 +976,11 @@ export const conversationController = {
     const conversationId = req.params['conversationId']!;
     const targetUserId = req.params['userId']!;
 
+    // Prevent self-removal via this endpoint — use /leave instead
+    if (targetUserId === req.userId) {
+      throw new BadRequestError('Use POST /leave to leave a group yourself');
+    }
+
     const result = await conversationService.removeGroupMember(
       conversationId,
       req.userId!,
@@ -956,23 +988,83 @@ export const conversationController = {
     );
 
     if (result === 'not_found') throw new NotFoundError('Conversation');
-    if (result === 'not_group') throw new BadRequestError('This is not a group conversation');
-    if (result === 'not_admin') throw new ForbiddenError('Only the admin can remove members');
+    if (result === 'not_group')
+      throw new BadRequestError('This is not a group conversation');
+    if (result === 'not_admin')
+      throw new ForbiddenError('Only the admin can remove members');
     if (result === 'not_member') throw new NotFoundError('Member');
 
     sendOk(res, result, 'Member removed');
 
     const io = req.app.locals['io'] as SocketIOServer | undefined;
     if (io) {
-      getSocketsForUser(targetUserId).forEach((sid) => io.sockets.sockets.get(sid)?.leave(conversationId));
-      io.to(conversationId).emit('member_removed', { conversationId, userId: targetUserId, conversation: result });
-      getSocketsForUser(targetUserId).forEach((sid) => io.to(sid).emit('removed_from_group', { conversationId }));
+      getSocketsForUser(targetUserId).forEach((sid) =>
+        io.sockets.sockets.get(sid)?.leave(conversationId),
+      );
+      io.to(conversationId).emit('member_removed', {
+        conversationId,
+        userId: targetUserId,
+        conversation: result,
+      });
+      getSocketsForUser(targetUserId).forEach((sid) =>
+        io.to(sid).emit('removed_from_group', { conversationId }),
+      );
     }
+  }),
+
+  /**
+   * POST /api/conversations/:conversationId/leave
+   * Any member can leave a group conversation.
+   * If the leaving user is the admin and others remain, admin is transferred
+   * to the next member. If they are the last member, the conversation is deleted.
+   */
+  leaveGroup: asyncHandler(async (req: Request, res: Response) => {
+    const conversationId = req.params['conversationId']!;
+    const userId = req.userId!;
+
+    const result = await conversationService.leaveGroup(conversationId, userId);
+
+    if (result === 'not_found') throw new NotFoundError('Conversation');
+    if (result === 'not_group')
+      throw new BadRequestError('You can only leave group conversations');
+    if (result === 'not_member')
+      throw new ForbiddenError('You are not a member of this conversation');
+
+    const io = req.app.locals['io'] as SocketIOServer | undefined;
+    if (io) {
+      // Remove the leaving user from the socket room
+      getSocketsForUser(userId).forEach((sid) =>
+        io.sockets.sockets.get(sid)?.leave(conversationId),
+      );
+
+      if (result === 'deleted') {
+        // Last member left — conversation is gone
+        getSocketsForUser(userId).forEach((sid) =>
+          io.to(sid).emit('removed_from_group', { conversationId }),
+        );
+      } else {
+        // Notify remaining members of the updated conversation
+        io.to(conversationId).emit('member_removed', {
+          conversationId,
+          userId,
+          conversation: result,
+        });
+        // Notify the leaving user so their sidebar updates
+        getSocketsForUser(userId).forEach((sid) =>
+          io.to(sid).emit('removed_from_group', { conversationId }),
+        );
+      }
+    }
+
+    sendOk(res, null, 'You have left the group');
   }),
 
   /** POST /api/conversations/:conversationId/read */
   markRead: asyncHandler(async (req: Request, res: Response) => {
-    await conversationService.markAsRead(req.params['conversationId']!, req.userId!);
+    await conversationService.markAsRead(
+      req.params['conversationId']!,
+      req.userId!,
+    );
     sendOk(res, null, 'Marked as read');
   }),
 };
@@ -984,13 +1076,23 @@ FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\controllers\message.con
 
 /**
  * message.controller.ts — Refactored with asyncHandler + AppErrors.
+ *
+ * FIXES applied:
+ *  - pin/unpin now emit socket events to the conversation room so all members
+ *    see the change in real time without a full refetch.
+ *  - edit/delete now emit socket events so all members see the change.
+ *  - globalSearch route is correctly protected and accessible.
  */
 
 import type { Request, Response } from 'express';
 import type { Server as SocketIOServer } from 'socket.io';
 import { messageService } from '../services/message.service.js';
 import { conversationService } from '../services/conversation.service.js';
-import { emitNewMessage } from '../socket/index.js';
+import {
+  emitNewMessage,
+  emitMessageEdited,
+  emitMessageDeleted,
+} from '../socket/index.js';
 import {
   NotFoundError,
   ForbiddenError,
@@ -1007,6 +1109,12 @@ import {
 } from '../helpers/validation.js';
 import { multerFileToAttachment } from '../helpers/upload.js';
 
+// Socket event names for pin/unpin (mirrors what the frontend listens for)
+const MESSAGE_PINNED = 'message_pinned';
+const MESSAGE_UNPINNED = 'message_unpinned';
+const REACTION_UPDATED = 'reaction_updated';
+const MESSAGE_SEEN = 'message_seen';
+
 export const messageController = {
   /** GET /api/conversations/:conversationId/messages */
   list: asyncHandler(async (req: Request, res: Response) => {
@@ -1017,7 +1125,6 @@ export const messageController = {
       limit,
     );
 
-    // ✅ Send the complete paginated response
     sendOk(res, result, undefined, {
       page: result.page,
       limit: result.limit,
@@ -1039,7 +1146,15 @@ export const messageController = {
     sendOk(res, results);
   }),
 
-  /** GET /api/messages/search?q=... */
+  /**
+   * GET /api/messages/search?q=...
+   *
+   * FIX: This handler is mounted at the top-level router as:
+   *   router.get('/messages/search', requireAuth, messageController.globalSearch)
+   * Make sure it appears BEFORE the conversation-scoped message router in
+   * routes/index.ts so Express matches it before trying to treat "messages"
+   * as a :conversationId param.
+   */
   globalSearch: asyncHandler(async (req: Request, res: Response) => {
     const q = String(req.query['q'] ?? '').trim();
     if (q.length < 2)
@@ -1091,7 +1206,6 @@ export const messageController = {
     if (result === 'not_member')
       throw new ForbiddenError('You are not a member of this conversation');
 
-    // Broadcast via Socket.IO
     const io = req.app.locals['io'] as SocketIOServer | undefined;
     if (io) {
       const conv = await conversationService.getConversationById(
@@ -1121,6 +1235,12 @@ export const messageController = {
     if (result === 'deleted')
       throw new BadRequestError('Cannot edit a deleted message');
 
+    // FIX: emit MESSAGE_EDITED to room so all members see the update instantly.
+    const io = req.app.locals['io'] as SocketIOServer | undefined;
+    if (io) {
+      emitMessageEdited(io, req.params['conversationId']!, result);
+    }
+
     sendOk(res, result, 'Message edited');
   }),
 
@@ -1135,6 +1255,12 @@ export const messageController = {
     if (result === 'not_found') throw new NotFoundError('Message');
     if (result === 'not_owner')
       throw new ForbiddenError('You can only delete your own messages');
+
+    // FIX: emit MESSAGE_DELETED to room so all members see the deletion.
+    const io = req.app.locals['io'] as SocketIOServer | undefined;
+    if (io) {
+      emitMessageDeleted(io, req.params['conversationId']!, result.id);
+    }
 
     sendOk(res, result, 'Message deleted');
   }),
@@ -1154,13 +1280,32 @@ export const messageController = {
     if (result === 'deleted')
       throw new BadRequestError('Cannot react to a deleted message');
 
+    // FIX: emit REACTION_UPDATED so all room members see the change.
+    const io = req.app.locals['io'] as SocketIOServer | undefined;
+    if (io) {
+      io.to(req.params['conversationId']!).emit(REACTION_UPDATED, {
+        conversationId: req.params['conversationId']!,
+        messageId: result.id,
+        reactions: result.reactions,
+      });
+    }
+
     sendOk(res, result);
   }),
 
-  /** POST /api/conversations/:conversationId/messages/:messageId/pin */
+  /**
+   * POST /api/conversations/:conversationId/messages/:messageId/pin
+   *
+   * FIX: After persisting, emit MESSAGE_PINNED to the conversation room so
+   * every member's PinnedMessagesBar updates in real time without a refetch.
+   * The frontend SocketContext handler for 'message_pinned' calls
+   * queryClient.invalidateQueries({ queryKey: messageKeys.pinned(convId) })
+   * which re-fetches the pinned list for all connected clients.
+   */
   pin: asyncHandler(async (req: Request, res: Response) => {
+    const conversationId = req.params['conversationId']!;
     const result = await messageService.pinMessage(
-      req.params['conversationId']!,
+      conversationId,
       req.params['messageId']!,
       req.userId!,
     );
@@ -1169,19 +1314,43 @@ export const messageController = {
     if (result === 'deleted')
       throw new BadRequestError('Cannot pin a deleted message');
 
+    // FIX: broadcast so all room members see the pinned message bar update.
+    const io = req.app.locals['io'] as SocketIOServer | undefined;
+    if (io) {
+      io.to(conversationId).emit(MESSAGE_PINNED, {
+        conversationId,
+        message: result,
+      });
+    }
+
     sendOk(res, result, 'Message pinned');
   }),
 
-  /** DELETE /api/conversations/:conversationId/messages/:messageId/pin */
+  /**
+   * DELETE /api/conversations/:conversationId/messages/:messageId/pin
+   *
+   * FIX: Same as pin — emit MESSAGE_UNPINNED so the PinnedMessagesBar
+   * disappears / updates for all connected group members instantly.
+   */
   unpin: asyncHandler(async (req: Request, res: Response) => {
+    const conversationId = req.params['conversationId']!;
     const result = await messageService.unpinMessage(
-      req.params['conversationId']!,
+      conversationId,
       req.params['messageId']!,
     );
 
     if (result === 'not_found') throw new NotFoundError('Message');
     if (result === 'deleted')
       throw new BadRequestError('Cannot unpin a deleted message');
+
+    // FIX: broadcast so all room members see the bar update.
+    const io = req.app.locals['io'] as SocketIOServer | undefined;
+    if (io) {
+      io.to(conversationId).emit(MESSAGE_UNPINNED, {
+        conversationId,
+        message: result,
+      });
+    }
 
     sendOk(res, result, 'Message unpinned');
   }),
@@ -1213,18 +1382,43 @@ export const messageController = {
         'You are not a member of the target conversation',
       );
 
+    // Emit new_message to the target conversation room so recipients see it.
+    const io = req.app.locals['io'] as SocketIOServer | undefined;
+    if (io) {
+      const conv = await conversationService.getConversationById(
+        toConversationId,
+        req.userId!,
+      );
+      if (conv) emitNewMessage(io, toConversationId, result, conv);
+    }
+
     sendCreated(res, result, 'Message forwarded');
   }),
 
   /** POST /api/conversations/:conversationId/messages/:messageId/seen */
   markSeen: asyncHandler(async (req: Request, res: Response) => {
+    const conversationId = req.params['conversationId']!;
+    const messageId = req.params['messageId']!;
+
     const updated = await messageService.markMessageSeen(
-      req.params['conversationId']!,
-      req.params['messageId']!,
+      conversationId,
+      messageId,
       req.userId!,
     );
 
     if (!updated) throw new NotFoundError('Message');
+
+    // FIX: emit MESSAGE_SEEN so the sender's read receipt updates instantly.
+    const io = req.app.locals['io'] as SocketIOServer | undefined;
+    if (io) {
+      io.to(conversationId).emit(MESSAGE_SEEN, {
+        conversationId,
+        messageId,
+        userId: req.userId!,
+        seenBy: updated.seenBy,
+      });
+    }
+
     sendOk(res, updated);
   }),
 };
@@ -3037,11 +3231,34 @@ router.get('/', conversationController.list);
 router.post('/', conversationController.createDirect);
 router.post('/group', conversationController.createGroup);
 
-router.get('/:conversationId', requireConversationMember, conversationController.getOne);
-router.post('/:conversationId/read', requireConversationMember, conversationController.markRead);
+router.get(
+  '/:conversationId',
+  requireConversationMember,
+  conversationController.getOne,
+);
+router.post(
+  '/:conversationId/read',
+  requireConversationMember,
+  conversationController.markRead,
+);
 
-router.post('/:conversationId/members', requireConversationMember, conversationController.addMember);
-router.delete('/:conversationId/members/:userId', requireConversationMember, conversationController.removeMember);
+router.post(
+  '/:conversationId/members',
+  requireConversationMember,
+  conversationController.addMember,
+);
+router.delete(
+  '/:conversationId/members/:userId',
+  requireConversationMember,
+  conversationController.removeMember,
+);
+
+// Leave group — any member can leave themselves
+router.post(
+  '/:conversationId/leave',
+  requireConversationMember,
+  conversationController.leaveGroup,
+);
 
 export default router;
 
@@ -3049,6 +3266,19 @@ export default router;
 ==============================
 FILE: E:\My Projects\WhatsApp-Clone\whatsapp-backend\src\routes\index.ts
 ==============================
+
+/**
+ * routes/index.ts
+ *
+ * FIX: The global message search route GET /messages/search MUST be registered
+ * before the conversation-scoped message routes. Express matches routes in
+ * registration order, and the conversation router uses mergeParams which means
+ * a request to /api/messages/search would be caught by the /api/conversations
+ * prefix ONLY if Express tries to match ":conversationId" = "messages" first.
+ *
+ * Registering the standalone /messages/search BEFORE the conversation routes
+ * ensures it short-circuits correctly.
+ */
 
 import { Router } from 'express';
 import authRoutes from './auth.routes.js';
@@ -3060,6 +3290,7 @@ import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
+// Health check — no auth required
 router.get('/health', (_req, res) => {
   res.json({
     success: true,
@@ -3071,11 +3302,24 @@ router.get('/health', (_req, res) => {
   });
 });
 
+// Auth routes
 router.use('/auth', authRoutes);
+
+// User routes
 router.use('/users', userRoutes);
-router.use('/conversations', conversationRoutes);
-router.use('/conversations/:conversationId/messages', messageRoutes);
+
+// FIX: Register the global message search BEFORE the conversation-scoped
+// message subrouter. Without this ordering, a GET /api/messages/search request
+// would fall through to the conversation router where Express would interpret
+// "messages" as a :conversationId value, causing a 404 or wrong response.
 router.get('/messages/search', requireAuth, messageController.globalSearch);
+
+// Conversation routes (includes the /conversations/:id sub-resources)
+router.use('/conversations', conversationRoutes);
+
+// Conversation-scoped message routes
+// mergeParams: true is set in message.routes.ts so :conversationId is visible
+router.use('/conversations/:conversationId/messages', messageRoutes);
 
 export default router;
 
@@ -3528,7 +3772,7 @@ import { Conversation } from '../models/conversation.model.js';
 import { Message } from '../models/message.model.js';
 import { User } from '../models/user.model.js';
 import { docToPublicUser, nowDate } from '../helpers/index.js';
-import { isUserOnline, getSocketsForUser } from '../config/runtimeStore.js';
+import { isUserOnline } from '../config/runtimeStore.js';
 import type {
   Conversation as ConversationType,
   PublicUser,
@@ -3589,15 +3833,12 @@ async function buildConversationDto(
   conv: InstanceType<typeof Conversation>,
   requestingUserId: string,
 ): Promise<ConversationType> {
-  // Populate members
   const memberDocs = await User.find({ _id: { $in: conv.members } });
   const users: PublicUser[] = memberDocs.map((u) => ({
     ...docToPublicUser(u),
     status: isUserOnline(u._id.toString()) ? 'online' : u.status,
   }));
 
-  // BUG FIX 1: For DM conversations, show the OTHER person's name/picture
-  // relative to the requesting user, not the stored name (which is from creator's POV)
   let displayName = conv.name;
   let displayPicture = conv.picture;
 
@@ -3611,7 +3852,6 @@ async function buildConversationDto(
     }
   }
 
-  // Unread count: messages not sent by me, not deleted, not seen by me
   const unreadCount = await Message.countDocuments({
     conversationId: conv._id,
     senderId: { $ne: new mongoose.Types.ObjectId(requestingUserId) },
@@ -3619,7 +3859,6 @@ async function buildConversationDto(
     seenBy: { $nin: [new mongoose.Types.ObjectId(requestingUserId)] },
   });
 
-  // Latest message
   let latestMessage: MessageType | undefined;
   if (conv.latestMessage) {
     const latestDoc = await Message.findById(conv.latestMessage);
@@ -3643,9 +3882,6 @@ async function buildConversationDto(
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export const conversationService = {
-  /**
-   * Get all conversations for a user, sorted by latest activity.
-   */
   async getConversationsForUser(userId: string): Promise<ConversationType[]> {
     const convs = await Conversation.find({ members: userId }).sort({
       updatedAt: -1,
@@ -3653,9 +3889,6 @@ export const conversationService = {
     return Promise.all(convs.map((c) => buildConversationDto(c, userId)));
   },
 
-  /**
-   * Get a single conversation (only if user is a member).
-   */
   async getConversationById(
     conversationId: string,
     userId: string,
@@ -3669,9 +3902,6 @@ export const conversationService = {
     return buildConversationDto(conv, userId);
   },
 
-  /**
-   * Start or return an existing 1-on-1 DM.
-   */
   async findOrCreateDirect(
     requesterId: string,
     data: CreateConversationRequest,
@@ -3683,33 +3913,28 @@ export const conversationService = {
     const targetUser = await User.findById(targetId);
     if (!targetUser) return 'user_not_found';
 
-    // Check if DM already exists
+    const requesterObjectId = new mongoose.Types.ObjectId(requesterId);
+    const targetObjectId = new mongoose.Types.ObjectId(targetId);
+
     const existing = await Conversation.findOne({
       isGroup: false,
-      members: { $all: [requesterId, targetId], $size: 2 },
+      members: { $all: [requesterObjectId, targetObjectId] },
     });
 
-    if (existing) return buildConversationDto(existing, requesterId);
+    if (existing && existing.members.length === 2) {
+      return buildConversationDto(existing, requesterId);
+    }
 
-    const requester = await User.findById(requesterId);
-    if (!requester) return 'user_not_found';
-
-    // BUG FIX 1: Store the target user's name/picture so that when the target
-    // views this conversation, buildConversationDto will swap it to the requester's
-    // name/picture for them (since we now derive name from the other member).
     const newConv = await Conversation.create({
       name: targetUser.name,
       picture: targetUser.picture,
       isGroup: false,
-      members: [requesterId, targetId],
+      members: [requesterObjectId, targetObjectId],
     });
 
     return buildConversationDto(newConv, requesterId);
   },
 
-  /**
-   * Create a new group conversation.
-   */
   async createGroup(
     creatorId: string,
     data: CreateGroupRequest,
@@ -3720,7 +3945,7 @@ export const conversationService = {
     ];
     const memberIds = [creatorId, ...uniqueUserIds];
 
-    // Group needs creator + at least 2 others
+    // Group needs creator + at least 2 others = 3 total minimum
     if (memberIds.length < 3) return 'invalid_members';
 
     // Verify all users exist
@@ -3740,11 +3965,6 @@ export const conversationService = {
     return buildConversationDto(newGroup, creatorId);
   },
 
-  /**
-   * Add a member to a group (admin only).
-   * Returns the updated conversation DTO AND the new member's socket IDs
-   * so the caller (controller) can join them to the socket room.
-   */
   async addGroupMember(
     conversationId: string,
     requesterId: string,
@@ -3777,10 +3997,6 @@ export const conversationService = {
     return buildConversationDto(conv, requesterId);
   },
 
-  /**
-   * Remove a member from a group (admin only, or self-leave).
-   * Returns the updated conversation DTO.
-   */
   async removeGroupMember(
     conversationId: string,
     requesterId: string,
@@ -3792,8 +4008,8 @@ export const conversationService = {
     if (!conv) return 'not_found';
     if (!conv.isGroup) return 'not_group';
 
-    const isSelf = requesterId === targetUserId;
-    if (!isSelf && conv.adminId?.toString() !== requesterId) return 'not_admin';
+    // Only admin can remove others (self-leave goes through leaveGroup)
+    if (conv.adminId?.toString() !== requesterId) return 'not_admin';
 
     const isMember = conv.members.some((m) => m.toString() === targetUserId);
     if (!isMember) return 'not_member';
@@ -3806,8 +4022,49 @@ export const conversationService = {
   },
 
   /**
-   * Mark all messages in a conversation as read for a user.
+   * Leave a group conversation.
+   * - Any member can leave themselves.
+   * - If the leaving user is admin and others remain, admin transfers to the
+   *   next member in the list.
+   * - If they are the last member, the conversation (and its messages) is deleted.
+   * Returns 'deleted' if the conversation was removed, or the updated DTO.
    */
+  async leaveGroup(
+    conversationId: string,
+    userId: string,
+  ): Promise<
+    ConversationType | 'deleted' | 'not_found' | 'not_group' | 'not_member'
+  > {
+    const conv = await Conversation.findById(conversationId);
+    if (!conv) return 'not_found';
+    if (!conv.isGroup) return 'not_group';
+
+    const isMember = conv.members.some((m) => m.toString() === userId);
+    if (!isMember) return 'not_member';
+
+    // Remove user from members list
+    conv.members = conv.members.filter((m) => m.toString() !== userId);
+
+    // If no members left, delete the conversation and all its messages
+    if (conv.members.length === 0) {
+      await Message.deleteMany({ conversationId: conv._id });
+      await Conversation.findByIdAndDelete(conv._id);
+      return 'deleted';
+    }
+
+    // If leaving user was admin, transfer admin to the first remaining member
+    if (conv.adminId?.toString() === userId) {
+      conv.adminId = conv.members[0];
+    }
+
+    conv.updatedAt = nowDate();
+    await conv.save();
+
+    // Build DTO from the perspective of the first remaining member
+    // (the leaving user is no longer in the conversation)
+    return buildConversationDto(conv, conv.members[0]!.toString());
+  },
+
   async markAsRead(conversationId: string, userId: string): Promise<void> {
     const objectId = new mongoose.Types.ObjectId(userId);
     await Message.updateMany(
@@ -3857,7 +4114,17 @@ function toDto(doc: InstanceType<typeof Message>): MessageType {
     conversationId: toStr(o['conversationId']),
     senderId: toStr(o['senderId']),
     message: String(o['message'] ?? ''),
-    files: (o['files'] as { attachmentId: string; name: string; type: string; url: string; size: number }[] | undefined)?.map((f) => ({
+    files: (
+      o['files'] as
+        | {
+            attachmentId: string;
+            name: string;
+            type: string;
+            url: string;
+            size: number;
+          }[]
+        | undefined
+    )?.map((f) => ({
       id: f.attachmentId,
       name: f.name,
       type: f.type,
@@ -3874,9 +4141,15 @@ function toDto(doc: InstanceType<typeof Message>): MessageType {
     }),
     replyTo: o['replyTo']
       ? {
-          messageId: toStr((o['replyTo'] as Record<string, unknown>)['messageId']),
-          senderId: toStr((o['replyTo'] as Record<string, unknown>)['senderId']),
-          senderName: String((o['replyTo'] as Record<string, unknown>)['senderName']),
+          messageId: toStr(
+            (o['replyTo'] as Record<string, unknown>)['messageId'],
+          ),
+          senderId: toStr(
+            (o['replyTo'] as Record<string, unknown>)['senderId'],
+          ),
+          senderName: String(
+            (o['replyTo'] as Record<string, unknown>)['senderName'],
+          ),
           message: String((o['replyTo'] as Record<string, unknown>)['message']),
         }
       : undefined,
@@ -3897,7 +4170,7 @@ function toDto(doc: InstanceType<typeof Message>): MessageType {
 
 export const messageService = {
   /**
-   * Paginated messages for a conversation (cursor = page number, newest page first).
+   * Paginated messages for a conversation (cursor = page number).
    * Messages within a page are returned in chronological order.
    */
   async getMessages(
@@ -3910,7 +4183,6 @@ export const messageService = {
 
     const total = await Message.countDocuments({ conversationId });
 
-    // Newest-first pagination: skip from the end
     const skip = Math.max(0, total - safePage * safeLimit);
     const take = Math.min(safeLimit, total - (safePage - 1) * safeLimit);
 
@@ -3932,9 +4204,13 @@ export const messageService = {
   },
 
   /**
-   * Search messages in a conversation by text.
+   * Search messages in a single conversation by text (case-insensitive).
+   * Excludes deleted messages.
    */
-  async searchMessages(conversationId: string, query: string): Promise<MessageType[]> {
+  async searchMessages(
+    conversationId: string,
+    query: string,
+  ): Promise<MessageType[]> {
     const docs = await Message.find({
       conversationId,
       isDeleted: false,
@@ -3947,12 +4223,23 @@ export const messageService = {
   },
 
   /**
-   * Search messages across all conversations the user is a member of.
+   * Search messages across all conversations the requesting user is a member of.
+   *
+   * FIX: The search is correctly scoped to only the user's conversations so
+   * they cannot see messages from conversations they are not part of. We first
+   * retrieve conversation IDs via a lean query (faster than full population),
+   * then run a single $in query against Message.
    */
   async globalSearch(userId: string, query: string): Promise<MessageType[]> {
-    // Find all conversation IDs the user belongs to
-    const convs = await Conversation.find({ members: userId }, '_id');
+    // Lean query — we only need the _id field from each conversation doc.
+    const convs = await Conversation.find(
+      { members: new mongoose.Types.ObjectId(userId) },
+      '_id',
+    ).lean();
+
     const convIds = convs.map((c) => c._id);
+
+    if (convIds.length === 0) return [];
 
     const docs = await Message.find({
       conversationId: { $in: convIds },
@@ -3966,7 +4253,7 @@ export const messageService = {
   },
 
   /**
-   * Send a new message.
+   * Send a new message (text, files, or both).
    */
   async sendMessage(
     conversationId: string,
@@ -4011,7 +4298,6 @@ export const messageService = {
       updatedAt: now,
     });
 
-    // Update conversation's latest message timestamp
     await Conversation.findByIdAndUpdate(conversationId, {
       latestMessage: newDoc._id,
       updatedAt: now,
@@ -4041,7 +4327,6 @@ export const messageService = {
     msg.updatedAt = now;
     await msg.save();
 
-    // Refresh latestMessage if this was the latest
     await refreshLatestMessage(conversationId);
 
     return toDto(msg);
@@ -4090,10 +4375,8 @@ export const messageService = {
     );
 
     if (existingIdx !== -1) {
-      // Remove reaction
       msg.reactions.splice(existingIdx, 1);
     } else {
-      // Add reaction
       msg.reactions.push({ emoji, userId: userObjectId, createdAt: nowDate() });
     }
 
@@ -4104,13 +4387,22 @@ export const messageService = {
   },
 
   /**
-   * Pin a message.
+   * Pin a message in a conversation.
+   *
+   * FIX: The service correctly handles both DMs and group chats — there is no
+   * group-only restriction on pinning. Any conversation member with access
+   * (verified by requireConversationMember middleware) can pin. The controller
+   * now emits MESSAGE_PINNED via socket so all room members update in real time.
    */
   async pinMessage(
     conversationId: string,
     messageId: string,
     pinnedBy: string,
   ): Promise<MessageType | 'not_found' | 'deleted'> {
+    // Verify the conversation exists and the message belongs to it
+    const conv = await Conversation.findById(conversationId);
+    if (!conv) return 'not_found';
+
     const msg = await Message.findOne({ _id: messageId, conversationId });
     if (!msg) return 'not_found';
     if (msg.isDeleted) return 'deleted';
@@ -4127,6 +4419,9 @@ export const messageService = {
 
   /**
    * Unpin a message.
+   *
+   * FIX: Same as pin — works for both DMs and group chats. The controller
+   * emits MESSAGE_UNPINNED via socket so all room members update in real time.
    */
   async unpinMessage(
     conversationId: string,
@@ -4146,7 +4441,7 @@ export const messageService = {
   },
 
   /**
-   * Get all pinned messages in a conversation.
+   * Get all pinned (non-deleted) messages in a conversation, newest pin first.
    */
   async getPinnedMessages(conversationId: string): Promise<MessageType[]> {
     const docs = await Message.find({
@@ -4224,7 +4519,10 @@ export const messageService = {
 
     if (!msg) {
       // May already be seen — return the message anyway
-      const existing = await Message.findOne({ _id: messageId, conversationId });
+      const existing = await Message.findOne({
+        _id: messageId,
+        conversationId,
+      });
       return existing ? toDto(existing) : null;
     }
 

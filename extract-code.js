@@ -44,8 +44,15 @@ const path = require("path");
 //    All paths are extracted into a single combined output file.
 //    Add as many paths as needed — just separate them with commas.
 const TARGET_FOLDERS = [
-  String.raw`E:\My Projects\WhatsApp-Clone\whatsapp-backend\src`,
-  String.raw`E:\My Projects\WhatsApp-Clone\whatsapp-frontend\src`,
+  // String.raw`E:\My Projects\WhatsApp-Clone\whatsapp-backend\src`,
+  // String.raw`E:\My Projects\WhatsApp-Clone\whatsapp-frontend\src`,
+  // String.raw`E:\My Projects\Dev-Collab\Dev-Collab-TypeScript\Dev-Collab-Frontend\src`,
+  // String.raw`E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Backend\src`,
+  // String.raw`E:\My Projects\AI-Expense-Tracker\AI-Expense-Tracker-Frontend\src`,
+  // String.raw`E:\My Projects\Project-Management\sprintly-frontend\src`,
+  // String.raw`E:\My Projects\ai-image-editor\src`,
+  // String.raw`E:\My Projects\URL-Shortner-NextJS\src`,
+  String.raw`E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src`,
 ];
 
 // 👇 Output folder name (leave empty to auto-generate from TARGET_FOLDERS)
@@ -100,6 +107,7 @@ const EXCLUDED_EXTENSIONS = new Set([
 // Directories excluded only when inside a specific parent directory
 const EXCLUDED_NESTED = [
   { parent: "components", child: "ui" },
+  { parent: "components", child: "ai-elements" },
   { parent: "generated", child: "prisma" },
 ];
 

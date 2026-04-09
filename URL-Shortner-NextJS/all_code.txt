@@ -1,7 +1,7 @@
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\audit\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\audit\page.tsx
 ==============================
 
 import { getAuditLogs } from '@/server/actions/admin/audit-log';
@@ -286,7 +286,7 @@ export default async function AuditPage({ searchParams }: Params) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\database\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\database\page.tsx
 ==============================
 
 import { SeedDatabaseButton } from '@/components/admin/seed-database-button';
@@ -372,7 +372,7 @@ export default function DatabasePage() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\health\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\health\page.tsx
 ==============================
 
 'use client';
@@ -580,7 +580,7 @@ export default function HealthPage() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\layout.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\layout.tsx
 ==============================
 
 import { AdminSidebar } from "@/components/admin/admin-sidebar";
@@ -606,7 +606,7 @@ export default async function AdminLayout({ children }: AdminLayoutProps) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\page.tsx
 ==============================
 
 import { Button } from '@/components/ui/button';
@@ -770,7 +770,7 @@ export default async function AdminPage() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\urls\flagged\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\urls\flagged\page.tsx
 ==============================
 
 import { UrlsTable } from '@/components/admin/urls/urls-table';
@@ -1009,7 +1009,7 @@ export default async function FlaggedURLsPage({
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\urls\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\urls\page.tsx
 ==============================
 
 import { UrlFilter } from '@/components/admin/urls/url-filter';
@@ -1124,7 +1124,7 @@ export default async function AdminUrlsPage({
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\users\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(admin)\admin\users\page.tsx
 ==============================
 
 import { UserSearch } from "@/components/admin/users/user-search";
@@ -1175,7 +1175,7 @@ export default async function UserManagementPage({ searchParams }: { searchParam
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(auth)\forgot-password\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(auth)\forgot-password\page.tsx
 ==============================
 
 'use client';
@@ -1304,7 +1304,7 @@ export default function ForgotPasswordPage() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(auth)\layout.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(auth)\layout.tsx
 ==============================
 
 import { ReactNode } from 'react';
@@ -1315,7 +1315,7 @@ export default function AuthLayout({ children }: AuthLayoutProps) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(auth)\login\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(auth)\login\page.tsx
 ==============================
 
 import { Suspense } from 'react';
@@ -1418,7 +1418,7 @@ export default function LoginPage() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(auth)\register\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(auth)\register\page.tsx
 ==============================
 
 import { Link2, Sparkles, Check } from 'lucide-react';
@@ -1558,7 +1558,7 @@ export default function RegisterPage() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(auth)\reset-password\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(auth)\reset-password\page.tsx
 ==============================
 
 'use client';
@@ -1787,7 +1787,7 @@ export default function ResetPasswordPage() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(auth)\verify-email\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(auth)\verify-email\page.tsx
 ==============================
 
 import { verifyEmail } from '@/server/actions/auth/verify-email';
@@ -1865,7 +1865,7 @@ export default async function VerifyEmailPage({ searchParams }: Props) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\bio\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\bio\page.tsx
 ==============================
 
 import { redirect } from 'next/navigation';
@@ -1876,7 +1876,7 @@ export default function BioPage() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\bulk\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\bulk\page.tsx
 ==============================
 
 import { redirect } from 'next/navigation';
@@ -1887,7 +1887,7 @@ export default function BulkPage() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\layout.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\layout.tsx
 ==============================
 
 import { Header } from '@/components/layout/header';
@@ -1922,7 +1922,7 @@ export default async function DashboardLayout({ children }: DashboardLayoutProps
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\page.tsx
 ==============================
 
 'use client';
@@ -1957,14 +1957,35 @@ export default function DashboardPage() {
   const fetchUrls = useCallback(async () => {
     if (!session?.user?.id) return;
     const response = await getUserUrls(session.user.id);
+    console.log("response", response)
     if (response.success && response.data) setUserUrls(response.data);
     setLoading(false);
-  }, [session?.user?.id]);
+  }, [session]);
 
   useEffect(() => {
     if (status === 'unauthenticated') redirect('/login');
-    if (status === 'authenticated') fetchUrls();
-  }, [status, fetchUrls]);
+
+    let isMounted = true;
+    
+    const initFetch = async () => {
+      if (!session?.user?.id) return;
+      const response = await getUserUrls(session.user.id);
+      if (!isMounted) return;
+      
+      if (response.success && response.data) {
+        setUserUrls(response.data);
+      }
+      setLoading(false);
+    };
+
+    if (status === 'authenticated') {
+      initFetch();
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, [status, session]);
 
   const setTab = (tab: TabId) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -2095,7 +2116,7 @@ export default function DashboardPage() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\settings\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\settings\page.tsx
 ==============================
 
 import { auth } from '@/server/auth';
@@ -2133,7 +2154,7 @@ export default async function SettingsPage() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\stats\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(user)\dashboard\stats\page.tsx
 ==============================
 
 import { redirect } from 'next/navigation';
@@ -2148,7 +2169,7 @@ export default function StatsPage() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(user)\r\[shortCode]\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(user)\r\[shortCode]\page.tsx
 ==============================
 
 import { Button } from '@/components/ui/button';
@@ -2304,7 +2325,7 @@ export default async function RedirectPage(props: { params: Params }) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\(user)\stats\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\(user)\stats\page.tsx
 ==============================
 
 import { Metadata } from 'next';
@@ -2483,7 +2504,7 @@ export default async function PublicStatsPage() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\api\auth\[...nextauth]\route.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\api\auth\[...nextauth]\route.ts
 ==============================
 
 import { GET, POST } from '@/server/auth';
@@ -2491,7 +2512,7 @@ export { GET, POST };
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\api\cron\expire-urls\route.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\api\cron\expire-urls\route.ts
 ==============================
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -2518,8 +2539,8 @@ export async function GET(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
   const cronSecret = process.env.CRON_SECRET;
 
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
@@ -2555,20 +2576,22 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      deletedUrls: deleted.length,
-      prunedRateLimits,
-      aiScanCounterReset: true,
-      cutoff: sevenDaysAgo.toISOString(),
+      data: {
+        deletedUrls: deleted.length,
+        prunedRateLimits,
+        aiScanCounterReset: true,
+        cutoff: sevenDaysAgo.toISOString(),
+      }
     });
   } catch (error) {
     console.error('[cron] Error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ success: false, error: 'Internal server error' }, { status: 500 });
   }
 }
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\api\v1\shorten\route.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\api\v1\shorten\route.ts
 ==============================
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -2576,7 +2599,7 @@ import { validateApiKey } from '@/server/actions/api-keys/api-key-actions';
 import { db } from '@/server/db';
 import { urls } from '@/server/db/schema';
 import { checkUrlSafety } from '@/server/actions/urls/check-url-safety';
-import { rateLimit, ipFromHeaders } from '@/lib/rate-limit';
+import { rateLimit } from '@/lib/rate-limit';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 
@@ -2616,7 +2639,7 @@ export async function POST(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
   if (!authHeader?.startsWith('Bearer ')) {
     return withDeprecationHeaders(
-      NextResponse.json({ error: 'Unauthorized — provide Authorization: Bearer <api_key>' }, { status: 401 }),
+      NextResponse.json({ success: false, error: 'Unauthorized — provide Authorization: Bearer <api_key>' }, { status: 401 }),
     );
   }
 
@@ -2624,7 +2647,7 @@ export async function POST(request: NextRequest) {
   const userId = await validateApiKey(rawKey);
   if (!userId) {
     return withDeprecationHeaders(
-      NextResponse.json({ error: 'Invalid or revoked API key' }, { status: 401 }),
+      NextResponse.json({ success: false, error: 'Invalid or revoked API key' }, { status: 401 }),
     );
   }
 
@@ -2633,7 +2656,7 @@ export async function POST(request: NextRequest) {
   if (!rateLimitResult.allowed) {
     return withDeprecationHeaders(
       NextResponse.json(
-        { error: 'Rate limit exceeded', retryAfter: rateLimitResult.retryAfterSeconds },
+        { success: false, error: 'Rate limit exceeded', retryAfter: rateLimitResult.retryAfterSeconds },
         {
           status: 429,
           headers: {
@@ -2649,12 +2672,12 @@ export async function POST(request: NextRequest) {
   // ── Parse body ────────────────────────────────────────────────────────
   let body: unknown;
   try { body = await request.json(); }
-  catch { return withDeprecationHeaders(NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })); }
+  catch { return withDeprecationHeaders(NextResponse.json({ success: false, error: 'Invalid JSON body' }, { status: 400 })); }
 
   const parsed = requestSchema.safeParse(body);
   if (!parsed.success) {
     return withDeprecationHeaders(
-      NextResponse.json({ error: parsed.error.issues[0]?.message || 'Invalid request' }, { status: 422 }),
+      NextResponse.json({ success: false, error: parsed.error.issues[0]?.message || 'Invalid request' }, { status: 422 }),
     );
   }
 
@@ -2670,7 +2693,7 @@ export async function POST(request: NextRequest) {
     flagReason = safetyCheck.data.reason ?? null;
     if (safetyCheck.data.category === 'malicious' && safetyCheck.data.confidence > 0.7) {
       return withDeprecationHeaders(
-        NextResponse.json({ error: 'URL flagged as malicious and cannot be shortened' }, { status: 422 }),
+        NextResponse.json({ success: false, error: 'URL flagged as malicious and cannot be shortened' }, { status: 422 }),
       );
     }
   }
@@ -2683,7 +2706,7 @@ export async function POST(request: NextRequest) {
     });
     if (existing) {
       return withDeprecationHeaders(
-        NextResponse.json({ error: 'Custom code is already taken' }, { status: 409 }),
+        NextResponse.json({ success: false, error: 'Custom code is already taken' }, { status: 409 }),
       );
     }
   }
@@ -2705,10 +2728,13 @@ export async function POST(request: NextRequest) {
   return withDeprecationHeaders(
     NextResponse.json(
       {
-        shortUrl:  `${baseUrl}/r/${shortCode}`,
-        shortCode,
-        flagged,
-        ...(flagReason ? { flagReason } : {}),
+        success: true,
+        data: {
+          shortUrl:  `${baseUrl}/r/${shortCode}`,
+          shortCode,
+          flagged,
+          ...(flagReason ? { flagReason } : {}),
+        }
       },
       {
         headers: {
@@ -2723,30 +2749,33 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   return withDeprecationHeaders(
     NextResponse.json({
-      name:       'Shortify API v1 (deprecated)',
-      deprecated: true,
-      sunset:     SUNSET_DATE,
-      migrate:    `${APP_URL}/api/v2/shorten`,
-      endpoints: {
-        'POST /api/v1/shorten': {
-          description: 'Shorten a URL',
-          deprecated:  true,
-          auth:        'Authorization: Bearer <api_key>',
-          rateLimit:   '100 requests/hour per API key',
-          body: {
-            url:        'string (required)',
-            customCode: 'string (optional)',
-            expiresAt:  'string (optional) — ISO date e.g. 2025-12-31',
+      success: true,
+      data: {
+        name:       'Shortify API v1 (deprecated)',
+        deprecated: true,
+        sunset:     SUNSET_DATE,
+        migrate:    `${APP_URL}/api/v2/shorten`,
+        endpoints: {
+          'POST /api/v1/shorten': {
+            description: 'Shorten a URL',
+            deprecated:  true,
+            auth:        'Authorization: Bearer <api_key>',
+            rateLimit:   '100 requests/hour per API key',
+            body: {
+              url:        'string (required)',
+              customCode: 'string (optional)',
+              expiresAt:  'string (optional) — ISO date e.g. 2025-12-31',
+            },
           },
         },
-      },
+      }
     }),
   );
 }
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\bio\[handle]\not-found.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\bio\[handle]\not-found.tsx
 ==============================
 
 import Link from 'next/link';
@@ -2776,7 +2805,7 @@ export default function BioNotFound() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\bio\[handle]\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\bio\[handle]\page.tsx
 ==============================
 
 import { getBioPageByHandle } from '@/server/actions/bio/bio-actions';
@@ -2875,7 +2904,7 @@ export default async function BioPage({ params }: { params: Params }) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\globals.css
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\globals.css
 ==============================
 
 @import "tailwindcss";
@@ -2998,7 +3027,7 @@ FILE: e:\My Projects\URL-Shortner-NextJS\src\app\globals.css
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\layout.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\layout.tsx
 ==============================
 
 import type { Metadata } from 'next';
@@ -3040,7 +3069,7 @@ export default function RootLayout({
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\page.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\page.tsx
 ==============================
 
 import { auth } from '@/server/auth';
@@ -3055,6 +3084,9 @@ import {
   Sparkles,
   Zap,
 } from 'lucide-react';
+import { db } from '@/server/db';
+import { urls } from '@/server/db/schema';
+import { sql } from 'drizzle-orm';
 
 const features = [
   {
@@ -3086,15 +3118,22 @@ const features = [
   },
 ];
 
-const stats = [
-  { label: 'Links Shortened', value: '1M+' },
-  { label: 'Clicks Tracked', value: '50M+' },
-  { label: 'Uptime', value: '99.9%' },
-];
+
 
 export default async function Home() {
   const session = await auth();
   if (session?.user) redirect('/dashboard');
+
+  const [{ totalUrls }] = await db.select({ totalUrls: sql<number>`count(*)::int` }).from(urls);
+  const [{ totalClicks }] = await db.select({ totalClicks: sql<number>`coalesce(sum(${urls.clicks}), 0)::int` }).from(urls);
+
+  const formatNumber = (n: number) => n >= 1000000 ? `${(n/1000000).toFixed(1)}M+` : n >= 1000 ? `${(n/1000).toFixed(1)}k+` : n.toString();
+
+  const stats = [
+    { label: 'Links Shortened', value: formatNumber(totalUrls) },
+    { label: 'Clicks Tracked', value: formatNumber(totalClicks) },
+    { label: 'Uptime', value: '99.9%' },
+  ];
 
   return (
     <div className='relative overflow-hidden'>
@@ -3237,39 +3276,25 @@ export default async function Home() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\robots.txt\route.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\robots.ts
 ==============================
 
-import { NextResponse } from 'next/server';
+import { MetadataRoute } from 'next';
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://yourdomain.com';
-
-export function GET() {
-  const content = `User-agent: *
-Allow: /
-Allow: /stats
-Allow: /bio/
-
-# Block admin and private routes
-Disallow: /admin/
-Disallow: /dashboard/
-Disallow: /api/
-Disallow: /r/
-
-Sitemap: ${APP_URL}/sitemap.xml
-`;
-
-  return new NextResponse(content, {
-    headers: {
-      'Content-Type': 'text/plain',
-      'Cache-Control': 'public, max-age=86400', // 24h cache
+export default function robots(): MetadataRoute.Robots {
+  return {
+    rules: {
+      userAgent: '*',
+      allow: '/',
+      disallow: ['/api/', '/dashboard/', '/admin/'],
     },
-  });
+    sitemap: `${process.env.NEXT_PUBLIC_APP_URL || 'https://yourdomain.com'}/sitemap.xml`,
+  };
 }
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\app\sitemap.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\app\sitemap.ts
 ==============================
 
 import { MetadataRoute } from 'next';
@@ -3330,7 +3355,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\admin-activity-chart.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\admin\admin-activity-chart.tsx
 ==============================
 
 'use client';
@@ -3420,7 +3445,7 @@ export function AdminActivityChart({ urlsPerDay, usersPerDay }: Props) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\admin-sidebar.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\admin\admin-sidebar.tsx
 ==============================
 
 'use client';
@@ -3469,7 +3494,7 @@ export function AdminSidebar() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\nav-items.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\admin\nav-items.tsx
 ==============================
 
 import {
@@ -3501,7 +3526,7 @@ export const getNavItems = (): NavItem[] => [
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\seed-database-button.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\admin\seed-database-button.tsx
 ==============================
 
 'use client';
@@ -3534,7 +3559,7 @@ export function SeedDatabaseButton() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\urls\url-filter.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\admin\urls\url-filter.tsx
 ==============================
 
 'use client';
@@ -3562,7 +3587,7 @@ export function UrlFilter({ initialFilter }: UrlFilterProps) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\urls\url-search.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\admin\urls\url-search.tsx
 ==============================
 
 'use client';
@@ -3597,7 +3622,7 @@ export function UrlSearch({ initialSearch }: UrlSearchProps) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\urls\urls-table.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\admin\urls\urls-table.tsx
 ==============================
 
 'use client';
@@ -3928,7 +3953,7 @@ export function UrlsTable({ urls, total, currentPage, currentSearch, currentSort
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\users\user-search.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\admin\users\user-search.tsx
 ==============================
 
 'use client';
@@ -3963,7 +3988,7 @@ export function UserSearch({ initialSearch }: UserSearchProps) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\admin\users\users-table.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\admin\users\users-table.tsx
 ==============================
 
 "use client";
@@ -4029,7 +4054,7 @@ export function UsersTable({ users, total, currentPage, currentSearch, currentSo
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\auth\login-form.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\auth\login-form.tsx
 ==============================
 
 'use client';
@@ -4307,7 +4332,7 @@ export function LoginForm() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\auth\register-form.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\auth\register-form.tsx
 ==============================
 
 'use client';
@@ -4395,7 +4420,7 @@ export function RegisterForm() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\auth\verification-banner.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\auth\verification-banner.tsx
 ==============================
 
 'use client';
@@ -4468,7 +4493,7 @@ export function VerificationBanner() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\dashboard\analytics-tab.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\dashboard\analytics-tab.tsx
 ==============================
 
 'use client';
@@ -4545,7 +4570,7 @@ export function AnalyticsTab({ urls }: AnalyticsTabProps) {
   useEffect(() => {
     if (!session?.user?.id || urls.length === 0) return;
     setLoadingAnalytics(true);
-    getClickAnalytics(session.user.id)
+    getClickAnalytics()
       .then((res) => { if (res.success && res.data) setClickAnalytics(res.data); })
       .finally(() => setLoadingAnalytics(false));
   }, [session?.user?.id, urls.length]);
@@ -4554,16 +4579,16 @@ export function AnalyticsTab({ urls }: AnalyticsTabProps) {
     setExportingType(type);
     try {
       const result = await exportAnalytics(type);
-      if (!result.success || !result.csv) {
+      if (!result.success || !result.data) {
         toast.error('Export failed', { description: result.error });
         return;
       }
       // Trigger browser download
-      const blob = new Blob([result.csv], { type: 'text/csv;charset=utf-8;' });
+      const blob = new Blob([result.data.csv], { type: 'text/csv;charset=utf-8;' });
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
       a.href     = url;
-      a.download = result.filename ?? 'export.csv';
+      a.download = result.data.filename ?? 'export.csv';
       a.click();
       URL.revokeObjectURL(url);
       toast.success('Export downloaded');
@@ -4973,7 +4998,7 @@ export function AnalyticsTab({ urls }: AnalyticsTabProps) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\dashboard\api-keys-tab.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\dashboard\api-keys-tab.tsx
 ==============================
 
 'use client';
@@ -5355,7 +5380,7 @@ export function ApiKeysTab() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\dashboard\bulk-shorten-tab.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\dashboard\bulk-shorten-tab.tsx
 ==============================
 
 'use client';
@@ -5650,7 +5675,7 @@ export function BulkShortenTab({ onSuccess }: BulkShortenTabProps) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\dashboard\dashboard-tabs.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\dashboard\dashboard-tabs.tsx
 ==============================
 
 'use client';
@@ -5708,7 +5733,7 @@ export function DashboardTabs({ activeTab, onTabChange, linkCount }: DashboardTa
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\dashboard\link-analytics-drawer.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\dashboard\link-analytics-drawer.tsx
 ==============================
 
 'use client';
@@ -5973,7 +5998,7 @@ export function LinkAnalyticsDrawer({ urlId, shortCode, onClose }: LinkAnalytics
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\dashboard\link-in-bio-tab.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\dashboard\link-in-bio-tab.tsx
 ==============================
 
 'use client';
@@ -6380,7 +6405,7 @@ export function LinkInBioTab() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\dialogs\signup-suggestion-dialog.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\dialogs\signup-suggestion-dialog.tsx
 ==============================
 
 import { useRouter } from 'next/navigation';
@@ -6416,7 +6441,7 @@ export function SignupSuggestionDialog({ isOpen, onOpenChange, shortUrl }: Signu
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\error-boundary.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\error-boundary.tsx
 ==============================
 
 'use client';
@@ -6499,7 +6524,7 @@ export function WithErrorBoundary({
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\layout\header.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\layout\header.tsx
 ==============================
 
 'use client';
@@ -6749,7 +6774,7 @@ export function Header() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\layout\mode-toggle.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\layout\mode-toggle.tsx
 ==============================
 
 'use client';
@@ -6783,7 +6808,7 @@ export function ModeToggle() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\modals\edit-url-modal.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\modals\edit-url-modal.tsx
 ==============================
 
 import { updateUrl } from '@/server/actions/urls/update-url';
@@ -6847,7 +6872,7 @@ export function EditUrlModal({ isOpen, onOpenChange, urlId, currentShortCode, on
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\modals\password-form.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\modals\password-form.tsx
 ==============================
 
 'use client';
@@ -6940,7 +6965,7 @@ export function PasswordForm({ shortCode }: PasswordFormProps) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\modals\qr-code-modal.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\modals\qr-code-modal.tsx
 ==============================
 
 'use client';
@@ -7052,7 +7077,7 @@ export function QRCodeModal({
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\providers\auth-provider.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\providers\auth-provider.tsx
 ==============================
 
 "use client";
@@ -7064,7 +7089,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\providers\theme-provider.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\providers\theme-provider.tsx
 ==============================
 
 import { ThemeProvider as NextThemesProvider } from 'next-themes';
@@ -7079,7 +7104,7 @@ export function ThemeProvider({ children, ...props }: ThemeProviderProps) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\providers\toast-provider.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\providers\toast-provider.tsx
 ==============================
 
 "use client";
@@ -7088,7 +7113,7 @@ export function ToastProvider() { return <Toaster position="top-right" />; }
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\skeletons\analytics-skeleton.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\skeletons\analytics-skeleton.tsx
 ==============================
 
 import { cn } from '@/lib/utils';
@@ -7166,7 +7191,7 @@ export function AnalyticsSkeleton() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\skeletons\dashboard-skeleton.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\skeletons\dashboard-skeleton.tsx
 ==============================
 
 import { cn } from '@/lib/utils';
@@ -7249,7 +7274,7 @@ export function TableSkeleton({ rows = 5 }: { rows?: number }) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\urls\url-shortener-form.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\urls\url-shortener-form.tsx
 ==============================
 
 'use client';
@@ -7688,7 +7713,7 @@ export function UrlShortenerForm({ onSuccess }: UrlShortenerFormProps) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\components\urls\user-urls-table.tsx
+FILE: E:\My Projects\URL-Shortner-NextJS\src\components\urls\user-urls-table.tsx
 ==============================
 
 'use client';
@@ -7727,7 +7752,7 @@ type UrlStatus = 'active' | 'flagged' | 'expired' | 'protected';
 function getUrlStatus(url: UserUrl): UrlStatus {
   if (url.flagged) return 'flagged';
   if (url.expiresAt && isPast(new Date(url.expiresAt))) return 'expired';
-  if (url.passwordHash) return 'protected';
+  if (url.passwordProtected) return 'protected';
   return 'active';
 }
 
@@ -7795,7 +7820,7 @@ function PasswordToggleModal({
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const isProtected = !!url.passwordHash;
+  const isProtected = !!url.passwordProtected;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -8027,7 +8052,7 @@ export function UserUrlsTable({ urls, onRefresh }: UserUrlsTableProps) {
   const handlePasswordToggleSuccess = (urlId: number, passwordProtected: boolean) => {
     setLocalUrls((prev) =>
       prev.map((u) => u.id === urlId
-        ? { ...u, passwordHash: passwordProtected ? 'set' : null }
+        ? { ...u, passwordProtected }
         : u,
       ),
     );
@@ -8170,13 +8195,13 @@ export function UserUrlsTable({ urls, onRefresh }: UserUrlsTableProps) {
                     {/* Password toggle */}
                     <Button
                       variant='ghost' size='icon'
-                      className={cn('size-7', url.passwordHash
+                      className={cn('size-7', url.passwordProtected
                         ? 'text-violet-600 dark:text-violet-400 hover:text-red-500'
                         : 'text-muted-foreground hover:text-violet-600 dark:hover:text-violet-400')}
                       onClick={() => setPasswordToggleUrl(url)}
-                      title={url.passwordHash ? 'Remove password protection' : 'Add password protection'}
+                      title={url.passwordProtected ? 'Remove password protection' : 'Add password protection'}
                     >
-                      {url.passwordHash ? <Lock className='size-3.5' /> : <LockOpen className='size-3.5' />}
+                      {url.passwordProtected ? <Lock className='size-3.5' /> : <LockOpen className='size-3.5' />}
                     </Button>
                     <Button variant='ghost' size='icon' className='size-7 text-muted-foreground hover:text-destructive'
                       onClick={() => handleDelete(url.id)} disabled={isDeleting === url.id}>
@@ -8229,9 +8254,9 @@ export function UserUrlsTable({ urls, onRefresh }: UserUrlsTableProps) {
                 <Edit className='size-3.5' />
               </Button>
               <Button variant='outline' size='icon'
-                className={cn('size-8', url.passwordHash && 'text-violet-600 dark:text-violet-400 border-violet-200 dark:border-violet-800')}
+                className={cn('size-8', url.passwordProtected && 'text-violet-600 dark:text-violet-400 border-violet-200 dark:border-violet-800')}
                 onClick={() => setPasswordToggleUrl(url)}>
-                {url.passwordHash ? <Lock className='size-3.5' /> : <LockOpen className='size-3.5' />}
+                {url.passwordProtected ? <Lock className='size-3.5' /> : <LockOpen className='size-3.5' />}
               </Button>
               <Button variant='outline' size='icon' className='size-8 text-destructive border-destructive/20 hover:bg-destructive/10'
                 onClick={() => handleDelete(url.id)} disabled={isDeleting === url.id}>
@@ -8284,7 +8309,7 @@ export function UserUrlsTable({ urls, onRefresh }: UserUrlsTableProps) {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\hooks\use-mobile.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\hooks\use-mobile.ts
 ==============================
 
 import * as React from "react"
@@ -8303,17 +8328,14 @@ export function useIsMobile() {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\lib\const.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\lib\const.ts
 ==============================
 
-export const BASEURL =
-  typeof window !== 'undefined'
-    ? window.location.origin
-    : process.env.NEXT_PUBLIC_APP_URL;
+export const BASEURL = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\lib\email.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\lib\email.ts
 ==============================
 
 import { Resend } from 'resend';
@@ -8456,7 +8478,7 @@ export async function sendPasswordResetEmail(
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\lib\rate-limit.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\lib\rate-limit.ts
 ==============================
 
 import { db } from '@/server/db';
@@ -8535,7 +8557,7 @@ export function ipFromHeaders(headers: Headers): string {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\lib\types.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\lib\types.ts
 ==============================
 
 import { z } from 'zod';
@@ -8547,11 +8569,11 @@ export const urlFormSchema = z.object({
 });
 export type UrlFormData = z.infer<typeof urlFormSchema>;
 export type ApiResponse<T> = { success: boolean; data?: T; error?: string; };
-export type Url = { id: number; originalUrl: string; shortCode: string; createdAt: string; updatedAt: string; clicks: number; };
+export type Url = { id: number; originalUrl: string; shortCode: string; createdAt: Date; updatedAt: Date; clicks: number; };
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\lib\user-agent.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\lib\user-agent.ts
 ==============================
 
 /**
@@ -8571,7 +8593,7 @@ export function parseUserAgent(ua: string | null): {
 } {
   if (!ua) return { device: 'desktop', browser: 'Other' };
 
-  const s = ua.toLowerCase();
+
 
   // ── Device ──────────────────────────────────────────────────────────
   let device: DeviceType = 'desktop';
@@ -8606,7 +8628,7 @@ export function parseUserAgent(ua: string | null): {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\lib\utils.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\lib\utils.ts
 ==============================
 
 import { clsx, type ClassValue } from 'clsx';
@@ -8620,10 +8642,11 @@ export function isValidUrl(url: string): boolean {
   try {
     const urlObj = new URL(url);
     return urlObj.protocol === 'http:' || urlObj.protocol === 'https:';
-  } catch (error) {
+  } catch {
     return false;
   }
 }
+
 
 // FIX 5: original checked `!url.startsWith('https://')` twice — first branch
 // should catch anything that isn't already http/https, second should upgrade http → https
@@ -8632,16 +8655,29 @@ export function ensureHttps(url: string): string {
     return `https://${url}`;
   }
 
-  if (url.startsWith('http://')) {
-    return url.replace('http://', 'https://');
-  }
-
   return url;
+}
+
+export function parseReferrer(referer: string | null): string | null {
+  if (!referer) return null;
+  try { return new URL(referer).hostname || null; }
+  catch { return null; }
 }
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\audit-log.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\proxy.ts
+==============================
+
+export { auth as proxy } from "@/server/auth";
+
+export const config = {
+  matcher: ["/dashboard/:path*", "/admin/:path*"],
+};
+
+
+==============================
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\audit-log.ts
 ==============================
 
 'use server';
@@ -8759,7 +8795,7 @@ export async function getAuditLogs(params: {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\get-admin-stats.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\get-admin-stats.ts
 ==============================
 
 'use server';
@@ -8859,7 +8895,7 @@ export async function getAdminStats(): Promise<{
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\get-health-stats.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\get-health-stats.ts
 ==============================
 
 'use server';
@@ -8984,7 +9020,7 @@ export async function getHealthStats(): Promise<{
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\seed-database.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\seed-database.ts
 ==============================
 
 'use server';
@@ -9012,7 +9048,7 @@ export async function seedDatabase(): Promise<ApiResponse<null>> {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\urls\bulk-manage-flagged-urls.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\urls\bulk-manage-flagged-urls.ts
 ==============================
 
 'use server';
@@ -9065,7 +9101,7 @@ export async function bulkManageFlaggedUrls(
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\urls\get-all-urls.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\urls\get-all-urls.ts
 ==============================
 
 "use server";
@@ -9260,7 +9296,7 @@ export async function getAllUrls(
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\urls\manage-flagged-url.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\urls\manage-flagged-url.ts
 ==============================
 
 'use server';
@@ -9321,7 +9357,7 @@ export async function manageFlaggedUrl(
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\users\get-all-users.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\users\get-all-users.ts
 ==============================
 
 "use server";
@@ -9436,7 +9472,7 @@ export async function getAllUsers(
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\users\update-user-role.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\admin\users\update-user-role.ts
 ==============================
 
 'use server';
@@ -9493,7 +9529,7 @@ export async function updateUserRole(
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\api-keys\api-key-actions.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\api-keys\api-key-actions.ts
 ==============================
 
 'use server';
@@ -9668,7 +9704,7 @@ export async function validateApiKey(rawKey: string): Promise<string | null> {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\auth\forgot-password.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\auth\forgot-password.ts
 ==============================
 
 'use server';
@@ -9742,7 +9778,7 @@ export async function forgotPassword(email: string): Promise<{
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\auth\register.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\auth\register.ts
 ==============================
 
 "use server";
@@ -9816,14 +9852,14 @@ export async function registerUser(
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\auth\reset-password.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\auth\reset-password.ts
 ==============================
 
 'use server';
 
 import { db } from '@/server/db';
 import { passwordResetTokens, users } from '@/server/db/schema';
-import { eq, isNull } from 'drizzle-orm';
+import { eq, isNull, and } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 
@@ -9884,12 +9920,9 @@ export async function resetPassword(
   }
 }
 
-// Need this import at the top — adding here so the file is self-contained
-import { and } from 'drizzle-orm';
-
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\auth\send-verification.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\auth\send-verification.ts
 ==============================
 
 'use server';
@@ -9949,7 +9982,7 @@ export async function sendVerification(): Promise<{
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\auth\verify-email.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\auth\verify-email.ts
 ==============================
 
 'use server';
@@ -10009,7 +10042,7 @@ export async function verifyEmail(token: string): Promise<VerifyEmailResult> {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\bio\bio-actions.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\bio\bio-actions.ts
 ==============================
 
 'use server';
@@ -10161,7 +10194,7 @@ export async function checkHandleAvailability(handle: string): Promise<{ availab
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\bio\get-bio-analytics.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\bio\get-bio-analytics.ts
 ==============================
 
 'use server';
@@ -10244,7 +10277,7 @@ export async function getBioAnalytics(): Promise<{
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\bio\record-bio-view.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\bio\record-bio-view.ts
 ==============================
 
 'use server';
@@ -10286,7 +10319,7 @@ export async function recordBioView(handle: string): Promise<void> {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\bulk-delete-urls.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\bulk-delete-urls.ts
 ==============================
 
 'use server';
@@ -10337,7 +10370,7 @@ export async function bulkDeleteUrls(
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\check-url-safety.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\check-url-safety.ts
 ==============================
 
 "use server";
@@ -10433,7 +10466,7 @@ Respond ONLY with JSON: {"isSafe": boolean, "flagged": boolean, "reason": string
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\delete-url.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\delete-url.ts
 ==============================
 
 "use server";
@@ -10453,16 +10486,15 @@ export async function deleteUrl(urlId: number): Promise<ApiResponse<null>> {
     if (!url) return { success: false, error: "URL not found" };
     if (url.userId && url.userId !== session.user.id) return { success: false, error: "Unauthorized" };
 
-    await db.delete(urls).where(eq(urls.id, urlId));
+    await db.update(urls).set({ deletedAt: new Date(), updatedAt: new Date() }).where(eq(urls.id, urlId));
 
-    // Audit log
     writeAuditLog({
       actorId:    session.user.id,
       action:     'USER_URL_DELETED',
       targetType: 'url',
       targetId:   String(urlId),
       metadata:   { shortCode: url.shortCode, originalUrl: url.originalUrl },
-    });
+    }).catch(() => {});
 
     return { success: true, data: null };
   } catch (error) {
@@ -10473,7 +10505,7 @@ export async function deleteUrl(urlId: number): Promise<ApiResponse<null>> {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\export-analytics.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\export-analytics.ts
 ==============================
 
 'use server';
@@ -10481,7 +10513,7 @@ FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\export-analytic
 import { auth } from '@/server/auth';
 import { db } from '@/server/db';
 import { clickEvents, urls } from '@/server/db/schema';
-import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, sql, inArray } from 'drizzle-orm';
 import { subDays, format } from 'date-fns';
 
 type ExportType = 'summary' | 'per-link' | 'raw';
@@ -10503,8 +10535,10 @@ function buildCsv(headers: string[], rows: (string | number | null)[][]): string
 
 export async function exportAnalytics(type: ExportType): Promise<{
   success: boolean;
-  csv?: string;
-  filename?: string;
+  data?: {
+    csv: string;
+    filename: string;
+  };
   error?: string;
 }> {
   try {
@@ -10544,7 +10578,7 @@ export async function exportAnalytics(type: ExportType): Promise<{
         ]),
       );
 
-      return { success: true, csv, filename: `shortify-links-summary-${dateStr}.csv` };
+      return { success: true, data: { csv, filename: `shortify-links-summary-${dateStr}.csv` } };
     }
 
     // ── 2. Per-link detail ─────────────────────────────────────────────
@@ -10556,11 +10590,11 @@ export async function exportAnalytics(type: ExportType): Promise<{
         .orderBy(desc(urls.clicks));
 
       if (userUrls.length === 0) {
-        return { success: true, csv: 'Short Code,Original URL,Total Clicks,Clicks Last 30 Days', filename: `shortify-per-link-${dateStr}.csv` };
+        return { success: true, data: { csv: 'Short Code,Original URL,Total Clicks,Clicks Last 30 Days', filename: `shortify-per-link-${dateStr}.csv` } };
       }
 
       const urlIds   = userUrls.map((u) => u.id);
-      const inUrlIds = sql`${clickEvents.urlId} = ANY(ARRAY[${sql.join(urlIds.map((id) => sql`${id}`), sql`, `)}])`;
+      const inUrlIds = inArray(clickEvents.urlId, urlIds);
 
       // Clicks per URL in last 30 days
       const recentCounts = await db
@@ -10581,27 +10615,29 @@ export async function exportAnalytics(type: ExportType): Promise<{
         ]),
       );
 
-      return { success: true, csv, filename: `shortify-per-link-${dateStr}.csv` };
+      return { success: true, data: { csv, filename: `shortify-per-link-${dateStr}.csv` } };
     }
 
     // ── 3. Raw click events ────────────────────────────────────────────
     if (type === 'raw') {
       const userUrls = await db.query.urls.findMany({
-        where: (urls, { eq }) => eq(urls.userId, userId),
+        where: (urls, { eq, and, isNull }) => and(eq(urls.userId, userId), isNull(urls.deletedAt)),
         columns: { id: true, shortCode: true },
       });
 
       if (userUrls.length === 0) {
         return {
           success: true,
-          csv: 'Short Code,Clicked At,Country,Referrer,Device,Browser',
-          filename: `shortify-click-events-${dateStr}.csv`,
+          data: {
+            csv: 'Short Code,Clicked At,Country,Referrer,Device,Browser',
+            filename: `shortify-click-events-${dateStr}.csv`,
+          }
         };
       }
 
       const urlIds   = userUrls.map((u) => u.id);
       const shortMap = new Map(userUrls.map((u) => [u.id, u.shortCode]));
-      const inUrlIds = sql`${clickEvents.urlId} = ANY(ARRAY[${sql.join(urlIds.map((id) => sql`${id}`), sql`, `)}])`;
+      const inUrlIds = inArray(clickEvents.urlId, urlIds);
 
       // Last 30 days raw events — cap at 10k rows for safety
       const events = await db
@@ -10630,7 +10666,7 @@ export async function exportAnalytics(type: ExportType): Promise<{
         ]),
       );
 
-      return { success: true, csv, filename: `shortify-click-events-${dateStr}.csv` };
+      return { success: true, data: { csv, filename: `shortify-click-events-${dateStr}.csv` } };
     }
 
     return { success: false, error: 'Invalid export type' };
@@ -10642,15 +10678,15 @@ export async function exportAnalytics(type: ExportType): Promise<{
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\get-click-analytics.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\get-click-analytics.ts
 ==============================
 
 'use server';
 
 import { auth } from '@/server/auth';
 import { db } from '@/server/db';
-import { clickEvents, urls } from '@/server/db/schema';
-import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { clickEvents } from '@/server/db/schema';
+import { and, desc, gte, sql, inArray } from 'drizzle-orm';
 import { subDays } from 'date-fns';
 
 export type CountryClickData  = { country:  string; clicks: number };
@@ -10667,14 +10703,13 @@ export type ClickAnalytics = {
   byBrowser:  BrowserData[];
 };
 
-export async function getClickAnalytics(
-  userId: string,
-): Promise<{ success: boolean; data?: ClickAnalytics; error?: string }> {
+export async function getClickAnalytics(): Promise<{ success: boolean; data?: ClickAnalytics; error?: string }> {
   try {
     const session = await auth();
-    if (!session?.user || session.user.id !== userId) {
+    if (!session?.user?.id) {
       return { success: false, error: 'Unauthorized' };
     }
+    const userId = session.user.id;
 
     const userUrls = await db.query.urls.findMany({
       where: (urls, { eq }) => eq(urls.userId, userId),
@@ -10691,7 +10726,7 @@ export async function getClickAnalytics(
     const urlIds        = userUrls.map((u) => u.id);
     const thirtyDaysAgo = subDays(new Date(), 30);
 
-    const inUrlIds = sql`${clickEvents.urlId} = ANY(ARRAY[${sql.join(urlIds.map((id) => sql`${id}`), sql`, `)}])`;
+    const inUrlIds = inArray(clickEvents.urlId, urlIds);
 
     const [countryRows, timeRows, referrerRows, deviceRows, browserRows] = await Promise.all([
       // Countries (top 10)
@@ -10759,7 +10794,7 @@ export async function getClickAnalytics(
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\get-link-analytics.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\get-link-analytics.ts
 ==============================
 
 'use server';
@@ -10865,13 +10900,14 @@ export async function getLinkAnalytics(urlId: number): Promise<{
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\get-url.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\get-url.ts
 ==============================
 
 'use server';
 
 import { ApiResponse } from '@/lib/types';
 import { db, eq } from '@/server/db';
+import { sql } from 'drizzle-orm';
 import { urls, clickEvents } from '@/server/db/schema';
 import { headers } from 'next/headers';
 import { parseUserAgent } from '@/lib/user-agent';
@@ -10893,7 +10929,7 @@ async function recordClick(urlId: number, currentClicks: number, shortCode: stri
 
   await db
     .update(urls)
-    .set({ clicks: currentClicks + 1, updatedAt: new Date() })
+    .set({ clicks: sql`${urls.clicks} + 1`, updatedAt: new Date() })
     .where(eq(urls.shortCode, shortCode));
 
   db.insert(clickEvents)
@@ -10993,7 +11029,7 @@ export async function getUrlByShortCode(shortCode: string): Promise<
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\get-user-urls.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\get-user-urls.ts
 ==============================
 
 'use server';
@@ -11012,7 +11048,7 @@ export type UserUrl = {
   clicks: number;
   flagged: boolean;
   expiresAt: Date | null;
-  passwordHash: string | null;
+  passwordProtected: boolean;
 };
 
 export async function getUserUrls(
@@ -11047,9 +11083,14 @@ export async function getUserUrls(
     return {
       success: true,
       data: rows.map((row) => ({
-        ...row,
+        id:           row.id,
+        originalUrl:  row.originalUrl,
+        shortCode:    row.shortCode,
+        createdAt:    row.createdAt,
+        clicks:       row.clicks,
+        flagged:      row.flagged,
         expiresAt:    row.expiresAt    ?? null,
-        passwordHash: row.passwordHash ?? null,
+        passwordProtected: !!row.passwordHash,
       })),
     };
   } catch (error) {
@@ -11060,7 +11101,7 @@ export async function getUserUrls(
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\shorten-url.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\shorten-url.ts
 ==============================
 
 'use server';
@@ -11173,20 +11214,28 @@ export async function shortenUrl(
       passwordHash = await bcrypt.hash(validatedFields.data.password, 10);
     }
 
-    const shortCode = validatedFields.data.customCode || nanoid(6);
-
-    const existingUrl = await db.query.urls.findFirst({
-      where: (urls, { eq }) => eq(urls.shortCode, shortCode),
-    });
-
-    if (existingUrl) {
-      if (validatedFields.data.customCode) return { success: false, error: 'Custom code already exists' };
-      return shortenUrl(formData);
+    let shortCode = validatedFields.data.customCode;
+    if (shortCode) {
+      const existingUrl = await db.query.urls.findFirst({
+        where: (urls, { eq }) => eq(urls.shortCode, shortCode as string),
+      });
+      if (existingUrl) return { success: false, error: 'Custom code already exists' };
+    } else {
+      let attempts = 0;
+      while (attempts < 5) {
+        shortCode = nanoid(6);
+        const existingUrl = await db.query.urls.findFirst({
+          where: (urls, { eq }) => eq(urls.shortCode, shortCode as string),
+        });
+        if (!existingUrl) break;
+        attempts++;
+      }
+      if (attempts === 5) return { success: false, error: 'Failed to generate a unique short code. Please try again.' };
     }
 
     const [inserted] = await db.insert(urls).values({
       originalUrl,
-      shortCode,
+      shortCode: shortCode as string,
       createdAt:    new Date(),
       updatedAt:    new Date(),
       userId:       userId || null,
@@ -11198,7 +11247,7 @@ export async function shortenUrl(
 
     // ── Audit log (authenticated users only) ────────────────────────────
     if (userId) {
-      writeAuditLog({
+      await writeAuditLog({
         actorId:    userId,
         action:     'USER_URL_CREATED',
         targetType: 'url',
@@ -11234,7 +11283,7 @@ export async function shortenUrl(
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\toggle-url-password.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\toggle-url-password.ts
 ==============================
 
 'use server';
@@ -11293,7 +11342,7 @@ export async function toggleUrlPassword(
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\update-url.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\update-url.ts
 ==============================
 
 'use server';
@@ -11358,7 +11407,7 @@ export async function updateUrl(formData: FormData): Promise<ApiResponse<{ short
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\verify-url-password.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\actions\urls\verify-url-password.ts
 ==============================
 
 'use server';
@@ -11370,18 +11419,19 @@ import bcrypt from 'bcryptjs';
 import { headers } from 'next/headers';
 import { cookies } from 'next/headers';
 import { parseUserAgent } from '@/lib/user-agent';
-
-function parseReferrer(referer: string | null): string | null {
-  if (!referer) return null;
-  try { return new URL(referer).hostname || null; }
-  catch { return null; }
-}
+import { sql } from 'drizzle-orm';
+import { rateLimit } from '@/lib/rate-limit';
+import { parseReferrer } from '@/lib/utils';
 
 export async function verifyUrlPassword(
   shortCode: string,
   attempt: string,
 ): Promise<ApiResponse<{ originalUrl: string; flagged: boolean; flagReason: string | null }>> {
   try {
+    const rateLimitResult = await rateLimit(`url-pwd:${shortCode}`, 10, 15 * 60 * 1000);
+    if (!rateLimitResult.allowed) {
+      return { success: false, error: 'Too many attempts. Please try again later.' };
+    }
     const url = await db.query.urls.findFirst({
       where: (urls, { eq }) => eq(urls.shortCode, shortCode),
     });
@@ -11404,7 +11454,7 @@ export async function verifyUrlPassword(
     // Increment click count
     await db
       .update(urls)
-      .set({ clicks: url.clicks + 1, updatedAt: new Date() })
+      .set({ clicks: sql`${urls.clicks} + 1`, updatedAt: new Date() })
       .where(eq(urls.shortCode, shortCode));
 
     // Record click event with device + browser
@@ -11442,7 +11492,7 @@ export async function verifyUrlPassword(
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\auth.config.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\auth.config.ts
 ==============================
 
 import { DefaultSession, NextAuthConfig } from 'next-auth';
@@ -11469,6 +11519,7 @@ declare module 'next-auth' {
     } & DefaultSession['user'];
   }
 }
+
 declare module 'next-auth' {
   interface JWT {
     id?: string;
@@ -11708,7 +11759,7 @@ export const authConfig: NextAuthConfig = {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\auth.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\auth.ts
 ==============================
 
 import NextAuth from 'next-auth';
@@ -11722,237 +11773,27 @@ export const {
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\db\custom-drizzle-adapter.ts
-==============================
-
-import { DrizzleAdapter } from '@auth/drizzle-adapter';
-import type { Adapter, AdapterSession, AdapterUser } from 'next-auth/adapters';
-import { db } from './index';
-import { users, accounts, sessions, verificationTokens } from './schema';
-import { eq, and } from 'drizzle-orm';
-import type { InferSelectModel, InferInsertModel } from 'drizzle-orm';
-import { nanoid } from 'nanoid';
-
-export type User              = InferSelectModel<typeof users>;
-export type NewUser           = InferInsertModel<typeof users>;
-export type Account           = InferSelectModel<typeof accounts>;
-export type NewAccount        = InferInsertModel<typeof accounts>;
-export type Session           = InferSelectModel<typeof sessions>;
-export type NewSession        = InferInsertModel<typeof sessions>;
-export type VerificationToken = InferSelectModel<typeof verificationTokens>;
-
-export function CustomDrizzleAdapter(): Adapter {
-  const base = DrizzleAdapter(db);
-
-  return {
-    ...base,
-
-    // ------------------------------------------------------------------
-    // getUserByEmail
-    // Always lower-case so OAuth emails (which Google sends lower-cased)
-    // match credentials-registered emails.
-    // ------------------------------------------------------------------
-    async getUserByEmail(email: string): Promise<AdapterUser | null> {
-      const [user] = await db
-        .select()
-        .from(users)
-        .where(eq(users.email, email.toLowerCase()));
-      return user ?? null;
-    },
-
-    // ------------------------------------------------------------------
-    // getUserByAccount  ← THE KEY FIX
-    //
-    // NextAuth calls this first on every OAuth sign-in.
-    // If it returns a user, NextAuth uses that user and SKIPS createUser.
-    // If it returns null, NextAuth calls createUser → linkAccount.
-    //
-    // The original join-based implementation was fragile. We now do two
-    // simple queries:
-    //   1. Find the accounts row (provider + providerAccountId).
-    //   2. Use its userId to fetch the users row directly.
-    //
-    // This guarantees we always return the SAME user that was originally
-    // linked to this Google account, regardless of how many times they
-    // sign in.
-    // ------------------------------------------------------------------
-    async getUserByAccount({
-      provider,
-      providerAccountId,
-    }: {
-      provider: string;
-      providerAccountId: string;
-    }): Promise<AdapterUser | null> {
-      // Step 1 — find the linked account row
-      const [account] = await db
-        .select()
-        .from(accounts)
-        .where(
-          and(
-            eq(accounts.provider, provider),
-            eq(accounts.providerAccountId, providerAccountId),
-          ),
-        )
-        .limit(1);
-
-      if (!account) {
-        // No account row → brand-new OAuth user, NextAuth will call createUser
-        return null;
-      }
-
-      // Step 2 — load the user that owns this account
-      const [user] = await db
-        .select()
-        .from(users)
-        .where(eq(users.id, account.userId))
-        .limit(1);
-
-      return user ?? null;
-    },
-
-    // ------------------------------------------------------------------
-    // getUser — plain PK lookup
-    // ------------------------------------------------------------------
-    async getUser(id: string): Promise<AdapterUser | null> {
-      const [user] = await db
-        .select()
-        .from(users)
-        .where(eq(users.id, id))
-        .limit(1);
-      return user ?? null;
-    },
-
-    // ------------------------------------------------------------------
-    // createUser — called ONLY for brand-new OAuth users (first sign-in).
-    // We generate our own nanoid so the PK is always our format, never
-    // the OAuth provider's sub string.
-    // ------------------------------------------------------------------
-    async createUser(data: NewUser): Promise<AdapterUser> {
-      const newUser: NewUser = {
-        ...data,
-        id:        nanoid(),          // always our own ID
-        email:     data.email.toLowerCase(),
-        role:      data.role ?? 'user',
-        createdAt: data.createdAt ?? new Date(),
-        updatedAt: data.updatedAt ?? new Date(),
-      };
-
-      const [created] = await db
-        .insert(users)
-        .values(newUser)
-        .returning();
-
-      return created;
-    },
-
-    // ------------------------------------------------------------------
-    // updateUser
-    // ------------------------------------------------------------------
-    async updateUser(data: Partial<User>): Promise<AdapterUser> {
-      const [updated] = await db
-        .update(users)
-        .set({ ...data, updatedAt: new Date() })
-        .where(eq(users.id, data.id!))
-        .returning();
-      return updated;
-    },
-
-    // ------------------------------------------------------------------
-    // linkAccount — called after createUser to store the OAuth account row
-    // ------------------------------------------------------------------
-    async linkAccount(account: NewAccount): Promise<void> {
-      await db.insert(accounts).values(account);
-    },
-
-    // ------------------------------------------------------------------
-    // Session methods (unchanged from base, but explicit for clarity)
-    // ------------------------------------------------------------------
-    async createSession(session: NewSession): Promise<AdapterSession> {
-      const [created] = await db
-        .insert(sessions)
-        .values(session)
-        .returning();
-      return created;
-    },
-
-    async getSessionAndUser(
-      sessionToken: string,
-    ): Promise<{ session: AdapterSession; user: AdapterUser } | null> {
-      const result = await db
-        .select()
-        .from(sessions)
-        .innerJoin(users, eq(sessions.userId, users.id))
-        .where(eq(sessions.sessionToken, sessionToken))
-        .limit(1);
-
-      const record = result[0];
-      if (!record) return null;
-      return { session: record.sessions, user: record.users };
-    },
-
-    async deleteSession(sessionToken: string): Promise<void> {
-      await db
-        .delete(sessions)
-        .where(eq(sessions.sessionToken, sessionToken));
-    },
-
-    async useVerificationToken(params: {
-      identifier: string;
-      token: string;
-    }): Promise<VerificationToken | null> {
-      const [deleted] = await db
-        .delete(verificationTokens)
-        .where(
-          and(
-            eq(verificationTokens.identifier, params.identifier),
-            eq(verificationTokens.token, params.token),
-          ),
-        )
-        .returning();
-      return deleted ?? null;
-    },
-  };
-}
-
-
-==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\db\index.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\db\index.ts
 ==============================
 
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from './schema';
 const connectionString = process.env.DATABASE_URL || 'postgres://localhost:5432/your-db-name';
-const client = postgres(connectionString, { prepare: false });
+
+const globalForDb = globalThis as unknown as {
+  conn: postgres.Sql | undefined;
+};
+
+const client = globalForDb.conn ?? postgres(connectionString, { prepare: false });
+if (process.env.NODE_ENV !== 'production') globalForDb.conn = client;
+
 export const db = drizzle(client, { schema });
 export { eq, and, or, like, desc, asc } from 'drizzle-orm';
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\db\schema-addition.ts
-==============================
-
-// ── Add to click_events table in src/server/db/schema.ts ─────────────────
-// Add these two columns after the existing `referrer` column:
-//
-//   device:  varchar('device',  { length: 20  }),
-//   browser: varchar('browser', { length: 50  }),
-//
-// The full click_events table should look like:
-//
-// export const clickEvents = pgTable('click_events', {
-//   id:        serial('id').primaryKey(),
-//   urlId:     integer('url_id').notNull().references(() => urls.id, { onDelete: 'cascade' }),
-//   clickedAt: timestamp('clicked_at').notNull().defaultNow(),
-//   country:   varchar('country',  { length: 2   }),
-//   referrer:  varchar('referrer', { length: 255 }),
-//   device:    varchar('device',   { length: 20  }),   // ← add
-//   browser:   varchar('browser',  { length: 50  }),   // ← add
-// });
-
-
-==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\db\schema.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\db\schema.ts
 ==============================
 
 import { relations } from 'drizzle-orm';
@@ -11981,7 +11822,7 @@ export const users = pgTable('users', {
   password: text('password'),
   role: userRoleEnum('role').default('user').notNull(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
 export const accounts = pgTable(
@@ -12039,7 +11880,7 @@ export const urls = pgTable('urls', {
   originalUrl: varchar('original_url', { length: 2000 }).notNull(),
   shortCode: varchar('short_code', { length: 10 }).notNull().unique(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   clicks: integer('clicks').default(0).notNull(),
   userId: varchar('user_id', { length: 255 }).references(() => users.id, {
     onDelete: 'set null',
@@ -12066,7 +11907,7 @@ export const clickEvents = pgTable('click_events', {
 export const counters = pgTable('counters', {
   key: varchar('key', { length: 255 }).notNull().primaryKey(),
   value: integer('value').default(0).notNull(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
 export const rateLimits = pgTable(
@@ -12094,7 +11935,7 @@ export const bioPages = pgTable('bio_pages', {
     .notNull()
     .default([]),
   createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
 export const bioPageViews = pgTable('bio_page_views', {
@@ -12219,7 +12060,7 @@ export const passwordResetTokensRelations = relations(
 
 
 ==============================
-FILE: e:\My Projects\URL-Shortner-NextJS\src\server\db\seed.ts
+FILE: E:\My Projects\URL-Shortner-NextJS\src\server\db\seed.ts
 ==============================
 
 import { db } from "./index";
