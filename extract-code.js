@@ -52,7 +52,11 @@ const TARGET_FOLDERS = [
   // String.raw`E:\My Projects\Project-Management\sprintly-frontend\src`,
   // String.raw`E:\My Projects\ai-image-editor\src`,
   // String.raw`E:\My Projects\URL-Shortner-NextJS\src`,
-  String.raw`E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src`,
+  // String.raw`E:\My Projects\AI-Resume-Builder\AI-Resume-Builder-Backend\src`,
+  // String.raw`E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-frontend\src`,
+  // String.raw`E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src`,
+  String.raw`E:\My Projects\Dev-Collab\Dev-Collab-TypeScript\Dev-Collab-Frontend\src`,
+  // String.raw`E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src`,
 ];
 
 // 👇 Output folder name (leave empty to auto-generate from TARGET_FOLDERS)

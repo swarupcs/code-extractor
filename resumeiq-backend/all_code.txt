@@ -1,0 +1,2453 @@
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\app.ts
+==============================
+
+import "dotenv/config";
+
+import express, { type Request, type Response } from "express";
+import cors from "cors";
+import cookieParser from "cookie-parser";
+import helmet from "helmet";
+import compression from "compression";
+import { fileURLToPath } from "url";
+import path from "path";
+
+import connectDB from "./config/db.js";
+import { initializePassport } from "./config/passport.js";
+import { globalErrorHandler } from "./middlewares/error.middleware.js";
+import apiRouter from "./routes/api.routes.js";
+
+const app  = express();
+const PORT = Number(process.env["PORT"] ?? 8080);
+
+// ── Database ──────────────────────────────────────────────────────────────────
+await connectDB();
+
+// ── Passport ──────────────────────────────────────────────────────────────────
+initializePassport();
+
+// ── Security headers ──────────────────────────────────────────────────────────
+app.use(
+  helmet({
+    crossOriginEmbedderPolicy: false, // allow Puppeteer iframe embedding
+    contentSecurityPolicy: false,     // CSP managed per-route if needed
+  })
+);
+
+// ── GZIP compression ──────────────────────────────────────────────────────────
+app.use(compression());
+
+// ── CORS ──────────────────────────────────────────────────────────────────────
+const allowedOrigins = (process.env["CLIENT_URL"] ?? "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error(`Origin "${origin}" not allowed by CORS`));
+    },
+    credentials:    true,
+    methods:        ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
+app.options("/{*wildcard}", cors());
+
+// ── Body parsing ──────────────────────────────────────────────────────────────
+// 2 MB limit to accommodate LinkedIn/resume text paste payloads
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
+app.use(cookieParser());
+
+// ── Static files (robots.txt etc.) ───────────────────────────────────────────
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+app.use(express.static(path.join(__dirname, "../public")));
+
+// ── Routes ────────────────────────────────────────────────────────────────────
+app.get("/", (_req: Request, res: Response) => {
+  res.json({ message: "Welcome to AI Resume Builder API", status: 200 });
+});
+
+app.use("/api", apiRouter);
+
+// ── Global error handler ──────────────────────────────────────────────────────
+app.use(globalErrorHandler);
+
+// ── Unhandled rejection / exception guards ────────────────────────────────────
+process.on("unhandledRejection", (reason: unknown) => {
+  console.error("[UnhandledRejection]", reason);
+});
+
+process.on("uncaughtException", (err: Error) => {
+  console.error("[UncaughtException]", err);
+  setTimeout(() => process.exit(1), 500);
+});
+
+// ── Start ─────────────────────────────────────────────────────────────────────
+app.listen(PORT, () => {
+  console.log(`[Server] Running on port ${PORT} (${process.env["NODE_ENV"] ?? "development"})`);
+});
+
+export default app;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\config\ai.ts
+==============================
+
+import OpenAI from "openai";
+
+const createAIClient = (): OpenAI => {
+  const apiKey = process.env["OPENAI_API_KEY"];
+  const baseURL = process.env["OPENAI_BASE_URL"];
+
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY environment variable not set");
+  }
+
+  return new OpenAI({ apiKey, baseURL });
+};
+
+const ai = createAIClient();
+export default ai;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\config\db.ts
+==============================
+
+import mongoose from "mongoose";
+
+const DB_NAME = "resume_builder";
+
+const connectDB = async (): Promise<void> => {
+  const mongodbURI = process.env["MONGODB_URI"];
+
+  if (!mongodbURI) {
+    throw new Error("MONGODB_URI environment variable not set");
+  }
+
+  const baseURI = mongodbURI.endsWith("/")
+    ? mongodbURI.slice(0, -1)
+    : mongodbURI;
+
+  mongoose.connection.on("connected", () => {
+    console.log("Database connected successfully");
+  });
+
+  mongoose.connection.on("error", (err: Error) => {
+    console.error("MongoDB connection error:", err.message);
+  });
+
+  mongoose.connection.on("disconnected", () => {
+    console.warn("MongoDB disconnected");
+  });
+
+  await mongoose.connect(`${baseURI}/${DB_NAME}`);
+};
+
+export default connectDB;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\config\imagekit.ts
+==============================
+
+import ImageKit from "imagekit";
+
+const createImageKitClient = (): ImageKit => {
+  const privateKey  = process.env["IMAGEKIT_PRIVATE_KEY"];
+  const publicKey   = process.env["IMAGEKIT_PUBLIC_KEY"]   ?? "";
+  const urlEndpoint = process.env["IMAGEKIT_URL_ENDPOINT"] ?? "";
+
+  if (!privateKey) {
+    throw new Error("IMAGEKIT_PRIVATE_KEY environment variable not set");
+  }
+
+  return new ImageKit({ privateKey, publicKey, urlEndpoint });
+};
+
+const imagekit = createImageKitClient();
+export default imagekit;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\config\multer.ts
+==============================
+
+import multer from "multer";
+
+const storage = multer.diskStorage({});
+
+const upload = multer({ storage });
+
+export default upload;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\config\passport.ts
+==============================
+
+import passport from "passport";
+import { Strategy as GoogleStrategy } from "passport-google-oauth20";
+import User from "../models/user.model.js";
+
+export const initializePassport = (): void => {
+  const clientID = process.env["GOOGLE_CLIENT_ID"];
+  const clientSecret = process.env["GOOGLE_CLIENT_SECRET"];
+  const callbackURL = process.env["GOOGLE_CALLBACK_URL"];
+
+  if (!clientID || !clientSecret) {
+    console.warn(
+      "[Passport] GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set — " +
+        "Google OAuth will not be available."
+    );
+    return;
+  }
+
+  passport.use(
+    new GoogleStrategy(
+      { clientID, clientSecret, callbackURL: callbackURL ?? "" },
+      async (_accessToken, _refreshToken, profile, done) => {
+        try {
+          const email = profile.emails?.[0]?.value?.toLowerCase();
+          const firstName = profile.name?.givenName ?? profile.displayName ?? "User";
+          const lastName = profile.name?.familyName ?? "";
+
+          if (!email) {
+            return done(new Error("No email returned from Google"), false);
+          }
+
+          let user = await User.findOne({ googleId: profile.id });
+
+          if (!user) {
+            user = await User.findOne({ emailId: email });
+            if (user) {
+              user.googleId = profile.id;
+              user.isVerified = true;
+              await user.save();
+            } else {
+              user = await User.create({
+                firstName,
+                lastName,
+                emailId: email,
+                googleId: profile.id,
+                isVerified: true,
+                password: null,
+              });
+            }
+          }
+
+          return done(null, user);
+        } catch (error) {
+          return done(error as Error, false);
+        }
+      }
+    )
+  );
+
+  passport.serializeUser((user, done) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    done(null, (user as any)._id as string);
+  });
+
+  passport.deserializeUser(async (id: string, done) => {
+    try {
+      const user = await User.findById(id).select("-password -refreshToken");
+      done(null, user);
+    } catch (err) {
+      done(err as Error, null);
+    }
+  });
+
+  console.log("[Passport] Google OAuth strategy registered.");
+};
+
+export default passport;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\controllers\ai.controller.ts
+==============================
+
+import type { Request, Response } from "express";
+import Resume from "../models/resume.model.js";
+import { ApiError } from "../utils/api-error.js";
+import { ApiResponse } from "../utils/api-response.js";
+import { asyncHandler } from "../utils/async-handler.js";
+import {
+  enhanceSummary,
+  enhanceJobDesc,
+  extractResumeData,
+  extractLinkedInData,
+  generateCoverLetterText,
+  analyzeATSScore,
+} from "../services/ai.service.js";
+import { buildResumeTextForAI } from "../services/ai.service.js";
+import type { ResumeContent } from "../types/index.js";
+
+// ── Enhance professional summary ──────────────────────────────────────────────
+
+export const enhanceProfessionalSummary = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const { userContent } = req.body as { userContent?: string };
+    if (!userContent?.trim()) throw new ApiError(400, "userContent is required");
+
+    const enhancedContent = await enhanceSummary(userContent);
+    new ApiResponse(200, { enhancedContent }, "Professional summary enhanced successfully").send(res);
+  }
+);
+
+// ── Enhance job description ───────────────────────────────────────────────────
+
+export const enhanceJobDescription = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const { userContent } = req.body as { userContent?: string };
+    if (!userContent?.trim()) throw new ApiError(400, "userContent is required");
+
+    const enhancedContent = await enhanceJobDesc(userContent);
+    new ApiResponse(200, { enhancedContent }, "Job description enhanced successfully").send(res);
+  }
+);
+
+// ── Upload / parse resume ─────────────────────────────────────────────────────
+
+export const uploadResume = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const { resumeText, title } = req.body as { resumeText?: string; title?: string };
+    const userId = req.userId;
+
+    if (!resumeText?.trim() || !title?.trim()) {
+      throw new ApiError(400, "resumeText and title are required");
+    }
+
+    const parsedData = await extractResumeData(resumeText);
+    const newResume  = await Resume.create({ userId, title, ...parsedData });
+
+    new ApiResponse(201, { resumeId: newResume._id }, "Resume uploaded successfully").send(res);
+  }
+);
+
+// ── Import from LinkedIn ──────────────────────────────────────────────────────
+
+export const importFromLinkedIn = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const { linkedInText, title } = req.body as { linkedInText?: string; title?: string };
+    const userId = req.userId;
+
+    if (!linkedInText?.trim() || !title?.trim()) {
+      throw new ApiError(400, "linkedInText and title are required");
+    }
+    if (linkedInText.trim().length < 50) {
+      throw new ApiError(400, "Please paste more of your LinkedIn profile for accurate extraction");
+    }
+
+    const parsedData = await extractLinkedInData(linkedInText);
+    const newResume  = await Resume.create({ userId, title, ...parsedData });
+
+    new ApiResponse(201, { resumeId: newResume._id }, "LinkedIn profile imported successfully").send(res);
+  }
+);
+
+// ── Generate cover letter ─────────────────────────────────────────────────────
+
+export const generateCoverLetter = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const { resumeId, jobDescription } = req.body as {
+      resumeId?: string;
+      jobDescription?: string;
+    };
+    const userId = req.userId;
+
+    if (!resumeId || !jobDescription?.trim()) {
+      throw new ApiError(400, "resumeId and jobDescription are required");
+    }
+    if (jobDescription.trim().length < 30) {
+      throw new ApiError(400, "Please provide a more detailed job description");
+    }
+
+    const resume = await Resume.findOne({ _id: resumeId, userId });
+    if (!resume) throw new ApiError(404, "Resume not found or access denied");
+
+    const resumeSummary = [
+      `Name: ${resume.personal_info?.full_name ?? ""}`,
+      `Profession: ${resume.personal_info?.profession ?? ""}`,
+      `Summary: ${resume.professional_summary ?? ""}`,
+      `Skills: ${(resume.skills ?? []).join(", ")}`,
+      `Experience: ${(resume.experience ?? []).map((e) => `${e.position} at ${e.company}`).join("; ")}`,
+    ].join("\n");
+
+    const coverLetter = await generateCoverLetterText(resumeSummary, jobDescription);
+    new ApiResponse(200, { coverLetter }, "Cover letter generated successfully").send(res);
+  }
+);
+
+// ── ATS analysis ──────────────────────────────────────────────────────────────
+
+export const analyzeATS = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const { resumeData, jobDescription } = req.body as {
+      resumeData?: ResumeContent | string;
+      jobDescription?: string;
+    };
+
+    if (!resumeData || !jobDescription?.trim()) {
+      throw new ApiError(400, "Both resumeData and jobDescription are required");
+    }
+    if (jobDescription.trim().length < 50) {
+      throw new ApiError(400, "Please paste the full job description (at least 50 characters)");
+    }
+
+    let parsed: ResumeContent;
+    try {
+      parsed =
+        typeof resumeData === "string"
+          ? (JSON.parse(resumeData) as ResumeContent)
+          : resumeData;
+    } catch {
+      throw new ApiError(400, "Invalid resume data format");
+    }
+
+    const resumeText = buildResumeTextForAI(parsed);
+    const analysis   = await analyzeATSScore(resumeText, jobDescription);
+
+    new ApiResponse(200, { analysis }, "ATS analysis complete").send(res);
+  }
+);
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\controllers\auth.controller.ts
+==============================
+
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import type { Request, Response } from "express";
+import User from "../models/user.model.js";
+import { ApiError } from "../utils/api-error.js";
+import { ApiResponse } from "../utils/api-response.js";
+import { asyncHandler } from "../utils/async-handler.js";
+import { clearAuthCookie, clearRefreshCookie } from "../utils/cookies.js";
+import { validateSignUpData } from "../utils/validation.js";
+import { sendVerificationEmail, sendPasswordResetEmail } from "../utils/email.js";
+import { issueTokens, generateSecureToken, hashToken } from "../services/auth.service.js";
+import type { JwtPayload } from "../types/index.js";
+import type { IUser } from "../models/user.model.js";
+
+// ── Sign Up ───────────────────────────────────────────────────────────────────
+
+export const signupUser = asyncHandler(async (req: Request, res: Response) => {
+  const { firstName, lastName, emailId, password } = req.body as {
+    firstName?: string; lastName?: string; emailId?: string; password?: string;
+  };
+
+  validateSignUpData(req);
+
+  const existing = await User.findOne({ emailId });
+  if (existing) throw new ApiError(409, "User already exists with this email");
+
+  const hashedPassword = await bcrypt.hash(password!, 10);
+  const { raw: verifyToken, hash: verifyHash } = generateSecureToken();
+
+  const user = await User.create({
+    firstName, lastName, emailId,
+    password: hashedPassword,
+    isVerified: false,
+    emailVerificationToken: verifyHash,
+    emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
+  });
+
+  sendVerificationEmail({ to: emailId!, firstName: firstName!, token: verifyToken }).catch(
+    (err: unknown) => console.error("Verification email failed:", err)
+  );
+
+  await issueTokens(res, user);
+  user.password = null;
+  user.refreshToken = null;
+  user.emailVerificationToken = null;
+
+  return new ApiResponse(201, { user, requiresVerification: true },
+    "Account created. Please check your email to verify your account.").send(res);
+});
+
+// ── Login ─────────────────────────────────────────────────────────────────────
+
+export const loginUser = asyncHandler(async (req: Request, res: Response) => {
+  const { emailId, password } = req.body as { emailId?: string; password?: string };
+  if (!emailId || !password) throw new ApiError(400, "Email and password are required");
+
+  const user = await User.findOne({ emailId });
+  if (!user) throw new ApiError(401, "Invalid email or password");
+  if (!user.password) throw new ApiError(400, "This account uses Google sign-in. Please continue with Google.");
+
+  const isValid = user.comparePassword(password);
+  if (!isValid) throw new ApiError(401, "Invalid email or password");
+
+  await issueTokens(res, user);
+  user.password = null;
+  user.refreshToken = null;
+
+  return new ApiResponse(200, { user }, "Login successful").send(res);
+});
+
+// ── Logout ────────────────────────────────────────────────────────────────────
+
+export const logoutUser = asyncHandler(async (req: Request, res: Response) => {
+  if (req.userId) await User.findByIdAndUpdate(req.userId, { refreshToken: null });
+  clearAuthCookie(res);
+  clearRefreshCookie(res);
+  return new ApiResponse(200, null, "Logged out successfully").send(res);
+});
+
+// ── Refresh Tokens ────────────────────────────────────────────────────────────
+
+export const refreshTokens = asyncHandler(async (req: Request, res: Response) => {
+  const incomingRefresh = req.cookies?.refreshToken as string | undefined;
+  if (!incomingRefresh) throw new ApiError(401, "No refresh token provided");
+
+  const refreshSecret = process.env["JWT_REFRESH_SECRET"];
+  if (!refreshSecret) throw new ApiError(500, "JWT_REFRESH_SECRET is not configured");
+
+  let decoded: JwtPayload;
+  try {
+    decoded = jwt.verify(incomingRefresh, refreshSecret) as JwtPayload;
+  } catch {
+    throw new ApiError(401, "Invalid or expired refresh token");
+  }
+
+  const user = await User.findById(decoded.userId);
+  if (!user?.refreshToken) throw new ApiError(401, "Session expired — please log in again");
+
+  const isValid = await bcrypt.compare(incomingRefresh, user.refreshToken);
+  if (!isValid) throw new ApiError(401, "Refresh token reuse detected — please log in again");
+
+  await issueTokens(res, user);
+
+  // Re-fetch user with sensitive fields excluded so we never accidentally leak them
+  const freshUser = await User.findById(user._id).select("-password -refreshToken -emailVerificationToken -resetPasswordToken");
+
+  return new ApiResponse(200, { user: freshUser }, "Tokens refreshed successfully").send(res);
+});
+
+// ── Verify Email ──────────────────────────────────────────────────────────────
+
+export const verifyEmail = asyncHandler(async (req: Request, res: Response) => {
+  const { token } = req.params as { token: string };
+  if (!token) throw new ApiError(400, "Verification token is required");
+
+  const hash = hashToken(token);
+  const user = await User.findOne({ emailVerificationToken: hash, emailVerificationExpires: { $gt: new Date() } });
+  if (!user) throw new ApiError(400, "Verification link is invalid or has expired");
+
+  user.isVerified = true;
+  user.emailVerificationToken = null;
+  user.emailVerificationExpires = null;
+  await user.save();
+
+  return new ApiResponse(200, null, "Email verified successfully").send(res);
+});
+
+// ── Resend Verification ───────────────────────────────────────────────────────
+
+export const resendVerification = asyncHandler(async (req: Request, res: Response) => {
+  const { emailId } = req.body as { emailId?: string };
+  if (!emailId) throw new ApiError(400, "Email is required");
+
+  const genericMsg = "If your account exists and is unverified, a new verification email has been sent.";
+  const user = await User.findOne({ emailId });
+  if (!user || user.isVerified) return new ApiResponse(200, null, genericMsg).send(res);
+
+  const { raw: verifyToken, hash: verifyHash } = generateSecureToken();
+  user.emailVerificationToken = verifyHash;
+  user.emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  await user.save();
+
+  sendVerificationEmail({ to: user.emailId, firstName: user.firstName, token: verifyToken }).catch(
+    (err: unknown) => console.error("Resend verification email failed:", err)
+  );
+
+  return new ApiResponse(200, null, genericMsg).send(res);
+});
+
+// ── Forgot Password ───────────────────────────────────────────────────────────
+
+export const forgotPassword = asyncHandler(async (req: Request, res: Response) => {
+  const { emailId } = req.body as { emailId?: string };
+  if (!emailId) throw new ApiError(400, "Email is required");
+
+  const genericMsg = "If an account with that email exists, a password reset link has been sent.";
+  const user = await User.findOne({ emailId });
+  if (!user || user.googleId) return new ApiResponse(200, null, genericMsg).send(res);
+
+  const { raw: resetToken, hash: resetHash } = generateSecureToken();
+  user.resetPasswordToken = resetHash;
+  user.resetPasswordExpires = new Date(Date.now() + 60 * 60 * 1000);
+  await user.save();
+
+  sendPasswordResetEmail({ to: user.emailId, firstName: user.firstName, token: resetToken }).catch(
+    (err: unknown) => console.error("Password reset email failed:", err)
+  );
+
+  return new ApiResponse(200, null, genericMsg).send(res);
+});
+
+// ── Reset Password ────────────────────────────────────────────────────────────
+
+export const resetPassword = asyncHandler(async (req: Request, res: Response) => {
+  const { token } = req.params as { token: string };
+  const { password } = req.body as { password?: string };
+
+  if (!token) throw new ApiError(400, "Reset token is required");
+  if (!password) throw new ApiError(400, "New password is required");
+  if (password.length < 8) throw new ApiError(400, "Password must be at least 8 characters");
+  if (!/[A-Z]/.test(password)) throw new ApiError(400, "Password must contain at least one uppercase letter");
+  if (!/\d/.test(password)) throw new ApiError(400, "Password must contain at least one number");
+
+  const hash = hashToken(token);
+  const user = await User.findOne({ resetPasswordToken: hash, resetPasswordExpires: { $gt: new Date() } });
+  if (!user) throw new ApiError(400, "Password reset link is invalid or has expired");
+
+  user.password = await bcrypt.hash(password, 10);
+  user.resetPasswordToken = null;
+  user.resetPasswordExpires = null;
+  user.refreshToken = null;
+  await user.save();
+
+  clearAuthCookie(res);
+  clearRefreshCookie(res);
+  return new ApiResponse(200, null, "Password reset successful. Please log in with your new password.").send(res);
+});
+
+// ── Google OAuth Callback ─────────────────────────────────────────────────────
+
+export const googleCallback = asyncHandler(async (req: Request, res: Response) => {
+  const user = req.user as IUser | undefined;
+  if (!user) throw new ApiError(401, "Google authentication failed");
+
+  await issueTokens(res, user);
+
+  const clientUrl = process.env["CLIENT_URL"]?.split(",")[0].trim() ?? "";
+  res.redirect(`${clientUrl}/oauth/callback?success=true`);
+});
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\controllers\resume.controller.ts
+==============================
+
+import fs from "fs";
+import type { Request, Response } from "express";
+import Resume from "../models/resume.model.js";
+import { ApiError } from "../utils/api-error.js";
+import { ApiResponse } from "../utils/api-response.js";
+import { asyncHandler } from "../utils/async-handler.js";
+import { generateAndSendPDFFromData, generateAndSendPDFFromUrl } from "../utils/generate-pdf.js";
+import imagekit from "../config/imagekit.js";
+import { pushVersion } from "../services/resume.service.js";
+import type { ResumeUpdatePayload } from "../types/index.js";
+
+// ── Create ────────────────────────────────────────────────────────────────────
+
+export const createResume = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const userId = req.userId;
+    if (!userId) throw new ApiError(401, "Unauthorized request");
+
+    const { title } = req.body as { title?: string };
+    if (!title?.trim()) throw new ApiError(400, "Resume title is required");
+
+    const resume = await Resume.create({ userId, title: title.trim() });
+    new ApiResponse(201, { resume }, "Resume created successfully").send(res);
+  }
+);
+
+// ── Duplicate ─────────────────────────────────────────────────────────────────
+
+export const duplicateResume = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const userId = req.userId;
+    const { id } = req.params as { id: string };
+
+    const source = await Resume.findOne({ _id: id, userId });
+    if (!source) throw new ApiError(404, "Resume not found or access denied");
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { _id, userId: _uid, createdAt, updatedAt, ...copyFields } = source.toObject();
+
+    const duplicate = await Resume.create({
+      ...copyFields,
+      userId,
+      title:     `${source.title} (Copy)`,
+      isPublic:  false,
+      views:     0,
+      downloads: 0,
+      versions:  [],
+    });
+
+    new ApiResponse(201, { resume: duplicate }, "Resume duplicated successfully").send(res);
+  }
+);
+
+// ── Update ────────────────────────────────────────────────────────────────────
+
+export const updateResume = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const userId = req.userId;
+    const { resumeId, resumeData, removeBackground } = req.body as {
+      resumeId?: string;
+      resumeData?: string | ResumeUpdatePayload;
+      removeBackground?: boolean | string;
+    };
+    const image = req.file;
+
+    if (!resumeId)   throw new ApiError(400, "Resume ID is required");
+    if (!resumeData) throw new ApiError(400, "Resume data is required");
+
+    let parsed: ResumeUpdatePayload;
+    try {
+      parsed =
+        typeof resumeData === "string"
+          ? (JSON.parse(resumeData) as ResumeUpdatePayload)
+          : resumeData;
+    } catch {
+      throw new ApiError(400, "Invalid resume data format");
+    }
+
+    const allowedUpdate: Partial<ResumeUpdatePayload> & { isPublic?: boolean } = {
+      title:                parsed.title,
+      personal_info:        parsed.personal_info        ?? {},
+      professional_summary: parsed.professional_summary ?? "",
+      experience:           parsed.experience           ?? [],
+      education:            parsed.education            ?? [],
+      project:              parsed.project              ?? [],
+      skills:               parsed.skills               ?? [],
+      template:             parsed.template             ?? "classic",
+      accent_color:         parsed.accent_color         ?? "#3B82F6",
+      ...(typeof parsed.public === "boolean" && { isPublic: parsed.public }),
+    };
+
+    if (image) {
+      const shouldRemoveBg = removeBackground === true || removeBackground === "true";
+      try {
+        const imageStream = fs.createReadStream(image.path);
+        const response = await imagekit.upload({
+          file:     imageStream as unknown as string,
+          fileName: `resume-${resumeId}.png`,
+          folder:   "user-resumes",
+          transformation: {
+            pre: `w-300,h-300,fo-face,z-0.75${shouldRemoveBg ? ",e-bgremove" : ""}`,
+          },
+        });
+        allowedUpdate.personal_info = { ...allowedUpdate.personal_info, image: response.url };
+      } finally {
+        if (fs.existsSync(image.path)) fs.unlinkSync(image.path);
+      }
+    }
+
+    // Fetch current state to snapshot BEFORE overwriting
+    const existing = await Resume.findOne({ _id: resumeId, userId });
+    if (!existing) throw new ApiError(404, "Resume not found or access denied");
+
+    const updatedVersions = pushVersion(existing);
+
+    const resume = await Resume.findOneAndUpdate(
+      { _id: resumeId, userId },
+      { ...allowedUpdate, versions: updatedVersions },
+      { new: true }
+    );
+
+    new ApiResponse(200, { resume }, "Resume saved successfully").send(res);
+  }
+);
+
+// ── Restore version ───────────────────────────────────────────────────────────
+
+export const restoreVersion = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const userId = req.userId;
+    const { id, versionIndex } = req.params as { id: string; versionIndex: string };
+
+    const resume = await Resume.findOne({ _id: id, userId });
+    if (!resume) throw new ApiError(404, "Resume not found or access denied");
+
+    const idx = parseInt(versionIndex, 10);
+    if (isNaN(idx) || idx < 0 || idx >= resume.versions.length) {
+      throw new ApiError(400, "Invalid version index");
+    }
+
+    const versionEntry = resume.versions[idx];
+    if (!versionEntry) throw new ApiError(400, "Version not found");
+    const { snapshot } = versionEntry;
+
+    // Snapshot current state before restoring (labelled so the user can undo)
+    const versionsWithCurrentState = pushVersion(resume, undefined, "(before restore)");
+
+    const restored = await Resume.findOneAndUpdate(
+      { _id: id, userId },
+      { ...snapshot, versions: versionsWithCurrentState },
+      { new: true }
+    );
+
+    new ApiResponse(200, { resume: restored }, "Version restored successfully").send(res);
+  }
+);
+
+// ── Update title ──────────────────────────────────────────────────────────────
+
+export const updateResumeTitle = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const userId = req.userId;
+    const { id }    = req.params as { id: string };
+    const { title } = req.body as { title?: string };
+
+    if (!title?.trim()) throw new ApiError(400, "Title is required");
+
+    const resume = await Resume.findOneAndUpdate(
+      { _id: id, userId },
+      { title: title.trim() },
+      { new: true }
+    );
+
+    if (!resume) throw new ApiError(404, "Resume not found");
+    new ApiResponse(200, { resume }, "Title updated").send(res);
+  }
+);
+
+// ── Toggle visibility ─────────────────────────────────────────────────────────
+
+export const toggleResumeVisibility = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const userId = req.userId;
+    const { id } = req.params as { id: string };
+
+    const existing = await Resume.findOne({ _id: id, userId });
+    if (!existing) throw new ApiError(404, "Resume not found");
+
+    existing.isPublic = !existing.isPublic;
+    await existing.save();
+
+    new ApiResponse(
+      200,
+      { resume: existing },
+      `Resume is now ${existing.isPublic ? "public" : "private"}`
+    ).send(res);
+  }
+);
+
+// ── Get by ID (owner) ─────────────────────────────────────────────────────────
+
+export const getResumeById = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const userId = req.userId;
+    const { resumeId } = req.params as { resumeId: string };
+
+    if (!userId)   throw new ApiError(401, "Unauthorized request");
+    if (!resumeId) throw new ApiError(400, "Resume ID is required");
+
+    const resume = await Resume.findOne(
+      { _id: resumeId, userId },
+      { __v: 0, createdAt: 0, updatedAt: 0 }
+    );
+
+    if (!resume) throw new ApiError(404, "Resume not found");
+    new ApiResponse(200, { resume }, "Resume fetched successfully").send(res);
+  }
+);
+
+// ── Get public resume ─────────────────────────────────────────────────────────
+
+export const getPublicResumeById = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const { resumeId } = req.params as { resumeId: string };
+    if (!resumeId) throw new ApiError(400, "Resume ID is required");
+
+    const resume = await Resume.findOneAndUpdate(
+      { _id: resumeId, isPublic: true },
+      { $inc: { views: 1 } },
+      { new: true, projection: { __v: 0, createdAt: 0, updatedAt: 0 } }
+    );
+
+    if (!resume) throw new ApiError(404, "Resume not found or not public");
+    new ApiResponse(200, { resume }, "Public resume fetched successfully").send(res);
+  }
+);
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+
+export const deleteResume = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const userId = req.userId;
+    const { resumeId } = req.params as { resumeId: string };
+
+    if (!userId)   throw new ApiError(401, "Unauthorized request");
+    if (!resumeId) throw new ApiError(400, "Resume ID is required");
+
+    const deleted = await Resume.findOneAndDelete({ _id: resumeId, userId });
+    if (!deleted) throw new ApiError(404, "Resume not found or access denied");
+
+    new ApiResponse(200, null, "Resume deleted successfully").send(res);
+  }
+);
+
+// ── Export PDF (owner) ────────────────────────────────────────────────────────
+
+export const exportResumePDF = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const { id } = req.params as { id: string };
+    const userId = req.userId;
+
+    const resume = await Resume.findOneAndUpdate(
+      { _id: id, userId },
+      { $inc: { downloads: 1 } },
+      { new: true }
+    );
+    if (!resume) throw new ApiError(404, "Resume not found or access denied");
+
+    let resumeData: ResumeUpdatePayload;
+    try {
+      resumeData =
+        typeof req.body.resumeData === "string"
+          ? (JSON.parse(req.body.resumeData as string) as ResumeUpdatePayload)
+          : (req.body.resumeData as ResumeUpdatePayload);
+    } catch {
+      throw new ApiError(400, "Invalid resume data");
+    }
+
+    if (!resumeData) throw new ApiError(400, "Resume data is required");
+    await generateAndSendPDFFromData(resumeData, res);
+  }
+);
+
+// ── Export PDF (public) ───────────────────────────────────────────────────────
+
+export const exportResumePDFPublic = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const { id } = req.params as { id: string };
+
+    const resume = await Resume.findOneAndUpdate(
+      { _id: id, isPublic: true },
+      { $inc: { downloads: 1 } },
+      { new: true }
+    );
+    if (!resume) throw new ApiError(404, "Resume not found or is not public");
+
+    await generateAndSendPDFFromUrl(resume, res);
+  }
+);
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\controllers\user.controller.ts
+==============================
+
+import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
+import type { Request, Response } from "express";
+import Resume from "../models/resume.model.js";
+import User from "../models/user.model.js";
+import { ApiError } from "../utils/api-error.js";
+import { ApiResponse } from "../utils/api-response.js";
+import { asyncHandler } from "../utils/async-handler.js";
+
+/**
+ * GET /api/user/me
+ * Silent session restore on app boot. Returns current user if cookie is valid.
+ */
+export const getMe = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+  const user = await User.findById(req.userId).select("-password -refreshToken");
+  if (!user) throw new ApiError(404, "User not found");
+  new ApiResponse(200, { user }, "Session restored successfully").send(res);
+});
+
+/**
+ * GET /api/user/profile
+ * Full user profile for the profile page.
+ */
+export const getUserById = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+  if (!req.userId) throw new ApiError(401, "Unauthorized request");
+  const user = await User.findById(req.userId).select("-password -refreshToken");
+  if (!user) throw new ApiError(404, "User not found");
+  new ApiResponse(200, { user }, "User fetched successfully").send(res);
+});
+
+/**
+ * PATCH /api/user/profile
+ * Update first name, last name, and optionally password.
+ */
+export const updateUserProfile = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+  if (!req.userId) throw new ApiError(401, "Unauthorized request");
+
+  const { firstName, lastName, currentPassword, newPassword } = req.body as {
+    firstName?: string;
+    lastName?: string;
+    currentPassword?: string;
+    newPassword?: string;
+  };
+
+  const user = await User.findById(req.userId);
+  if (!user) throw new ApiError(404, "User not found");
+
+  // Update name fields if provided
+  if (firstName?.trim()) user.firstName = firstName.trim();
+  if (lastName?.trim())  user.lastName  = lastName.trim();
+
+  // Password change — only for email/password accounts
+  if (newPassword) {
+    if (!user.password) {
+      throw new ApiError(400, "Google OAuth accounts cannot set a password here");
+    }
+    if (!currentPassword) {
+      throw new ApiError(400, "Current password is required to set a new password");
+    }
+    const isValid = user.comparePassword(currentPassword);
+    if (!isValid) throw new ApiError(401, "Current password is incorrect");
+
+    if (newPassword.length < 8)       throw new ApiError(400, "Password must be at least 8 characters");
+    if (!/[A-Z]/.test(newPassword))   throw new ApiError(400, "Password must contain at least one uppercase letter");
+    if (!/\d/.test(newPassword))      throw new ApiError(400, "Password must contain at least one number");
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    // Invalidate all refresh tokens so other sessions are logged out after password change
+    user.refreshToken = null;
+  }
+
+  await user.save();
+
+  const updatedUser = await User.findById(req.userId).select("-password -refreshToken");
+  new ApiResponse(200, { user: updatedUser }, "Profile updated successfully").send(res);
+});
+
+/**
+ * GET /api/user/resumes
+ * Returns all resumes for the authenticated user, most recently updated first.
+ */
+export const getUserResumes = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+  if (!req.userId) throw new ApiError(401, "Unauthorized request");
+
+  const resumes = await Resume.find({
+    userId: new mongoose.Types.ObjectId(req.userId.toString()),
+  }).sort({ updatedAt: -1 });
+
+  new ApiResponse(200, { resumes }, "User resumes fetched successfully").send(res);
+});
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\middlewares\auth.middleware.ts
+==============================
+
+import jwt from "jsonwebtoken";
+import type { Request, Response, NextFunction } from "express";
+import User from "../models/user.model.js";
+import { ApiError } from "../utils/api-error.js";
+import type { JwtPayload } from "../types/index.js";
+
+/**
+ * Verifies the httpOnly JWT cookie and attaches req.userId.
+ * All failures call next(err) so the globalErrorHandler processes them.
+ */
+export const authMiddleware = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const token = req.cookies?.token as string | undefined;
+    if (!token) throw new ApiError(401, "Please login first");
+
+    const jwtSecret = process.env["JWT_SECRET"];
+    if (!jwtSecret) throw new ApiError(500, "JWT_SECRET is not configured");
+
+    let decoded: JwtPayload;
+    try {
+      decoded = jwt.verify(token, jwtSecret) as JwtPayload;
+    } catch {
+      throw new ApiError(401, "Invalid or expired token");
+    }
+
+    const user = await User.findById(decoded.userId).select("_id");
+    if (!user) throw new ApiError(401, "User no longer exists");
+
+    req.userId = user._id;
+    next();
+  } catch (err) {
+    next(err);
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\middlewares\error.middleware.ts
+==============================
+
+import type { Request, Response, NextFunction } from "express";
+import { ApiError } from "../utils/api-error.js";
+
+interface MongooseCastError extends Error { name: "CastError"; path: string; }
+interface MongooseValidationError extends Error { name: "ValidationError"; errors: Record<string, { message: string }>; }
+interface MongooseDuplicateKeyError extends Error { code: number; }
+
+const isCastError = (e: unknown): e is MongooseCastError =>
+  e instanceof Error && e.name === "CastError";
+const isValidationError = (e: unknown): e is MongooseValidationError =>
+  e instanceof Error && e.name === "ValidationError";
+const isDuplicateKeyError = (e: unknown): e is MongooseDuplicateKeyError =>
+  e instanceof Error && "code" in e && (e as MongooseDuplicateKeyError).code === 11000;
+
+/**
+ * Global error handler — last middleware in the chain.
+ * Handles ApiError, Mongoose errors, and unknown errors gracefully.
+ * The app NEVER crashes from an unhandled route/controller error.
+ */
+export const globalErrorHandler = (
+  err: unknown,
+  _req: Request,
+  res: Response,
+  _next: NextFunction
+): void => {
+  if (err instanceof ApiError) {
+    res.status(err.statusCode).json({
+      success: false,
+      statusCode: err.statusCode,
+      message: err.message,
+      errors: err.errors.length > 0 ? err.errors : undefined,
+      data: null,
+    });
+    return;
+  }
+
+  if (isCastError(err)) {
+    res.status(400).json({ success: false, statusCode: 400, message: `Invalid value for field: ${err.path}`, data: null });
+    return;
+  }
+
+  if (isValidationError(err)) {
+    const messages = Object.values(err.errors).map((e) => e.message);
+    res.status(400).json({ success: false, statusCode: 400, message: "Validation failed", errors: messages, data: null });
+    return;
+  }
+
+  if (isDuplicateKeyError(err)) {
+    res.status(409).json({ success: false, statusCode: 409, message: "A record with that value already exists", data: null });
+    return;
+  }
+
+  console.error("[Unhandled Error]", err);
+  res.status(500).json({ success: false, statusCode: 500, message: "Internal Server Error", data: null });
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\middlewares\rate-limiter.middleware.ts
+==============================
+
+import rateLimit from "express-rate-limit";
+
+const isTest = (): boolean => process.env["NODE_ENV"] === "test";
+
+export const aiEnhanceRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, statusCode: 429, message: "Too many enhancement requests. Please wait a moment before trying again." },
+  skip: isTest,
+});
+
+export const aiUploadRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, statusCode: 429, message: "Too many upload requests. Please wait a moment before trying again." },
+  skip: isTest,
+});
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\models\resume.model.ts
+==============================
+
+import mongoose, { Schema, type Document, type Model } from "mongoose";
+import type {
+  PersonalInfo,
+  ExperienceEntry,
+  ProjectEntry,
+  EducationEntry,
+  ResumeContent,
+} from "../types/index.js";
+
+// ── Interface ─────────────────────────────────────────────────────────────────
+
+export interface IVersionEntry {
+  savedAt: Date;
+  label: string;
+  snapshot: ResumeContent;
+}
+
+export interface IResume extends Document {
+  _id: mongoose.Types.ObjectId;
+  userId: mongoose.Types.ObjectId;
+  title: string;
+  isPublic: boolean;
+  template: string;
+  accent_color: string;
+  professional_summary: string;
+  skills: string[];
+  personal_info: PersonalInfo;
+  experience: ExperienceEntry[];
+  project: ProjectEntry[];
+  education: EducationEntry[];
+  views: number;
+  downloads: number;
+  versions: IVersionEntry[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IResumeModel extends Model<IResume> {}
+
+// ── Schema ────────────────────────────────────────────────────────────────────
+
+const PersonalInfoSchema = new Schema<PersonalInfo>(
+  {
+    image:      { type: String, default: "" },
+    full_name:  { type: String, default: "" },
+    profession: { type: String, default: "" },
+    email:      { type: String, default: "" },
+    phone:      { type: String, default: "" },
+    location:   { type: String, default: "" },
+    linkedin:   { type: String, default: "" },
+    website:    { type: String, default: "" },
+  },
+  { _id: false }
+);
+
+const ExperienceSchema = new Schema<ExperienceEntry>(
+  {
+    company:     { type: String },
+    position:    { type: String },
+    start_date:  { type: String },
+    end_date:    { type: String },
+    description: { type: String },
+    is_current:  { type: Boolean },
+  },
+  { _id: false }
+);
+
+const ProjectSchema = new Schema<ProjectEntry>(
+  {
+    name:        { type: String },
+    type:        { type: String },
+    description: { type: String },
+  },
+  { _id: false }
+);
+
+const EducationSchema = new Schema<EducationEntry>(
+  {
+    institution:     { type: String },
+    degree:          { type: String },
+    field:           { type: String },
+    graduation_date: { type: String },
+    gpa:             { type: String },
+  },
+  { _id: false }
+);
+
+const VersionSchema = new Schema<IVersionEntry>(
+  {
+    savedAt:  { type: Date, default: Date.now },
+    label:    { type: String, default: "" },
+    snapshot: { type: Schema.Types.Mixed },
+  },
+  { _id: false }
+);
+
+const ResumeSchema = new Schema<IResume, IResumeModel>(
+  {
+    userId:   { type: Schema.Types.ObjectId, ref: "User", required: true },
+    title:    { type: String, default: "Untitled Resume" },
+    isPublic: { type: Boolean, default: false },
+    template: { type: String, default: "classic" },
+    accent_color: { type: String, default: "#3B82F6" },
+    professional_summary: { type: String, default: "" },
+    skills:       [{ type: String }],
+    personal_info: { type: PersonalInfoSchema, default: () => ({}) },
+    experience:    { type: [ExperienceSchema], default: [] },
+    project:       { type: [ProjectSchema],    default: [] },
+    education:     { type: [EducationSchema],  default: [] },
+    views:         { type: Number, default: 0 },
+    downloads:     { type: Number, default: 0 },
+    versions:      { type: [VersionSchema],    default: [] },
+  },
+  { timestamps: true, minimize: false }
+);
+
+const Resume = mongoose.model<IResume, IResumeModel>("Resume", ResumeSchema);
+export default Resume;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\models\user.model.ts
+==============================
+
+import mongoose, { Schema, type Document, type Model } from "mongoose";
+import bcrypt from "bcryptjs";
+
+// ── Interface ─────────────────────────────────────────────────────────────────
+
+export interface IUser extends Document {
+  _id: mongoose.Types.ObjectId;
+  firstName: string;
+  lastName: string;
+  emailId: string;
+  password: string | null;
+  refreshToken: string | null;
+  isVerified: boolean;
+  emailVerificationToken: string | null;
+  emailVerificationExpires: Date | null;
+  resetPasswordToken: string | null;
+  resetPasswordExpires: Date | null;
+  googleId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+
+  // Methods
+  comparePassword(candidatePassword: string): boolean;
+}
+
+export interface IUserModel extends Model<IUser> {
+  // static methods go here if needed
+}
+
+// ── Schema ────────────────────────────────────────────────────────────────────
+
+const UserSchema = new Schema<IUser, IUserModel>(
+  {
+    firstName: { type: String, required: true, trim: true },
+    lastName:  { type: String, required: true, trim: true },
+    emailId: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+    },
+    password:     { type: String, default: null },
+    refreshToken: { type: String, default: null },
+
+    isVerified:               { type: Boolean, default: false },
+    emailVerificationToken:   { type: String,  default: null },
+    emailVerificationExpires: { type: Date,    default: null },
+
+    resetPasswordToken:   { type: String, default: null },
+    resetPasswordExpires: { type: Date,   default: null },
+
+    googleId: { type: String, default: null, sparse: true },
+  },
+  { timestamps: true }
+);
+
+// ── Instance methods ──────────────────────────────────────────────────────────
+
+UserSchema.methods.comparePassword = function (
+  this: IUser,
+  candidatePassword: string
+): boolean {
+  if (!this.password) return false;
+  return bcrypt.compareSync(candidatePassword, this.password);
+};
+
+const User = mongoose.model<IUser, IUserModel>("User", UserSchema);
+export default User;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\routes\ai.routes.ts
+==============================
+
+import { Router } from "express";
+import {
+  enhanceProfessionalSummary,
+  enhanceJobDescription,
+  uploadResume,
+  importFromLinkedIn,
+  generateCoverLetter,
+  analyzeATS,
+} from "../controllers/ai.controller.js";
+import { authMiddleware } from "../middlewares/auth.middleware.js";
+import {
+  aiEnhanceRateLimiter,
+  aiUploadRateLimiter,
+} from "../middlewares/rate-limiter.middleware.js";
+
+const aiRouter = Router();
+
+aiRouter.use(authMiddleware);
+
+aiRouter.post("/enhance-pro-sum",  aiEnhanceRateLimiter, enhanceProfessionalSummary);
+aiRouter.post("/enhance-job-desc", aiEnhanceRateLimiter, enhanceJobDescription);
+aiRouter.post("/upload-resume",    aiUploadRateLimiter,  uploadResume);
+aiRouter.post("/import-linkedin",  aiUploadRateLimiter,  importFromLinkedIn);
+aiRouter.post("/cover-letter",     aiEnhanceRateLimiter, generateCoverLetter);
+aiRouter.post("/ats-analysis",     aiEnhanceRateLimiter, analyzeATS);
+
+export default aiRouter;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\routes\api.routes.ts
+==============================
+
+import { Router, type Request, type Response } from "express";
+import authRouter   from "./auth.routes.js";
+import userRouter   from "./user.routes.js";
+import resumeRouter from "./resume.routes.js";
+import aiRouter     from "./ai.routes.js";
+
+const apiRouter = Router();
+
+apiRouter.get("/ping", (_req: Request, res: Response) => {
+  res.json({ message: "pong", status: 200 });
+});
+
+apiRouter.use("/auth",   authRouter);
+apiRouter.use("/user",   userRouter);
+apiRouter.use("/resume", resumeRouter);
+apiRouter.use("/ai",     aiRouter);
+
+export default apiRouter;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\routes\auth.routes.ts
+==============================
+
+import { Router } from "express";
+import passport from "../config/passport.js";
+import {
+  loginUser,
+  logoutUser,
+  signupUser,
+  refreshTokens,
+  forgotPassword,
+  resetPassword,
+  verifyEmail,
+  resendVerification,
+  googleCallback,
+} from "../controllers/auth.controller.js";
+
+const authRouter = Router();
+
+// ── Email / password auth ─────────────────────────────────────────────────────
+authRouter.post("/signup",  signupUser);
+authRouter.post("/signin",  loginUser);
+authRouter.post("/logout",  logoutUser);
+authRouter.post("/refresh", refreshTokens);
+
+// ── Email verification ────────────────────────────────────────────────────────
+authRouter.get("/verify-email/:token",  verifyEmail);
+authRouter.post("/resend-verification", resendVerification);
+
+// ── Forgot / reset password ───────────────────────────────────────────────────
+authRouter.post("/forgot-password",       forgotPassword);
+authRouter.post("/reset-password/:token", resetPassword);
+
+// ── Google OAuth ──────────────────────────────────────────────────────────────
+authRouter.get(
+  "/google",
+  passport.authenticate("google", { scope: ["profile", "email"], session: false })
+);
+
+authRouter.get(
+  "/google/callback",
+  passport.authenticate("google", {
+    session:         false,
+    failureRedirect: `${process.env["CLIENT_URL"]?.split(",")[0].trim() ?? ""}/login?error=google_auth_failed`,
+  }),
+  googleCallback
+);
+
+export default authRouter;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\routes\resume.routes.ts
+==============================
+
+import { Router } from "express";
+import { authMiddleware } from "../middlewares/auth.middleware.js";
+import {
+  createResume,
+  deleteResume,
+  duplicateResume,
+  getPublicResumeById,
+  getResumeById,
+  toggleResumeVisibility,
+  updateResume,
+  updateResumeTitle,
+  exportResumePDF,
+  exportResumePDFPublic,
+  restoreVersion,
+} from "../controllers/resume.controller.js";
+import upload from "../config/multer.js";
+
+const resumeRouter = Router();
+
+// ── Public routes ─────────────────────────────────────────────────────────────
+resumeRouter.get("/public/:resumeId",      getPublicResumeById);
+resumeRouter.get("/:id/export-pdf/public", exportResumePDFPublic);
+
+// ── Protected routes ──────────────────────────────────────────────────────────
+resumeRouter.use(authMiddleware);
+
+resumeRouter.post("/create",                    createResume);
+resumeRouter.patch("/update",                   upload.single("image"), updateResume);
+resumeRouter.patch("/:id/title",                updateResumeTitle);
+resumeRouter.patch("/:id/visibility",           toggleResumeVisibility);
+resumeRouter.post("/:id/export-pdf",            exportResumePDF);
+resumeRouter.post("/:id/duplicate",             duplicateResume);
+resumeRouter.post("/:id/restore/:versionIndex", restoreVersion);
+resumeRouter.get("/:resumeId",                  getResumeById);
+resumeRouter.delete("/:resumeId",               deleteResume);
+
+export default resumeRouter;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\routes\user.routes.ts
+==============================
+
+import { Router } from "express";
+import {
+  getMe,
+  getUserById,
+  updateUserProfile,
+  getUserResumes,
+} from "../controllers/user.controller.js";
+import { authMiddleware } from "../middlewares/auth.middleware.js";
+
+const userRouter = Router();
+
+userRouter.use(authMiddleware);
+
+// Session restore on app boot
+userRouter.get("/me",      getMe);
+
+// Profile — read + update
+userRouter.get("/profile",   getUserById);
+userRouter.patch("/profile", updateUserProfile);
+
+// Resumes list
+userRouter.get("/resumes", getUserResumes);
+
+export default userRouter;
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\services\ai.service.ts
+==============================
+
+import ai from "../config/ai.js";
+import type { ATSAnalysis, ExtractedResumeData, ResumeContent } from "../types/index.js";
+import { ApiError } from "../utils/api-error.js";
+
+const MODEL = (): string => {
+  const model = process.env["OPENAI_MODEL"];
+  if (!model) throw new ApiError(500, "OPENAI_MODEL environment variable not set");
+  return model;
+};
+
+const stripJsonFences = (raw: string): string =>
+  raw.replace(/```json\n?|```/g, "").trim();
+
+// ── Text enhancement ──────────────────────────────────────────────────────────
+
+export const enhanceSummary = async (userContent: string): Promise<string> => {
+  const response = await ai.chat.completions.create({
+    model: MODEL(),
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are an expert in resume writing. Enhance the professional summary in 1-2 sentences, highlighting key skills, experience, and career objectives. Make it compelling and ATS-friendly. Return only the text with no options or extra formatting.",
+      },
+      { role: "user", content: userContent },
+    ],
+  });
+  return response.choices[0]?.message.content ?? "";
+};
+
+export const enhanceJobDesc = async (userContent: string): Promise<string> => {
+  const response = await ai.chat.completions.create({
+    model: MODEL(),
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are an expert in resume writing. Enhance or generate a job description in 1-2 sentences. Use action verbs and quantifiable results. Make it ATS-friendly. Return only the text.",
+      },
+      { role: "user", content: userContent },
+    ],
+  });
+  return response.choices[0]?.message.content ?? "";
+};
+
+// ── Resume extraction ─────────────────────────────────────────────────────────
+
+const RESUME_JSON_STRUCTURE = `{
+  "professional_summary": "",
+  "skills": [],
+  "personal_info": {
+    "image": "", "full_name": "", "profession": "",
+    "email": "", "phone": "", "location": "", "linkedin": "", "website": ""
+  },
+  "experience": [{ "company": "", "position": "", "start_date": "", "end_date": "", "description": "", "is_current": false }],
+  "project": [{ "name": "", "type": "", "description": "" }],
+  "education": [{ "institution": "", "degree": "", "field": "", "graduation_date": "", "gpa": "" }]
+}`;
+
+export const extractResumeData = async (
+  resumeText: string
+): Promise<ExtractedResumeData> => {
+  const response = await ai.chat.completions.create({
+    model: MODEL(),
+    messages: [
+      {
+        role: "system",
+        content: "You are an expert AI agent for extracting data from resumes. Always respond with valid JSON only, no markdown, no explanation.",
+      },
+      {
+        role: "user",
+        content: `Extract data from this resume:\n${resumeText}\n\nReturn ONLY valid JSON in this exact structure:\n${RESUME_JSON_STRUCTURE}`,
+      },
+    ],
+    response_format: { type: "json_object" },
+  });
+
+  const raw = response.choices[0]?.message.content ?? "{}";
+  return JSON.parse(stripJsonFences(raw)) as ExtractedResumeData;
+};
+
+export const extractLinkedInData = async (
+  linkedInText: string
+): Promise<ExtractedResumeData> => {
+  const response = await ai.chat.completions.create({
+    model: MODEL(),
+    messages: [
+      {
+        role: "system",
+        content: "You are an expert at parsing LinkedIn profile text into structured resume data. Always respond with valid JSON only, no markdown, no explanation.",
+      },
+      {
+        role: "user",
+        content: `Parse this LinkedIn profile text into a resume:\n\n${linkedInText}\n\nReturn ONLY valid JSON in this exact structure:\n${RESUME_JSON_STRUCTURE}`,
+      },
+    ],
+    response_format: { type: "json_object" },
+  });
+
+  const raw = response.choices[0]?.message.content ?? "{}";
+  return JSON.parse(stripJsonFences(raw)) as ExtractedResumeData;
+};
+
+// ── Cover letter ──────────────────────────────────────────────────────────────
+
+export const generateCoverLetterText = async (
+  resumeSummary: string,
+  jobDescription: string
+): Promise<string> => {
+  const response = await ai.chat.completions.create({
+    model: MODEL(),
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are an expert cover letter writer. Write professional, compelling cover letters tailored to the specific job. Keep it to 3-4 paragraphs. Use a professional but warm tone. Return only the cover letter text — no subject line, no metadata.",
+      },
+      {
+        role: "user",
+        content: `Write a cover letter for this candidate applying for this job.\n\nCandidate:\n${resumeSummary}\n\nJob Description:\n${jobDescription}`,
+      },
+    ],
+  });
+  return response.choices[0]?.message.content ?? "";
+};
+
+// ── ATS analysis ──────────────────────────────────────────────────────────────
+
+export const analyzeATSScore = async (
+  resumeText: string,
+  jobDescription: string
+): Promise<ATSAnalysis> => {
+  const response = await ai.chat.completions.create({
+    model: MODEL(),
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are an expert ATS analyst and resume coach. Compare a resume against a job description and return a structured JSON analysis. Always respond with valid JSON only — no markdown, no explanation.",
+      },
+      {
+        role: "user",
+        content: `Analyse this resume against the job description.\n\nRESUME:\n${resumeText}\n\nJOB DESCRIPTION:\n${jobDescription}\n\nReturn ONLY this JSON:\n{"score":<0-100>,"summary":"<one sentence>","matchedKeywords":[],"missingKeywords":[],"suggestions":[]}\n\nScoring: 80-100 Excellent, 60-79 Good, 40-59 Moderate, 0-39 Poor. Max 15 missing keywords, max 5 suggestions (under 20 words each).`,
+      },
+    ],
+    response_format: { type: "json_object" },
+  });
+
+  const raw = response.choices[0]?.message.content ?? "{}";
+  const result = JSON.parse(stripJsonFences(raw)) as Partial<ATSAnalysis>;
+
+  return {
+    score:           Math.min(100, Math.max(0, parseInt(String(result.score ?? 0), 10))),
+    summary:         String(result.summary ?? ""),
+    matchedKeywords: Array.isArray(result.matchedKeywords) ? result.matchedKeywords.slice(0, 30) : [],
+    missingKeywords: Array.isArray(result.missingKeywords) ? result.missingKeywords.slice(0, 15) : [],
+    suggestions:     Array.isArray(result.suggestions)     ? result.suggestions.slice(0, 5)      : [],
+  };
+};
+
+// ── Resume text builder (for ATS prompts) ─────────────────────────────────────
+
+export const buildResumeTextForAI = (resume: ResumeContent): string => {
+  const lines: string[] = [];
+  const pi = resume.personal_info ?? {};
+
+  if (pi.full_name)  lines.push(`Name: ${pi.full_name}`);
+  if (pi.profession) lines.push(`Profession: ${pi.profession}`);
+  if (pi.location)   lines.push(`Location: ${pi.location}`);
+
+  if (resume.professional_summary) {
+    lines.push("\nPROFESSIONAL SUMMARY");
+    lines.push(resume.professional_summary);
+  }
+  if (resume.skills?.length) {
+    lines.push("\nSKILLS");
+    lines.push(resume.skills.join(", "));
+  }
+  if (resume.experience?.length) {
+    lines.push("\nEXPERIENCE");
+    resume.experience.forEach((exp) => {
+      const end = exp.is_current ? "Present" : (exp.end_date ?? "");
+      lines.push(`${exp.position} at ${exp.company} (${exp.start_date ?? ""} – ${end})`);
+      if (exp.description) lines.push(exp.description);
+    });
+  }
+  if (resume.education?.length) {
+    lines.push("\nEDUCATION");
+    resume.education.forEach((edu) => {
+      lines.push(`${edu.degree} in ${edu.field} — ${edu.institution} (${edu.graduation_date ?? ""})`);
+    });
+  }
+  if (resume.project?.length) {
+    lines.push("\nPROJECTS");
+    resume.project.forEach((proj) => {
+      lines.push(`${proj.name} (${proj.type}): ${proj.description}`);
+    });
+  }
+
+  return lines.join("\n");
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\services\auth.service.ts
+==============================
+
+import crypto from "crypto";
+import bcrypt from "bcryptjs";
+import type { Response } from "express";
+import type { IUser } from "../models/user.model.js";
+import { generateAccessToken, generateRefreshToken } from "../utils/generate-token.js";
+import { setAuthCookie, setRefreshCookie } from "../utils/cookies.js";
+
+export interface SecureToken { raw: string; hash: string; }
+
+export const generateSecureToken = (): SecureToken => {
+  const raw = crypto.randomBytes(32).toString("hex");
+  const hash = crypto.createHash("sha256").update(raw).digest("hex");
+  return { raw, hash };
+};
+
+export const hashToken = (token: string): string =>
+  crypto.createHash("sha256").update(token).digest("hex");
+
+export const issueTokens = async (
+  res: Response,
+  user: IUser
+): Promise<{ accessToken: string; refreshToken: string }> => {
+  const accessToken = generateAccessToken(user._id);
+  const refreshToken = generateRefreshToken(user._id);
+
+  user.refreshToken = await bcrypt.hash(refreshToken, 8);
+  await user.save();
+
+  setAuthCookie(res, accessToken);
+  setRefreshCookie(res, refreshToken);
+
+  return { accessToken, refreshToken };
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\services\resume.service.ts
+==============================
+
+import type { IResume } from "../models/resume.model.js";
+import type { ResumeContent } from "../types/index.js";
+
+export const VERSION_CAP = 10;
+
+/**
+ * Builds a clean content snapshot from a resume document.
+ * Strips non-content fields (_id, userId, views, downloads, versions, timestamps)
+ * so the snapshot only contains editable resume fields.
+ */
+export const buildSnapshot = (resume: IResume): ResumeContent => {
+  const obj = resume.toObject() as Record<string, unknown>;
+  const omitKeys = new Set([
+    "_id", "userId", "createdAt", "updatedAt",
+    "views", "downloads", "versions", "__v",
+  ]);
+  const snapshot: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (!omitKeys.has(key)) snapshot[key] = value;
+  }
+  return snapshot as ResumeContent;
+};
+
+/**
+ * Appends a version snapshot of the current resume state to its versions array,
+ * capping at VERSION_CAP by dropping the oldest entry.
+ *
+ * @param resume  - The Mongoose resume document to snapshot.
+ * @param label   - Optional custom label. Auto-generated if omitted.
+ * @param suffix  - Optional suffix appended to the auto-generated label (e.g. "(before restore)").
+ */
+export const pushVersion = (
+  resume: IResume,
+  label?: string,
+  suffix?: string
+): IResume["versions"] => {
+  const snapshot   = buildSnapshot(resume);
+  const versionNum = (resume.versions?.length ?? 0) + 1;
+  const dateStr    = new Date().toLocaleDateString("en-US", {
+    month: "short",
+    day:   "numeric",
+  });
+  const baseLabel   = label ?? `Version ${versionNum} — ${dateStr}`;
+  const finalLabel  = suffix ? `${baseLabel} ${suffix}` : baseLabel;
+
+  return [
+    ...(resume.versions ?? []).slice(-(VERSION_CAP - 1)),
+    { savedAt: new Date(), label: finalLabel, snapshot },
+  ];
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\types\express.d.ts
+==============================
+
+import type { Types } from "mongoose";
+
+declare global {
+  namespace Express {
+    interface Request {
+      userId?: Types.ObjectId;
+    }
+  }
+}
+
+export {};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\types\index.ts
+==============================
+
+import type { Types } from "mongoose";
+import type { Request } from "express";
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+export interface JwtPayload {
+  userId: string;
+}
+
+export interface AuthenticatedRequest extends Request {
+  userId: Types.ObjectId;
+}
+
+// ── Resume ────────────────────────────────────────────────────────────────────
+
+export interface PersonalInfo {
+  image: string;
+  full_name: string;
+  profession: string;
+  email: string;
+  phone: string;
+  location: string;
+  linkedin: string;
+  website: string;
+}
+
+export interface ExperienceEntry {
+  company: string;
+  position: string;
+  start_date: string;
+  end_date: string;
+  description: string;
+  is_current: boolean;
+}
+
+export interface ProjectEntry {
+  name: string;
+  type: string;
+  description: string;
+}
+
+export interface EducationEntry {
+  institution: string;
+  degree: string;
+  field: string;
+  graduation_date: string;
+  gpa: string;
+}
+
+export interface VersionSnapshot {
+  savedAt: Date;
+  label: string;
+  snapshot: ResumeContent;
+}
+
+export interface ResumeContent {
+  title?: string;
+  isPublic?: boolean;
+  template?: string;
+  accent_color?: string;
+  professional_summary?: string;
+  skills?: string[];
+  personal_info?: Partial<PersonalInfo>;
+  experience?: ExperienceEntry[];
+  project?: ProjectEntry[];
+  education?: EducationEntry[];
+}
+
+export interface ResumeUpdatePayload extends ResumeContent {
+  public?: boolean;
+}
+
+// ── AI ────────────────────────────────────────────────────────────────────────
+
+export interface ATSAnalysis {
+  score: number;
+  summary: string;
+  matchedKeywords: string[];
+  missingKeywords: string[];
+  suggestions: string[];
+}
+
+export interface ExtractedResumeData {
+  professional_summary: string;
+  skills: string[];
+  personal_info: PersonalInfo;
+  experience: ExperienceEntry[];
+  project: ProjectEntry[];
+  education: EducationEntry[];
+}
+
+// ── Email ─────────────────────────────────────────────────────────────────────
+
+export interface VerificationEmailOptions {
+  to: string;
+  firstName: string;
+  token: string;
+}
+
+export interface PasswordResetEmailOptions {
+  to: string;
+  firstName: string;
+  token: string;
+}
+
+// ── API Response ──────────────────────────────────────────────────────────────
+
+export interface ApiResponseShape<T = unknown> {
+  success: boolean;
+  statusCode: number;
+  message: string;
+  data: T | null;
+}
+
+export interface PaginationMeta {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\utils\api-error.ts
+==============================
+
+export class ApiError extends Error {
+  public readonly statusCode: number;
+  public readonly success: false = false;
+  public readonly errors: string[];
+  public readonly data: null = null;
+
+  constructor(
+    statusCode: number,
+    message = "Something went wrong",
+    errors: string[] = [],
+    stack = ""
+  ) {
+    super(message);
+    this.name = this.constructor.name;
+    this.statusCode = statusCode;
+    this.message = message;
+    this.errors = errors;
+
+    if (stack) {
+      this.stack = stack;
+    } else {
+      Error.captureStackTrace(this, this.constructor);
+    }
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\utils\api-response.ts
+==============================
+
+import type { Response } from "express";
+import type { ApiResponseShape } from "../types/index.js";
+
+export class ApiResponse<T = unknown> {
+  public readonly statusCode: number;
+  public readonly data: T | null;
+  public readonly message: string;
+  public readonly success: boolean;
+
+  constructor(statusCode: number, data: T | null, message = "Success") {
+    this.statusCode = statusCode;
+    this.data = data;
+    this.message = message;
+    this.success = statusCode >= 200 && statusCode < 300;
+  }
+
+  send(res: Response): Response<ApiResponseShape<T>> {
+    return res.status(this.statusCode).json({
+      success: this.success,
+      statusCode: this.statusCode,
+      message: this.message,
+      data: this.data,
+    });
+  }
+}
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\utils\async-handler.ts
+==============================
+
+import type { Request, Response, NextFunction, RequestHandler } from "express";
+
+type AsyncRequestHandler<
+  P = Record<string, string>,
+  ResBody = unknown,
+  ReqBody = unknown,
+  ReqQuery = Record<string, string>,
+> = (
+  req: Request<P, ResBody, ReqBody, ReqQuery>,
+  res: Response<ResBody>,
+  next: NextFunction
+) => Promise<void | Response>;
+
+/**
+ * Wraps an async route handler and forwards any thrown errors to Express's
+ * next(err) so the global error handler can process them.
+ *
+ * This means controllers never need try/catch — they just throw ApiError.
+ */
+export const asyncHandler = <
+  P = Record<string, string>,
+  ResBody = unknown,
+  ReqBody = unknown,
+  ReqQuery = Record<string, string>,
+>(
+  fn: AsyncRequestHandler<P, ResBody, ReqBody, ReqQuery>
+): RequestHandler<P, ResBody, ReqBody, ReqQuery> => {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\utils\cookies.ts
+==============================
+
+import type { Response, CookieOptions } from "express";
+
+const isProduction = process.env["NODE_ENV"] === "production";
+
+const BASE_OPTS: CookieOptions = {
+  httpOnly: true,
+  secure: isProduction,
+  sameSite: isProduction ? "none" : "lax",
+};
+
+// ── Access token cookie (15 min) ──────────────────────────────────────────────
+
+export const setAuthCookie = (res: Response, token: string): void => {
+  res.cookie("token", token, {
+    ...BASE_OPTS,
+    maxAge: 15 * 60 * 1000, // 15 minutes
+  });
+};
+
+export const clearAuthCookie = (res: Response): void => {
+  res.cookie("token", "", { ...BASE_OPTS, maxAge: 0 });
+};
+
+// ── Refresh token cookie (7 days) ─────────────────────────────────────────────
+
+export const setRefreshCookie = (res: Response, token: string): void => {
+  res.cookie("refreshToken", token, {
+    ...BASE_OPTS,
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  });
+};
+
+export const clearRefreshCookie = (res: Response): void => {
+  res.cookie("refreshToken", "", { ...BASE_OPTS, maxAge: 0 });
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\utils\email.ts
+==============================
+
+import nodemailer from "nodemailer";
+import type { VerificationEmailOptions, PasswordResetEmailOptions } from "../types/index.js";
+
+const createTransporter = (): nodemailer.Transporter => {
+  return nodemailer.createTransport({
+    host: process.env["EMAIL_HOST"],
+    port: Number(process.env["EMAIL_PORT"]) || 587,
+    secure: Number(process.env["EMAIL_PORT"]) === 465,
+    auth: {
+      user: process.env["EMAIL_USER"],
+      pass: process.env["EMAIL_PASS"],
+    },
+  });
+};
+
+const FROM = process.env["EMAIL_FROM"] ?? "ResumeIQ <noreply@resumeiq.app>";
+
+// ── Templates ─────────────────────────────────────────────────────────────────
+
+const baseHtml = (title: string, body: string): string => `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${title}</title>
+</head>
+<body style="margin:0;padding:0;background:#0f0f1a;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f0f1a;padding:40px 20px;">
+    <tr>
+      <td align="center">
+        <table width="560" cellpadding="0" cellspacing="0"
+          style="background:#15151f;border-radius:16px;border:1px solid rgba(255,255,255,0.08);overflow:hidden;">
+          <tr>
+            <td style="background:linear-gradient(135deg,#6d28d9,#7c3aed);padding:28px 40px;">
+              <span style="font-size:22px;font-weight:800;color:#fff;letter-spacing:-0.5px;">
+                Resume<span style="color:#c4b5fd;">IQ</span>
+              </span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:36px 40px;color:#e2e8f0;font-size:15px;line-height:1.7;">
+              ${body}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 40px;border-top:1px solid rgba(255,255,255,0.06);
+              color:#64748b;font-size:12px;text-align:center;">
+              © ${new Date().getFullYear()} ResumeIQ. If you didn't request this email, you can safely ignore it.
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+const ctaButton = (href: string, label: string): string =>
+  `<a href="${href}"
+    style="display:inline-block;margin:24px 0;padding:14px 32px;
+      background:linear-gradient(135deg,#6d28d9,#7c3aed);
+      color:#fff;font-weight:700;font-size:15px;border-radius:10px;
+      text-decoration:none;letter-spacing:0.3px;"
+  >${label}</a>`;
+
+// ── Exported senders ──────────────────────────────────────────────────────────
+
+export const sendVerificationEmail = async ({
+  to,
+  firstName,
+  token,
+}: VerificationEmailOptions): Promise<void> => {
+  const clientUrl = process.env["CLIENT_URL"]?.split(",")[0].trim() ?? "";
+  const verifyUrl = `${clientUrl}/email-verified?token=${token}`;
+  const transporter = createTransporter();
+
+  const html = baseHtml(
+    "Verify your ResumeIQ email",
+    `<p style="margin:0 0 8px;font-size:18px;font-weight:700;color:#f1f5f9;">Hi ${firstName} 👋</p>
+     <p style="margin:0 0 20px;color:#94a3b8;">
+       Thanks for signing up! Please verify your email to activate your account.
+     </p>
+     ${ctaButton(verifyUrl, "Verify Email Address")}
+     <p style="margin:20px 0 0;color:#64748b;font-size:13px;">
+       This link expires in <strong style="color:#94a3b8;">24 hours</strong>.<br/>
+       <a href="${verifyUrl}" style="color:#818cf8;word-break:break-all;">${verifyUrl}</a>
+     </p>`
+  );
+
+  await transporter.sendMail({ from: FROM, to, subject: "Verify your ResumeIQ email address", html });
+};
+
+export const sendPasswordResetEmail = async ({
+  to,
+  firstName,
+  token,
+}: PasswordResetEmailOptions): Promise<void> => {
+  const clientUrl = process.env["CLIENT_URL"]?.split(",")[0].trim() ?? "";
+  const resetUrl = `${clientUrl}/reset-password/${token}`;
+  const transporter = createTransporter();
+
+  const html = baseHtml(
+    "Reset your ResumeIQ password",
+    `<p style="margin:0 0 8px;font-size:18px;font-weight:700;color:#f1f5f9;">Hi ${firstName},</p>
+     <p style="margin:0 0 20px;color:#94a3b8;">
+       We received a request to reset your ResumeIQ password.
+     </p>
+     ${ctaButton(resetUrl, "Reset My Password")}
+     <p style="margin:20px 0 0;color:#64748b;font-size:13px;">
+       This link expires in <strong style="color:#94a3b8;">1 hour</strong>.<br/>
+       <a href="${resetUrl}" style="color:#818cf8;word-break:break-all;">${resetUrl}</a>
+     </p>`
+  );
+
+  await transporter.sendMail({ from: FROM, to, subject: "Reset your ResumeIQ password", html });
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\utils\generate-pdf.ts
+==============================
+
+import puppeteer from "puppeteer";
+import type { Response } from "express";
+import type { IResume } from "../models/resume.model.js";
+import type { ResumeContent } from "../types/index.js";
+import { ApiError } from "./api-error.js";
+
+const LAUNCH_ARGS = [
+  "--no-sandbox",
+  "--disable-setuid-sandbox",
+  "--disable-dev-shm-usage",
+];
+
+const getClientUrl = (): string => {
+  const url = process.env["CLIENT_URL"]?.split(",")[0].trim();
+  if (!url?.startsWith("http")) {
+    throw new ApiError(500, `CLIENT_URL is invalid: "${url ?? ""}"`);
+  }
+  return url;
+};
+
+// Browser-side script strings — evaluated inside Chromium by Puppeteer,
+// NOT in Node. Using raw strings avoids the need for DOM lib types.
+const HIDE_ELEMENTS_SCRIPT =
+  "document.querySelectorAll('[data-hide-on-export]').forEach(function(el){el.style.display='none';});" +
+  "document.body.style.background='white';" +
+  "document.documentElement.style.background='white';";
+
+const WHITE_BG_SCRIPT =
+  "document.body.style.background='white';" +
+  "document.documentElement.style.background='white';";
+
+/**
+ * Public export — navigates to the live preview page; data comes from DB.
+ */
+export const generateAndSendPDFFromUrl = async (
+  resume: IResume,
+  res: Response
+): Promise<void> => {
+  const clientUrl = getClientUrl();
+  const browser = await puppeteer.launch({ headless: true, args: LAUNCH_ARGS });
+
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 816, height: 1056 });
+
+    await page.goto(`${clientUrl}/preview/${resume._id.toString()}`, {
+      waitUntil: "networkidle0",
+      timeout: 30_000,
+    });
+
+    await page.waitForSelector("[data-resume-ready]", { timeout: 10_000 }).catch(() => undefined);
+    await page.evaluate(HIDE_ELEMENTS_SCRIPT);
+
+    const pdf = await page.pdf({
+      format: "Letter",
+      printBackground: true,
+      margin: { top: "0", right: "0", bottom: "0", left: "0" },
+    });
+
+    const filename = `${resume.personal_info?.full_name ?? "Resume"}_Resume.pdf`;
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Length", pdf.length);
+    res.send(pdf);
+  } finally {
+    await browser.close();
+  }
+};
+
+/**
+ * Owner export — injects current frontend state before page load so
+ * unsaved changes are always reflected in the PDF.
+ */
+export const generateAndSendPDFFromData = async (
+  resumeData: ResumeContent,
+  res: Response
+): Promise<void> => {
+  const clientUrl = getClientUrl();
+  const safeData = JSON.parse(JSON.stringify(resumeData)) as ResumeContent;
+
+  const browser = await puppeteer.launch({ headless: true, args: LAUNCH_ARGS });
+
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 816, height: 1056 });
+
+    // Inject resume data BEFORE navigation — runs in Chromium context
+    const injectScript = `window.__RESUME_DATA__ = ${JSON.stringify(safeData)};`;
+    await page.evaluateOnNewDocument(injectScript);
+
+    await page.goto(`${clientUrl}/render`, {
+      waitUntil: "networkidle0",
+      timeout: 30_000,
+    });
+
+    await page.waitForSelector("[data-resume-ready]", { timeout: 10_000 }).catch(() => undefined);
+    await page.evaluate(WHITE_BG_SCRIPT);
+
+    const pdf = await page.pdf({
+      format: "Letter",
+      printBackground: true,
+      margin: { top: "0", right: "0", bottom: "0", left: "0" },
+    });
+
+    const filename = `${resumeData.personal_info?.full_name ?? "Resume"}_Resume.pdf`;
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Length", pdf.length);
+    res.send(pdf);
+  } finally {
+    await browser.close();
+  }
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\utils\generate-token.ts
+==============================
+
+import jwt from "jsonwebtoken";
+import type { Types } from "mongoose";
+
+const getSecret = (key: string): string => {
+  const secret = process.env[key];
+  if (!secret) throw new Error(`Missing env var: ${key}`);
+  return secret;
+};
+
+export const generateAccessToken = (userId: Types.ObjectId): string => {
+  return jwt.sign({ userId: userId.toString() }, getSecret("JWT_SECRET"), {
+    expiresIn: "15m",
+  });
+};
+
+export const generateRefreshToken = (userId: Types.ObjectId): string => {
+  return jwt.sign(
+    { userId: userId.toString() },
+    getSecret("JWT_REFRESH_SECRET"),
+    { expiresIn: "7d" }
+  );
+};
+
+
+==============================
+FILE: E:\My Projects\AI-Resume-Builder\resumeiq-typescript\resumeiq-backend\src\utils\validation.ts
+==============================
+
+import validator from "validator";
+import type { Request } from "express";
+import { ApiError } from "./api-error.js";
+
+export interface SignUpBody {
+  firstName?: string;
+  lastName?: string;
+  emailId?: string;
+  password?: string;
+}
+
+export const validateSignUpData = (req: Request<unknown, unknown, SignUpBody>): void => {
+  const { firstName, lastName, emailId, password } = req.body;
+
+  if (!firstName?.trim() || !lastName?.trim()) {
+    throw new ApiError(400, "First name and last name are required");
+  }
+
+  if (!validator.isEmail(emailId ?? "")) {
+    throw new ApiError(400, "Please provide a valid email address");
+  }
+
+  if (!password || password.length < 8) {
+    throw new ApiError(400, "Password must be at least 8 characters");
+  }
+
+  if (!/[A-Z]/.test(password)) {
+    throw new ApiError(400, "Password must contain at least one uppercase letter");
+  }
+
+  if (!/\d/.test(password)) {
+    throw new ApiError(400, "Password must contain at least one number");
+  }
+};
+
+export const validatePasswordStrength = (password: string): void => {
+  if (password.length < 8) throw new ApiError(400, "Password must be at least 8 characters");
+  if (!/[A-Z]/.test(password)) throw new ApiError(400, "Password must contain at least one uppercase letter");
+  if (!/\d/.test(password)) throw new ApiError(400, "Password must contain at least one number");
+};
